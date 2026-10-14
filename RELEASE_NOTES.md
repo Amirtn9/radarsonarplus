@@ -1,6 +1,6 @@
-# Sonar Radar Pro 5.2.1-github — Release notes
+# Sonar Radar Pro 5.2.2-install-fix — Release notes
 
-This is a GitHub deployment integration release, based on the 5.2.0-security snapshot.
+This is a deployment recovery and permissions fix built on the prior GitHub installer release.
 
 - Canonical public repository: `https://github.com/Amirtn9/radarsonarplus` (`main`).
 - The downloaded standalone `install.sh` bootstraps the full repository, including when running `--update`.
@@ -9,6 +9,16 @@ This is a GitHub deployment integration release, based on the 5.2.0-security sna
 - The advanced logs/diagnostics and backup/rollback commands are retained.
 - Active version labels and links were consolidated; older documentation moved to `docs/archive/`.
 - Installer settings support updating the logging level and Mini App session age.
+
+## Changes for 5.2.2
+
+- Resolve `203/EXEC` caused by Python venv directories created with `umask 077`: stage venv is made traversable, and the actual service user runs the interpreter and import smoke check before service start.
+- Correct `StartLimitIntervalSec` and `StartLimitBurst` to systemd `[Unit]` sections.
+- Install Mini App Python dependencies before promotion, rather than mutating a live venv after deploying code.
+- Detect prior Sonar systemd units, env/config, application code, PostgreSQL role and database; offer a data-preserving upgrade or an explicitly authorized clean reset.
+- A destructive reset requires exact `DELETE SONAR DATA` acknowledgement, verified archived backup and PostgreSQL availability; it NEVER wipes unrelated PostgreSQL databases.
+- Animate actual installation subprocesses on an interactive terminal; non-interactive runs remain machine-readable and preserve real failure codes.
+- Add user-level Python permission diagnostics, log improvements and regression tests.
 
 ## Important caveats
 

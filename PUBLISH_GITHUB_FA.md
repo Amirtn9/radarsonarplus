@@ -24,7 +24,7 @@ python3 scripts/verify_manifest.py
 bash install.sh --check
 git status
 git add -A
-git commit -m "Unify GitHub bootstrap and full-stack installer 5.2.1"
+git commit -m "Unify GitHub bootstrap and full-stack installer 5.2.2"
 git push origin main
 ```
 

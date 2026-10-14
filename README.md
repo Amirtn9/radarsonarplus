@@ -2,7 +2,7 @@
 <p align="center"><strong>مدیریت، پایش و کنترل سرورها از تلگرام و پنل وب</strong></p>
 <p align="center">Telegram Bot · Secure WSS Agent · Mini App · Monitoring Dashboard</p>
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-5.2.1--github-2563eb?style=for-the-badge">
+  <img alt="Version" src="https://img.shields.io/badge/version-5.2.2--install--fix-2563eb?style=for-the-badge">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776ab?style=for-the-badge&amp;logo=python&amp;logoColor=white">
   <img alt="Platform" src="https://img.shields.io/badge/Ubuntu%20%7C%20Debian-Linux-111827?style=for-the-badge&amp;logo=linux&amp;logoColor=white">
   <img alt="Status" src="https://img.shields.io/badge/release-staging%20validation-f59e0b?style=for-the-badge">
@@ -21,7 +21,7 @@
 
 **Sonar Radar Pro** سامانه‌ای برای مدیریت و پایش زیرساخت‌های سروری از طریق **ربات تلگرام** و **Telegram Mini App** است. پروژه از یک ایجنت راه‌دور با ارتباط رمزنگاری‌شده، ذخیره‌سازی PostgreSQL، مدیریت پیکربندی‌ها و مشاهده گزارش‌ها استفاده می‌کند.
 
-> **وضعیت انتشار:** نسخه `5.2.1-github` برای بررسی و تست روی سرور آزمایشی آماده شده است. نصب واقعی روی Ubuntu تمیز، اتصال زنده تلگرام، PostgreSQL و ثبت ایجنت‌ها هنوز به تأیید عملی در محیط شما نیاز دارد. از آن مستقیماً به‌عنوان نسخه Production تضمین‌شده استفاده نکنید.
+> **وضعیت انتشار:** نسخه `5.2.2-install-fix` برای بررسی و تست روی سرور آزمایشی آماده شده است. نصب واقعی روی Ubuntu تمیز، اتصال زنده تلگرام، PostgreSQL و ثبت ایجنت‌ها هنوز به تأیید عملی در محیط شما نیاز دارد. از آن مستقیماً به‌عنوان نسخه Production تضمین‌شده استفاده نکنید.
 
 <a id="installation"></a>
 
@@ -76,12 +76,37 @@ sudo bash install.sh
 
 <a id="management"></a>
 
+## ♻️ تشخیص نصب قبلی و پاک‌سازی کنترل‌شده
+
+اگر از قبل فایل سرویس، پوشه برنامه، تنظیمات یا دیتابیس `sonar_ultra_pro` وجود داشته باشد، نصب‌کننده **قبل از جایگزینی** موجودی آن‌ها را نمایش می‌دهد و یکی از حالت‌های حفظ داده و ارتقا، یا نصب تمیز را درخواست می‌کند.
+
+**هشدار:** نصب تمیز دیتابیس `sonar_ultra_pro` و کاربر `sonar_user` متعلق به پروژه را حذف می‌کند. برای شروع حذف باید عبارت `DELETE SONAR DATA` را دقیقاً تایپ کنید. ابتدا یک آرشیو و دامپ دیتابیس ایجاد و صحت آن بررسی می‌شود. سایر دیتابیس‌ها و خود سرویس PostgreSQL پاک نمی‌شوند. نسخه پشتیبان به‌صورت پیش‌فرض باقی می‌ماند. در صورت قطع‌شدن نصب پس از پاک‌سازی، آرشیو برای بازیابی دستی حفظ می‌شود.
+
+```bash
+sudo bash install.sh --inventory
+sudo bash install.sh --clean-install
+```
+
+این دستورات را **پس از انتشار فایل‌های این نسخه در GitHub** اجرا کنید. اجرای `--clean-install` نیازمند ترمینال تعاملی و تأیید صریح است و مناسب اجرای خودکار بدون نظارت نیست.
+
+## 🔎 رفع خطای `203/EXEC` و دسترسی پایتون
+
+در نسخه قدیمی، محیط مجازی با `umask 077` ساخته می‌شد و `sonar-bot` به برخی پوشه‌های آن دسترسی اجرا نداشت. در نسخه جدید سطح دسترسی خواندن/اجرای venv تنظیم می‌شود و قبل از روشن‌شدن سرویس، اجرای پایتون و import ماژول‌ها با خود کاربر `sonar-bot` بررسی می‌شود. فایل‌های حساس `secret.key` و `sonar_config.json` همچنان `0600` باقی می‌مانند.
+
+برای تشخیص خطا:
+
+```bash
+sudo bash install.sh --doctor
+sudo bash install.sh --logs bot --lines 100
+sudo namei -l /opt/radar-sonar/venv/bin/python
+```
+
 ## 🧭 منوی نصب و مدیریت
 
 ```text
 ╭───────────────────────────────────────────────────────╮
 │                    🦇 SONAR / RADAR                  │
-│                 PRO 5.2.1 · Control Center            │
+│                 PRO 5.2.2 · Control Center            │
 ╰───────────────────────────────────────────────────────╯
 
 01  Install Full Stack (Bot + DB + Mini App)
@@ -97,6 +122,7 @@ sudo bash install.sh
 11  Preflight source check
 12  Uninstall (archive only)
 13  Repair installed services
+14  Clean reset + reinstall (with separate database approval)
 00  Exit
 ```
 
@@ -262,3 +288,5 @@ python3 -m pytest -q tests
 ساخته‌شده برای مدیریت دقیق‌تر زیرساخت، با اولویت امنیت و قابلیت عیب‌یابی.
 
 </div>
+
+راهنمای جزئیات نصب مجدد و بازیابی: [docs/INSTALL_RECOVERY_FA.md](docs/INSTALL_RECOVERY_FA.md)

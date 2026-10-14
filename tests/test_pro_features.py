@@ -168,7 +168,7 @@ def test_installer_guardrails_for_failed_upgrades():
     assert 'mv -- "$APP_DIR" "$STATE_OLD"' in source
     assert 'mv -- "$STATE_STAGE" "$APP_DIR"' in source
     assert 'systemctl is-active --quiet "$SERVICE"' in source
-    assert "'App already installed. Select Upgrade.'" in source
+    assert 'select_install_strategy' in source and 'reset_project_components' in source
     assert 'pg_restore --list' in source
     assert 'ProtectSystem=strict' in source
 

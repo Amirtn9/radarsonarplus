@@ -3,9 +3,10 @@ from logging.handlers import RotatingFileHandler
 import sys
 import traceback
 import threading
+import os
 
 # تنظیمات اصلی
-LOG_FILE_NAME = "sonar_bot.log"
+LOG_FILE_NAME = os.path.join(os.getenv("SONAR_LOG_DIR", "/var/log/sonar"), "sonar_bot.log")
 MAX_LOG_SIZE = 10 * 1024 * 1024  # 10 Megabytes
 BACKUP_COUNT = 5  # نگه داشتن 5 فایل قدیمی
 
@@ -49,6 +50,7 @@ def setup_logger():
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
+    os.makedirs(os.path.dirname(LOG_FILE_NAME), mode=0o750, exist_ok=True)
     file_handler = RotatingFileHandler(
         LOG_FILE_NAME,
         maxBytes=MAX_LOG_SIZE,

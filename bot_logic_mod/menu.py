@@ -94,7 +94,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         overview = "📊 آمار شبکه موقتاً در دسترس نیست"
 
-    txt = ("📡 *SONAR RADAR | Pro 5.2.1*\n"
+    txt = ("📡 *SONAR RADAR | Pro 5.2.2*\n"
            "━━━━━━━━━━━━━━━━━━━━\n"
            f"👤 اعتبار حساب: `{remaining}`\n{overview}\n"
            "━━━━━━━━━━━━━━━━━━━━\n"

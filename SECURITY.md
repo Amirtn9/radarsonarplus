@@ -1,4 +1,4 @@
-# Sonar Radar security boundaries (5.2.1-github)
+# Sonar Radar security boundaries (5.2.2-install-fix)
 
 - **Agent:** Per-node TLS via a self-signed certificate enrolled through SSH and pinned to the agent record. Remote plain `ws://` is blocked by the client; agent refuses unencrypted non-loopback listeners. An existing node must be re-enrolled using the admin agent installer. **TLS does not replace firewall isolation:** configure UFW/security groups to admit only the bot IP and only the agent TCP port.
 - **Host keys:** The bot rejects unknown SSH host keys unless explicitly trusted. Verify the fingerprint independently before enrollment.

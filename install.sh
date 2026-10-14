@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sonar Radar Pro 5.2.1 | GitHub deployment manager
+# Sonar Radar Pro 5.2.2 | resilient GitHub deployment manager
 # Supported: Ubuntu/Debian with systemd. Never execute remotely piped scripts as root.
 set -Eeuo pipefail
 umask 077
@@ -27,6 +27,8 @@ GITHUB_URL="https://github.com/${GITHUB_REPOSITORY}.git"
 STATE_STAGE=''; STATE_OLD=''; STATE_SWITCH=0; STATE_OLD_PRESENT=0
 STATE_BOT_ACTIVE=0; STATE_WEB_ACTIVE=0; STATE_BOT_UNIT=''; STATE_WEB_UNIT=''
 STATE_OK=0
+UI_ENABLED=0
+[[ -t 1 && -t 0 && -z "${NO_COLOR:-}" ]] && UI_ENABLED=1
 
 # Standalone GitHub bootstrap: makes the published three-line wget installer work.
 # If this file was downloaded without its repository, fetch an isolated checkout
@@ -71,6 +73,25 @@ if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   C_RESET=$'\033[0m'; C_DIM=$'\033[2m'; C_BLUE=$'\033[38;5;39m'; C_GREEN=$'\033[38;5;40m'; C_ORANGE=$'\033[38;5;208m'; C_RED=$'\033[38;5;196m'; C_WHITE=$'\033[1;37m'
 else C_RESET='';C_DIM='';C_BLUE='';C_GREEN='';C_ORANGE='';C_RED='';C_WHITE=''; fi
 say() { printf '  %b●%b %s\n' "$C_BLUE" "$C_RESET" "$*"; }
+# Animated indicator is informational only. It never hides failure codes.
+run_logged_command() { "$@" >> "$INSTALL_LOG" 2>&1; }
+spinner_run() {
+  local label="$1" pid rc=0 frames='|/-\' i=0
+  shift
+  if (( UI_ENABLED == 0 )); then
+    say "$label"
+    "$@"; return $?
+  fi
+  "$@" & pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    printf '\r  %b◐%b %-48s %s' "$C_BLUE" "$C_RESET" "$label" "${frames:i%4:1}"
+    i=$((i+1)); sleep 0.12
+  done
+  wait "$pid" || rc=$?
+  printf '\r\033[2K'
+  (( rc == 0 )) && ok "$label" || warn "$label (exit $rc)"
+  return "$rc"
+}
 ok() { printf '  %b✓%b %s\n' "$C_GREEN" "$C_RESET" "$*"; }
 warn() { printf '  %b!%b %s\n' "$C_ORANGE" "$C_RESET" "$*" >&2; }
 die() { printf '  %b✕%b %s\n' "$C_RED" "$C_RESET" "$*" >&2; return 1; }
@@ -82,8 +103,121 @@ require_service_host() {
   . /etc/os-release
   case " ${ID:-} ${ID_LIKE:-} " in *ubuntu*|*debian*) ;; *) die 'Only Debian and Ubuntu are supported.';; esac
   command -v systemctl >/dev/null && command -v apt-get >/dev/null && command -v runuser >/dev/null || die 'systemd, apt-get and runuser are required.'
+  if command -v findmnt >/dev/null 2>&1 && findmnt -no OPTIONS -T /opt 2>/dev/null | tr ',' '\n' | grep -qx noexec;then
+    die '/opt is mounted noexec. Executable virtual environments require an exec-enabled filesystem.'
+  fi
 }
 ensure_directories() { install -d -m 0700 "$BACKUP_DIR"; install -d -m 0750 "$LOG_DIR"; touch "$INSTALL_LOG"; chmod 0600 "$INSTALL_LOG"; }
+# Only resources created for this project may be detected/removed.
+app_database_exists() {
+  command -v psql >/dev/null 2>&1 && id -u postgres >/dev/null 2>&1 &&
+    runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" 2>/dev/null | grep -qx 1
+}
+app_role_exists() {
+  command -v psql >/dev/null 2>&1 && id -u postgres >/dev/null 2>&1 &&
+    runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" 2>/dev/null | grep -qx 1
+}
+existing_components() {
+  local found=0
+  section 'EXISTING INSTALLATION  ·  Inventory'
+  if [[ -e "$APP_DIR" || -L "$APP_DIR" ]]; then say "Application: $APP_DIR";found=1;fi
+  if [[ -e "$BOT_UNIT" || -L "$BOT_UNIT" ]];then say "Bot service: $BOT_UNIT";found=1;fi
+  if [[ -e "$WEB_UNIT" || -L "$WEB_UNIT" ]];then say "Web service: $WEB_UNIT";found=1;fi
+  if [[ -e "$ENV_FILE" || -L "$ENV_FILE" ]];then say "Private environment: $ENV_FILE";found=1;fi
+  if [[ -e "$NGINX_SITE" || -L "$NGINX_SITE" || -L "$NGINX_LINK" ]];then say 'Sonar nginx configuration detected';found=1;fi
+  if app_database_exists;then say "PostgreSQL database: $DB_NAME";found=1;fi
+  if app_role_exists;then say "PostgreSQL role: $DB_USER";found=1;fi
+  local leftover
+  for leftover in /opt/.sonar-stage.*;do
+    [[ -d "$leftover" && ! -L "$leftover" ]] || continue
+    say "Interrupted installer staging folder: $leftover";found=1
+  done
+  if (( found == 0 ));then ok 'No previous Sonar installation detected';fi
+  return "$found"
+}
+archive_existing_components() {
+  # Archive all of the project-owned configuration before a destructive reset.
+  local dest
+  dest="$BACKUP_DIR/before-reset-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  install -d -m 0700 "$dest"
+  if [[ -d "$APP_DIR" && ! -L "$APP_DIR" ]];then
+    tar -C /opt -czf "$dest/app.tar.gz" radar-sonar || die 'Application archive failed. Refusing reset.'
+  fi
+  [[ ! -f "$ENV_FILE" || -L "$ENV_FILE" ]] || cp -p "$ENV_FILE" "$dest/sonar-bot.env"
+  [[ ! -f "$BOT_UNIT" || -L "$BOT_UNIT" ]] || cp -p "$BOT_UNIT" "$dest/sonar-bot.service"
+  [[ ! -f "$WEB_UNIT" || -L "$WEB_UNIT" ]] || cp -p "$WEB_UNIT" "$dest/sonar-web.service"
+  [[ ! -f "$NGINX_SITE" || -L "$NGINX_SITE" ]] || cp -p "$NGINX_SITE" "$dest/sonar-nginx.conf"
+  if app_database_exists;then
+    runuser -u postgres -- pg_dump -Fc --no-owner --no-acl -d "$DB_NAME" > "$dest/database.dump" || die 'Database archive failed. Refusing reset.'
+    [[ -s "$dest/database.dump" ]] && pg_restore --list "$dest/database.dump" >/dev/null || die 'Backup verification failed. Refusing reset.'
+  fi
+  chmod -R go-rwx "$dest"
+  ok "Verified reset archive saved: $dest"
+}
+reset_project_components() {
+  require_root;require_service_host;ensure_directories
+  [[ ! -L "$APP_DIR" && ! -L "$ENV_FILE" && ! -L "$NGINX_SITE" ]] || die 'Symlinked Sonar path detected. Refusing unsafe reset.'
+  # Fail closed: never mistake an offline PostgreSQL instance for an absent database.
+  if command -v psql >/dev/null 2>&1 && id -u postgres >/dev/null 2>&1;then
+    systemctl start postgresql >> "$INSTALL_LOG" 2>&1 || die 'PostgreSQL cannot be started; refusing unsafe reset.'
+    runuser -u postgres -- psql -tAc 'SELECT 1' 2>> "$INSTALL_LOG" | grep -qx 1 || die 'PostgreSQL unreachable; refusing unsafe reset.'
+  fi
+  if existing_components;then return 0;fi
+  local confirm
+  warn 'This removes ONLY Sonar-specific code, services, nginx config, env, DB, and role.'
+  warn 'It does NOT remove PostgreSQL itself, SSH, other databases, or unrelated services.'
+  warn 'A verified backup of existing Sonar data is REQUIRED before deletion.'
+  [[ -t 0 ]] || die 'Interactive approval required for destructive reset. Use a terminal.'
+  read -r -p '  Type DELETE SONAR DATA to reset including PostgreSQL database: ' confirm
+  [[ "$confirm" == 'DELETE SONAR DATA' ]] || die 'Reset cancelled; no data was deleted.'
+  archive_existing_components
+  systemctl disable --now "$SERVICE" "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1 || true
+  if app_database_exists;then
+    # Only sessions connected to Sonar DB are terminated.
+    runuser -u postgres -- psql -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${DB_NAME}' AND pid <> pg_backend_pid()" >> "$INSTALL_LOG" 2>&1 || die 'Could not disconnect Sonar database users.'
+    runuser -u postgres -- dropdb --if-exists "$DB_NAME" >> "$INSTALL_LOG" 2>&1 || die 'Failed to drop Sonar database; archive retained.'
+  fi
+  if app_role_exists;then
+    if ! runuser -u postgres -- dropuser "$DB_USER" >> "$INSTALL_LOG" 2>&1;then
+      warn 'Database role is referenced elsewhere; keeping role instead of forcing deletion.'
+    fi
+  fi
+  [[ "$APP_DIR" == /opt/radar-sonar && ! -L "$APP_DIR" ]] || die 'Refusing unsafe application path.'
+  rm -rf -- "$APP_DIR"
+  [[ ! -L "$ENV_FILE" ]] || die 'Unsafe env symlink; remove it manually.'
+  rm -f -- "$ENV_FILE" "$BOT_UNIT" "$WEB_UNIT"
+  if [[ -L "$NGINX_LINK" ]] && [[ "$(readlink -f "$NGINX_LINK")" == "$NGINX_SITE" ]];then rm -f -- "$NGINX_LINK";fi
+  [[ ! -L "$NGINX_SITE" ]] || die 'Unsafe nginx symlink; remove manually.'
+  rm -f -- "$NGINX_SITE"
+  # Orphaned staging directories use a dedicated, predictable /opt prefix.
+  local orphan
+  for orphan in /opt/.sonar-stage.*;do
+    [[ -d "$orphan" && ! -L "$orphan" ]] || continue
+    [[ "$orphan" =~ ^/opt/\.sonar-stage\.[A-Za-z0-9]+$ ]] || { warn "Skipped unexpected staging path: $orphan";continue; }
+    rm -rf -- "$orphan"
+  done
+  systemctl daemon-reload
+  if command -v nginx >/dev/null 2>&1 && nginx -t >> "$INSTALL_LOG" 2>&1;then systemctl reload nginx || true;fi
+  ok 'Previous Sonar deployment and its database removed. Backups remain available.'
+}
+select_install_strategy() {
+  # Return code 0 = proceed fresh, 2 = upgrade, 1 = abort.
+  if existing_components;then
+    return 0
+  fi
+  [[ -t 0 ]] || die 'Existing Sonar resources found. Run interactively to choose upgrade or clean reset.'
+  printf '\n  [1] Keep existing data and update (requires installed application)\n'
+  printf '  [2] Archive + REMOVE Sonar code, config, services and DATABASE, then install\n'
+  printf '  [0] Cancel\n'
+  local choice
+  read -r -p '  Select [0-2]: ' choice
+  case "$choice" in
+    1) if [[ -f "$APP_DIR/bot.py" ]];then return 2;else die 'Application missing. Choose archive and reset for a clean installation.';fi;;
+    2) reset_project_components;return 0;;
+    0|*) die 'Installation cancelled. Nothing changed.';;
+  esac
+}
+
 valid_port() { [[ "$1" =~ ^[0-9]{2,5}$ ]] && (( 10#$1 >= 1024 && 10#$1 <= 65535 )); }
 valid_domain() {
   [[ ${#1} -le 253 && "$1" == *.* && "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ && "$1" != *..* ]] || return 1
@@ -185,8 +319,8 @@ PY
 }
 install_deps() {
   say 'Installing operating-system dependencies (logs stored locally)'
-  DEBIAN_FRONTEND=noninteractive apt-get update >> "$INSTALL_LOG" 2>&1 || die "apt update failed; $INSTALL_LOG"
-  DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv python3-dev build-essential libssl-dev libffi-dev git curl openssh-client ca-certificates tar postgresql postgresql-contrib libpq-dev libpango-1.0-0 libpangoft2-1.0-0 fonts-dejavu-core >> "$INSTALL_LOG" 2>&1 || die "Dependency installation failed; $INSTALL_LOG"
+  spinner_run 'Refreshing package repositories' run_logged_command env DEBIAN_FRONTEND=noninteractive apt-get update || die "apt update failed; $INSTALL_LOG"
+  spinner_run 'Installing OS prerequisites' run_logged_command env DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv python3-dev build-essential libssl-dev libffi-dev git curl openssh-client ca-certificates tar postgresql postgresql-contrib libpq-dev libpango-1.0-0 libpangoft2-1.0-0 fonts-dejavu-core || die "Dependency installation failed; $INSTALL_LOG"
   ensure_python_version
 }
 ask_new_credentials() {
@@ -243,9 +377,10 @@ PY
 }
 create_venv() {
   say 'Building an isolated Python environment'
-  python3 -m venv "$STATE_STAGE/venv"
-  "$STATE_STAGE/venv/bin/python" -m pip install -U pip setuptools wheel >> "$INSTALL_LOG" 2>&1 || die 'pip bootstrap failed.'
-  "$STATE_STAGE/venv/bin/python" -m pip install -r "$STATE_STAGE/requirements.txt" >> "$INSTALL_LOG" 2>&1 || die 'Python dependency installation failed.'
+  spinner_run 'Creating isolated Python environment' python3 -m venv "$STATE_STAGE/venv" || die 'venv creation failed.'
+  spinner_run 'Installing pip tooling' run_logged_command "$STATE_STAGE/venv/bin/python" -m pip install -U pip setuptools wheel || die 'pip bootstrap failed.'
+  spinner_run 'Installing Bot requirements' run_logged_command "$STATE_STAGE/venv/bin/python" -m pip install -r "$STATE_STAGE/requirements.txt" || die 'Python dependency installation failed.'
+  spinner_run 'Installing Mini App requirements' run_logged_command "$STATE_STAGE/venv/bin/python" -m pip install -r "$STATE_STAGE/requirements-web.txt" || die 'Mini App dependencies failed.'
   "$STATE_STAGE/venv/bin/python" -m compileall -q "$STATE_STAGE" || die 'Python source compilation failed.'
   # Absolute interpreter path in Python entry points must be replaced before promotion.
   python3 - "$STATE_STAGE" "$APP_DIR" <<'PY'
@@ -315,6 +450,8 @@ create_unit() {
 Description=Sonar Radar Pro Telegram Bot
 Wants=network-online.target
 After=network-online.target postgresql.service
+StartLimitIntervalSec=120
+StartLimitBurst=8
 [Service]
 Type=simple
 User=$APP_USER
@@ -327,8 +464,6 @@ StandardError=journal
 SyslogIdentifier=sonar-bot
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=120
-StartLimitBurst=8
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
@@ -363,8 +498,19 @@ install_app() {
   local mode="$1"
   require_root; require_service_host; ensure_directories; preflight
   [[ ! -L "$APP_DIR" ]] || die 'Refusing symlinked installation root.'
-  if [[ "$mode" == new ]]; then [[ ! -e "$APP_DIR" ]] || die 'App already installed. Select Upgrade.'
-  else [[ -d "$APP_DIR" ]] || die 'No existing installation to upgrade.'; [[ "$SOURCE_DIR" != "$APP_DIR" ]] || die 'Upgrade from a separate Git checkout, not the live directory.'; fi
+  if [[ "$mode" == new ]]; then
+    local chosen=0
+    select_install_strategy || chosen=$?
+    case "$chosen" in
+      0) : ;;
+      2) mode=upgrade; say 'Preserving data and upgrading existing installation.' ;;
+      *) die 'Installation cancelled.' ;;
+    esac
+  fi
+  if [[ "$mode" == upgrade ]];then
+    [[ -d "$APP_DIR" && -f "$APP_DIR/bot.py" ]] || die 'No complete installation to upgrade.'
+    [[ "$SOURCE_DIR" != "$APP_DIR" ]] || die 'Upgrade from a separate Git checkout, not the live directory.'
+  fi
   if [[ "$mode" == upgrade ]]; then
     say 'Creating safety backup BEFORE modifying packages or code'
     make_backup
@@ -376,6 +522,11 @@ install_app() {
   id -u "$APP_USER" >/dev/null 2>&1 || useradd --system --home-dir "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
   chown -R root:root "$STATE_STAGE"
   chmod 0755 "$STATE_STAGE"
+  # Python venv created with umask 077 has 0700 directories. Fix traversability.
+  # This ONLY opens read/execute on the venv; config and secret.key stay 0600.
+  chmod -R a+rX "$STATE_STAGE/venv"
+  # Explicitly check the service account can run the EXACT promoted interpreter.
+  runuser -u "$APP_USER" -- "$STATE_STAGE/venv/bin/python" -c 'import sys, telegram, psycopg2, websockets, fastapi, uvicorn; print(sys.version.split()[0])' >> "$INSTALL_LOG" 2>&1 || die 'Service user cannot execute Python/dependencies (permission or import failure).'
   chown "$APP_USER:$APP_USER" "$STATE_STAGE/sonar_config.json" "$STATE_STAGE/secret.key"
   chmod 0600 "$STATE_STAGE/sonar_config.json" "$STATE_STAGE/secret.key"
   if [[ -f "$STATE_STAGE/.ssh/known_hosts" ]]; then
@@ -393,9 +544,15 @@ install_app() {
   mv -- "$STATE_STAGE" "$APP_DIR";STATE_STAGE=''
   create_unit
   systemctl daemon-reload
+  systemd-analyze verify "$BOT_UNIT" >> "$INSTALL_LOG" 2>&1 || die 'Invalid systemd unit generated.'
+  runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import telegram, psycopg2, websockets' >> "$INSTALL_LOG" 2>&1 || die 'Installed interpreter is not executable by the service user.'
   systemctl enable --now "$SERVICE" >> "$INSTALL_LOG" 2>&1 || die 'Bot service did not start.'
-  sleep 5
-  systemctl is-active --quiet "$SERVICE" || die 'Bot process exited after startup.'
+  spinner_run 'Checking bot startup' sleep 5
+  if ! systemctl is-active --quiet "$SERVICE";then
+    warn 'Bot startup failed. Last 60 log lines:'
+    journalctl -u "$SERVICE" -n 60 --no-pager >&2 || true
+    die 'Bot process exited after startup.'
+  fi
   # A full installation includes the Mini App API, not just the Telegram Bot.
   # Keep this inside the rollback transaction: failure restores the old code/units.
   install_web
@@ -425,6 +582,8 @@ create_web_unit() {
 Description=Sonar Radar Pro Secure Mini App API
 Wants=network-online.target
 After=network-online.target postgresql.service
+StartLimitIntervalSec=120
+StartLimitBurst=8
 [Service]
 Type=simple
 User=$APP_USER
@@ -453,7 +612,7 @@ install_web() {
   local port; port="$(read_env SONAR_WEB_PORT)";port="${port:-8090}"
   valid_port "$port" || die 'Invalid configured web API port.'
   say "Installing Mini App API (loopback port $port)"
-  "$APP_DIR/venv/bin/python" -m pip install -r "$APP_DIR/requirements-web.txt" >> "$INSTALL_LOG" 2>&1 || die 'Web dependencies failed.'
+  runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import fastapi, uvicorn' >> "$INSTALL_LOG" 2>&1 || die 'Mini App dependencies missing. Run full installer repair/update.'
   create_web_unit "$port";systemctl daemon-reload
   systemctl enable "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1 || die 'Could not enable Web service.'
   # enable --now does not restart an already-active old process on upgrades.
@@ -619,6 +778,10 @@ status() {
 doctor() {
   section 'INSTALLATION DIAGNOSTICS'
   local problems=0 port
+  if command -v getent >/dev/null 2>&1 && ! getent hosts "$(hostname)" >/dev/null 2>&1;then
+    warn "Hostname $(hostname) does not resolve; verify /etc/hostname and /etc/hosts (not changed automatically)."
+    ((problems+=1))
+  fi
   [[ -f "$APP_DIR/bot.py" ]] && ok 'Bot sources found' || { warn 'Bot code missing';((problems+=1)); }
   [[ -f "$BOT_UNIT" ]] && ok 'Bot unit exists' || { warn 'Bot unit missing';((problems+=1)); }
   if [[ -f "$APP_DIR/sonar_config.json" ]]; then
@@ -627,6 +790,13 @@ doctor() {
   fi
   if systemctl is-active --quiet "$SERVICE";then ok 'Bot service active';else warn 'Bot not active';((problems+=1));fi
   if [[ -x "$APP_DIR/venv/bin/python" ]]; then
+    if id -u "$APP_USER" >/dev/null 2>&1 && runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import sys;print(sys.version)' >/dev/null 2>&1;then
+      ok 'Python executable works as sonar-bot (not root)'
+    else
+      warn 'Python is not executable by sonar-bot. Inspect directory permissions (namei -l).'
+      namei -l "$APP_DIR/venv/bin/python" >&2 || true
+      ((problems+=1))
+    fi
     "$APP_DIR/venv/bin/python" -m compileall -q "$APP_DIR" && ok 'Python compile passes' || { warn 'Python compile failed';((problems+=1)); }
   fi
   port="$(read_env SONAR_WEB_PORT)";port="${port:-8090}"
@@ -708,10 +878,10 @@ menu() {
   while true;do
     clear 2>/dev/null || true
     printf '\n%b  ╭────────────────────────────────────────────────────────╮%b\n' "$C_BLUE" "$C_RESET"
-    printf '%b  │%b  SONAR  /  RADAR                                    %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
-    printf '%b  │%b  PRO 5.2.1 · Deployment & Control Center          %b│%b\n' "$C_BLUE" "$C_DIM" "$C_BLUE" "$C_RESET"
+    printf '%b  │%b    /\  /\        SONAR  /  RADAR                  %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
+    printf '%b  │%b   ( \__/ )       PRO 5.2.2 · Control Center      %b│%b\n' "$C_BLUE" "$C_DIM" "$C_BLUE" "$C_RESET"
     printf '%b  ╰────────────────────────────────────────────────────────╯%b\n' "$C_BLUE" "$C_RESET"
-    printf '  01  Install Full Stack (Bot + DB + Mini App)\n  02  Update application safely\n  03  Install / repair Mini App panel\n  04  Configure domain + HTTPS\n  05  Settings & credentials\n  06  Service management\n  07  Professional logs (live/filter/JSON)\n  08  Create verified backup\n  09  Restore database from .dump\n  10  Diagnostics / health\n  11  Preflight source check\n  12  Uninstall (archive only)\n  13  Repair installed services\n  00  Exit\n\n'
+    printf '  ─────── DEPLOY ────────────────────────────────────────\n  01  Install Full Stack (Bot + DB + Mini App)\n  02  Update application safely\n  03  Install / repair Mini App panel\n  04  Configure domain + HTTPS\n  05  Settings & credentials\n  06  Service management\n  07  Professional logs (live/filter/JSON)\n  08  Create verified backup\n  09  Restore database from .dump\n  10  Diagnostics / health\n  11  Preflight source check\n  12  Uninstall (archive only)\n  13  Repair installed services\n  14  Clean reset + reinstall (includes Sonar database)\n  00  Exit\n\n'
     local choice s a d e p
     read -r -p '  SONAR › ' choice || break
     case "$choice" in
@@ -725,7 +895,7 @@ menu() {
             [[ "$a" =~ ^[Yy]$ ]] && bash "$SOURCE_DIR/scripts/logs.sh" "$s" --follow || bash "$SOURCE_DIR/scripts/logs.sh" "$s";;
       8|08) run --backup;;
       9|09) read -r -p '  Path to verified .dump: ' p;run --restore "$p";;
-      10) run --doctor;;11) run --check;;12) run --uninstall;;13) run --repair;;
+      10) run --doctor;;11) run --check;;12) run --uninstall;;13) run --repair;;14) run --clean-install;;
       0|00) break;; *) warn 'Unknown option.';;
     esac
     printf '\n';read -r -p '  Press Enter to continue...' _ || break
@@ -736,6 +906,8 @@ case "${1:-}" in
   --check) preflight;;
   --install) install_app new;;
   --update) install_app upgrade;;
+  --clean-install) require_root;require_service_host;reset_project_components;install_app new;;
+  --inventory) require_root;require_service_host;existing_components || true;;
   --panel) require_root;require_service_host;ensure_directories;install_web;;
   --domain) require_root;require_service_host;ensure_directories;set_domain "${2:-}";;
   --tls) require_root;require_service_host;ensure_directories;issue_tls "${2:-}" "${3:-}";;
@@ -751,11 +923,13 @@ case "${1:-}" in
   --logs) require_root;shift;bash "$SOURCE_DIR/scripts/logs.sh" "${1:-bot}" "${@:2}";;
   --uninstall) uninstall_app;;
   --help|-h) cat <<'USAGE'
-Sonar Radar Pro 5.2.1 | Deployment Manager
+Sonar Radar Pro 5.2.2 | Deployment Manager
   sudo bash install.sh                 Interactive Apple-inspired terminal UI
   sudo bash install.sh --check         Offline source and OS checks
   sudo bash install.sh --install       Fresh FULL installation: Bot + DB + Mini App
   sudo bash install.sh --update        Upgrade whole stack; archive code and DB
+  sudo bash install.sh --inventory     Detect leftover application services and database
+  sudo bash install.sh --clean-install Archive and reset Sonar data+DB with explicit typed approval, then install
   sudo bash install.sh --panel         Install local Telegram Mini App API
   sudo bash install.sh --domain NAME   Configure nginx HTTP vhost
   sudo bash install.sh --tls NAME EMAIL  Obtain Let's Encrypt certificate
