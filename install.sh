@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sonar Radar Pro 5.2.3 | resilient GitHub deployment manager
+# Sonar Radar Pro 5.2.3 | installer import/DB/cache hotfix
 # Supported: Ubuntu/Debian with systemd. Never execute remotely piped scripts as root.
 set -Eeuo pipefail
 umask 077
@@ -14,6 +14,7 @@ BOT_UNIT=/etc/systemd/system/sonar-bot.service
 WEB_UNIT=/etc/systemd/system/sonar-web.service
 BACKUP_DIR=/var/backups/sonar-radar
 LOG_DIR=/var/log/sonar
+CACHE_DIR=/var/lib/sonar-radar
 INSTALL_LOG=/var/log/sonar-install.log
 DB_NAME=sonar_ultra_pro
 DB_USER=sonar_user
@@ -460,6 +461,10 @@ User=$APP_USER
 Group=$APP_USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$ENV_FILE
+Environment=MPLCONFIGDIR=$CACHE_DIR/matplotlib
+Environment=XDG_CACHE_HOME=$CACHE_DIR/cache
+StateDirectory=sonar-radar
+StateDirectoryMode=0700
 ExecStart=$APP_DIR/venv/bin/python $APP_DIR/bot.py
 StandardOutput=journal
 StandardError=journal
@@ -538,9 +543,26 @@ install_app() {
   # create its journal-backed log files *before* doing the import smoke test.
   chown "$APP_USER:$APP_USER" "$LOG_DIR" || die 'Cannot grant service access to log directory.'
   chmod 0750 "$LOG_DIR" || die 'Cannot secure log directory.'
-  # Import the actual application, not just third-party dependencies, as service user.
-  runuser -u "$APP_USER" -- "$STATE_STAGE/venv/bin/python" -c     'import sys;sys.path.insert(0,sys.argv[1]);import bot, pro_portal, secure_handlers, bot_logic_mod.servers'     "$STATE_STAGE" >> "$INSTALL_LOG" 2>&1 || die 'Service user cannot import Sonar application code. Check $INSTALL_LOG.'
-  # Explicitly check the service account can run the EXACT promoted interpreter.
+  # Matplotlib must not try to write to /opt/radar-sonar/.config.  This path
+  # is owned by the service account, both during smoke tests and after launch.
+  install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$CACHE_DIR" "$CACHE_DIR/matplotlib" "$CACHE_DIR/cache" || die 'Could not prepare application cache.'
+  # The Python interpreter -c starts with the caller's CWD, not the module
+  # directory.  We add the STAGING directory explicitly, and pass the same
+  # database environment that systemd EnvironmentFile will provide at runtime.
+  # Without either fix, import bot raises ModuleNotFoundError or logs the
+  # misleading "fe_sendauth: no password supplied" message.
+  local smoke_db_password
+  smoke_db_password="$(read_env SONAR_DB_PASSWORD)"
+  [[ -n "$smoke_db_password" ]] || die 'Missing SONAR_DB_PASSWORD after database setup.'
+  if ! SONAR_DB_PASSWORD="$smoke_db_password" MPLCONFIGDIR="$CACHE_DIR/matplotlib" XDG_CACHE_HOME="$CACHE_DIR/cache" \
+      runuser -u "$APP_USER" -- "$STATE_STAGE/venv/bin/python" -c \
+      'import sys;sys.path.insert(0,sys.argv[1]);import bot, pro_portal, secure_handlers, bot_logic_mod.servers' \
+      "$STATE_STAGE" >> "$INSTALL_LOG" 2>&1; then
+    warn 'Staging application imports failed. Diagnostic output follows:'
+    tail -n 40 "$INSTALL_LOG" >&2 || true
+    die 'Service user cannot import Sonar application code; see installer log.'
+  fi
+  # Explicitly check the service account can run all key dependencies.
   runuser -u "$APP_USER" -- "$STATE_STAGE/venv/bin/python" -c 'import sys, telegram, psycopg2, websockets, fastapi, uvicorn; print(sys.version.split()[0])' >> "$INSTALL_LOG" 2>&1 || die 'Service user cannot execute Python/dependencies (permission or import failure).'
   chown "$APP_USER:$APP_USER" "$STATE_STAGE/sonar_config.json" "$STATE_STAGE/secret.key"
   chmod 0600 "$STATE_STAGE/sonar_config.json" "$STATE_STAGE/secret.key"
@@ -560,7 +582,16 @@ install_app() {
   create_unit
   systemctl daemon-reload
   systemd-analyze verify "$BOT_UNIT" >> "$INSTALL_LOG" 2>&1 || die 'Invalid systemd unit generated.'
-  runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import telegram, psycopg2, websockets, bot, pro_portal' >> "$INSTALL_LOG" 2>&1 || die 'Installed Python source is not importable by the service user.'
+  # Confirm promoted code can be imported regardless of installer CWD
+  # (e.g. /root when started by sudo).  Do not print the DB password.
+  if ! SONAR_DB_PASSWORD="$(read_env SONAR_DB_PASSWORD)" MPLCONFIGDIR="$CACHE_DIR/matplotlib" XDG_CACHE_HOME="$CACHE_DIR/cache" \
+      runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c \
+      'import sys;sys.path.insert(0,sys.argv[1]);import telegram, psycopg2, websockets, bot, pro_portal' \
+      "$APP_DIR" >> "$INSTALL_LOG" 2>&1; then
+    warn 'Installed source import failed; last installer log lines:'
+    tail -n 45 "$INSTALL_LOG" >&2 || true
+    die 'Installed Python source is not importable by the service user.'
+  fi
   systemctl enable --now "$SERVICE" >> "$INSTALL_LOG" 2>&1 || die 'Bot service did not start.'
   spinner_run 'Checking bot startup' sleep 5
   if ! systemctl is-active --quiet "$SERVICE";then
@@ -605,6 +636,10 @@ User=$APP_USER
 Group=$APP_USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$ENV_FILE
+Environment=MPLCONFIGDIR=$CACHE_DIR/matplotlib
+Environment=XDG_CACHE_HOME=$CACHE_DIR/cache
+StateDirectory=sonar-radar
+StateDirectoryMode=0700
 ExecStart=$APP_DIR/venv/bin/python -m uvicorn pro_portal:app --host 127.0.0.1 --port $port --workers 2 --access-log
 StandardOutput=journal
 StandardError=journal
@@ -807,6 +842,11 @@ doctor() {
   if [[ -x "$APP_DIR/venv/bin/python" ]]; then
     if id -u "$APP_USER" >/dev/null 2>&1 && runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import sys;print(sys.version)' >/dev/null 2>&1;then
       ok 'Python executable works as sonar-bot (not root)'
+      if PYTHONPATH="$APP_DIR" runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import importlib.util;assert importlib.util.find_spec("bot") is not None;assert importlib.util.find_spec("pro_portal") is not None' >/dev/null 2>&1; then
+        ok 'Application modules are discoverable as sonar-bot'
+      else
+        warn 'Application modules not discoverable as sonar-bot';((problems+=1))
+      fi
     else
       warn 'Python is not executable by sonar-bot. Inspect directory permissions (namei -l).'
       namei -l "$APP_DIR/venv/bin/python" >&2 || true
@@ -821,6 +861,13 @@ doctor() {
   else warn 'Mini App not running';((problems+=1));fi
   if systemctl is-active --quiet postgresql;then
     if runuser -u postgres -- psql -tAc 'SELECT 1' | grep -qx 1;then ok 'PostgreSQL responds';else warn 'PostgreSQL unhealthy';((problems+=1));fi
+    local db_health_password
+    db_health_password="$(read_env SONAR_DB_PASSWORD)"
+    if [[ -n "$db_health_password" ]] && PGPASSWORD="$db_health_password" psql -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" -tAc 'SELECT 1' 2>> "$INSTALL_LOG" | grep -qx 1; then
+      ok 'Sonar database login works with configured password'
+    else
+      warn 'Sonar database credentials missing or authentication failed';((problems+=1))
+    fi
   fi
   if ((problems));then warn "$problems diagnostic warnings. Check journalctl and README.";return 1;fi
   ok 'Checks passed. Telegram/remote agent end-to-end verification still required.'
