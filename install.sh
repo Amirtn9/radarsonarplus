@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sonar Radar Pro 5.2 | Secure, interactive deployment manager
+# Sonar Radar Pro 5.2.1 | GitHub deployment manager
 # Supported: Ubuntu/Debian with systemd. Never execute remotely piped scripts as root.
 set -Eeuo pipefail
 umask 077
@@ -20,6 +20,10 @@ DB_USER=sonar_user
 NGINX_SITE=/etc/nginx/sites-available/sonar-radar.conf
 NGINX_LINK=/etc/nginx/sites-enabled/sonar-radar.conf
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# The same canonical repository is used for the public bootstrap and documentation.
+GITHUB_REPOSITORY='Amirtn9/radarsonarplus'
+GITHUB_BRANCH='main'
+GITHUB_URL="https://github.com/${GITHUB_REPOSITORY}.git"
 STATE_STAGE=''; STATE_OLD=''; STATE_SWITCH=0; STATE_OLD_PRESENT=0
 STATE_BOT_ACTIVE=0; STATE_WEB_ACTIVE=0; STATE_BOT_UNIT=''; STATE_WEB_UNIT=''
 STATE_OK=0
@@ -27,10 +31,15 @@ STATE_OK=0
 # Standalone GitHub bootstrap: makes the published three-line wget installer work.
 # If this file was downloaded without its repository, fetch an isolated checkout
 # of the same public project and run the full installer from that checkout.
-if [[ ! -f "$SOURCE_DIR/bot.py" ]]; then
+if [[ ! -f "$SOURCE_DIR/bot.py" || ! -f "$SOURCE_DIR/pro_portal.py" || ! -f "$SOURCE_DIR/requirements.txt" ]]; then
   if (( EUID != 0 )); then
     printf 'Administrator access required: run sudo ./install.sh\n' >&2
     exit 1
+  fi
+  if [[ "${1:-}" == '--help' || "${1:-}" == '-h' ]]; then
+    printf 'Sonar Radar Pro: download the full source from %s, then show the management menu.\n' "$GITHUB_URL"
+    printf 'Run with sudo: sudo ./install.sh [--install | --update | --check | --doctor | --logs ...]\n'
+    exit 0
   fi
   if [[ ! -d /opt ]]; then
     printf 'Missing /opt directory; unsupported host.\n' >&2
@@ -45,12 +54,12 @@ if [[ ! -f "$SOURCE_DIR/bot.py" ]]; then
   _sonar_bootstrap_dir="$(mktemp -d /opt/.sonar-bootstrap.XXXXXXXX)"
   trap 'rm -rf -- "$_sonar_bootstrap_dir"' EXIT
   printf 'Fetching Sonar Radar full source from GitHub...\n'
-  if ! GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch main -- \
-      'https://github.com/Amirtn9/radarsonarlpus.git' "$_sonar_bootstrap_dir/source"; then
+  if ! GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$GITHUB_BRANCH" -- \
+      "$GITHUB_URL" "$_sonar_bootstrap_dir/source"; then
     printf 'Cannot clone GitHub repository. Ensure the project exists, is public, and main is published.\n' >&2
     exit 1
   fi
-  if [[ ! -f "$_sonar_bootstrap_dir/source/bot.py" || ! -f "$_sonar_bootstrap_dir/source/install.sh" ]]; then
+  if [[ ! -f "$_sonar_bootstrap_dir/source/bot.py" || ! -f "$_sonar_bootstrap_dir/source/install.sh" || ! -f "$_sonar_bootstrap_dir/source/pro_portal.py" ]]; then
     printf 'Repository does not contain the complete Sonar Radar source.\n' >&2
     exit 1
   fi
@@ -200,6 +209,11 @@ PY
 prepare_release() {
   STATE_STAGE="$(mktemp -d /opt/.sonar-stage.XXXXXXXX)"
   tar -C "$SOURCE_DIR" --exclude='./venv' --exclude='./.venv' --exclude='./.git' --exclude='./__pycache__' --exclude='./.pytest_cache' --exclude='./secret.key' --exclude='./.env' --exclude='./tests' --exclude='./logs' -cf - . | tar -C "$STATE_STAGE" -xf -
+  if command -v git >/dev/null 2>&1 && git -C "$SOURCE_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+    git -C "$SOURCE_DIR" rev-parse HEAD > "$STATE_STAGE/SOURCE_REVISION"
+  else
+    printf 'archive-unknown\n' > "$STATE_STAGE/SOURCE_REVISION"
+  fi
   if [[ ! -f "$STATE_STAGE/sonar_config.json" && -f "$STATE_STAGE/sonar_config.example.json" ]]; then
     cp "$STATE_STAGE/sonar_config.example.json" "$STATE_STAGE/sonar_config.json"
   fi
@@ -382,13 +396,11 @@ install_app() {
   systemctl enable --now "$SERVICE" >> "$INSTALL_LOG" 2>&1 || die 'Bot service did not start.'
   sleep 5
   systemctl is-active --quiet "$SERVICE" || die 'Bot process exited after startup.'
-  if (( STATE_WEB_ACTIVE == 1 )); then
-    # web unit uses stable APP_DIR symlink-free path.
-    systemctl restart "$WEB_SERVICE" || die 'Existing web service failed to restart.'
-    systemctl is-active --quiet "$WEB_SERVICE" || die 'Web service is not active.'
-  fi
+  # A full installation includes the Mini App API, not just the Telegram Bot.
+  # Keep this inside the rollback transaction: failure restores the old code/units.
+  install_web
   STATE_SWITCH=0;STATE_OK=1
-  ok "Bot running. Git source and installer are at: $APP_DIR"
+  ok "Full stack installed: Bot, PostgreSQL and private Mini App API ($APP_DIR)"
   say 'Run --doctor and test Telegram /start before migrating production traffic.'
   [[ -z "$STATE_OLD" ]] || say "Previous source archived at: $STATE_OLD"
 }
@@ -443,8 +455,18 @@ install_web() {
   say "Installing Mini App API (loopback port $port)"
   "$APP_DIR/venv/bin/python" -m pip install -r "$APP_DIR/requirements-web.txt" >> "$INSTALL_LOG" 2>&1 || die 'Web dependencies failed.'
   create_web_unit "$port";systemctl daemon-reload
-  systemctl enable --now "$WEB_SERVICE" || die 'Web service failed.'
-  curl --fail --silent --max-time 8 "http://127.0.0.1:${port}/healthz" >/dev/null || die 'Web API health check failed.'
+  systemctl enable "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1 || die 'Could not enable Web service.'
+  # enable --now does not restart an already-active old process on upgrades.
+  systemctl restart "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1 || die 'Web service failed.'
+  local attempts=0
+  until curl --fail --silent --max-time 3 "http://127.0.0.1:${port}/healthz" >/dev/null; do
+    ((attempts+=1))
+    if ((attempts >= 12)); then
+      journalctl -u "$WEB_SERVICE" -n 30 --no-pager >&2 || true
+      die 'Web API failed its HTTP health check.'
+    fi
+    sleep 1
+  done
   ok "Mini App API active on http://127.0.0.1:$port"
   say 'To publish: configure domain + HTTPS. Never expose this port publicly.'
 }
@@ -537,10 +559,21 @@ change_setting() {
     SONAR_WS_POOL_MAX|SONAR_GLOBAL_TEST_LIMIT|SONAR_USER_TEST_LIMIT|SONAR_DB_POOL_MAX|SONAR_EXECUTOR_WORKERS)
       [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 && value <= 128 )) || die 'Value must be between 1 and 128.'
       set_env "$key" "$value";;
+    SONAR_LOG_LEVEL)
+      [[ "$value" =~ ^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$ ]] || die 'Invalid log level.'
+      set_env "$key" "$value";;
+    SONAR_MINIAPP_SESSION_MAX_AGE)
+      [[ "$value" =~ ^[0-9]{2,6}$ ]] && (( 10#$value >= 300 && 10#$value <= 86400 )) || die 'Session age must be 300..86400s.'
+      set_env "$key" "$value";;
     SONAR_WEB_PORT) configure_web_port "$value";;
     *) die 'Unsupported setting';;
   esac
-  if [[ "$key" != SONAR_WEB_PORT ]]; then systemctl restart "$SERVICE" || die 'Bot restart failed.';fi
+  if [[ "$key" != SONAR_WEB_PORT ]]; then
+    systemctl restart "$SERVICE" || die 'Bot restart failed.'
+    if [[ "$key" == SONAR_LOG_LEVEL || "$key" == SONAR_MINIAPP_SESSION_MAX_AGE ]]; then
+      if systemctl is-active --quiet "$WEB_SERVICE"; then systemctl restart "$WEB_SERVICE" || die 'Web restart failed.'; fi
+    fi
+  fi
   ok "$key updated."
 }
 trust_ssh_host() {
@@ -575,6 +608,8 @@ service_command() {
 }
 status() {
   section 'SERVICE HEALTH'
+  if [[ -f "$APP_DIR/VERSION" ]];then say "Release: $(cat "$APP_DIR/VERSION")";fi
+  if [[ -f "$APP_DIR/SOURCE_REVISION" ]];then say "Source: $(cat "$APP_DIR/SOURCE_REVISION")";fi
   for s in "$SERVICE" "$WEB_SERVICE" postgresql nginx; do
     if systemctl is-active --quiet "$s" 2>/dev/null;then ok "$s: active"; else warn "$s: not active";fi
   done
@@ -595,9 +630,10 @@ doctor() {
     "$APP_DIR/venv/bin/python" -m compileall -q "$APP_DIR" && ok 'Python compile passes' || { warn 'Python compile failed';((problems+=1)); }
   fi
   port="$(read_env SONAR_WEB_PORT)";port="${port:-8090}"
+  if [[ ! -f "$WEB_UNIT" ]];then warn 'Mini App unit missing';((problems+=1));fi
   if systemctl is-active --quiet "$WEB_SERVICE";then
     if curl -fsS --max-time 6 "http://127.0.0.1:$port/healthz" >/dev/null;then ok 'Web API health OK';else warn 'Web API health FAIL';((problems+=1));fi
-  fi
+  else warn 'Mini App not running';((problems+=1));fi
   if systemctl is-active --quiet postgresql;then
     if runuser -u postgres -- psql -tAc 'SELECT 1' | grep -qx 1;then ok 'PostgreSQL responds';else warn 'PostgreSQL unhealthy';((problems+=1));fi
   fi
@@ -673,9 +709,9 @@ menu() {
     clear 2>/dev/null || true
     printf '\n%b  ╭────────────────────────────────────────────────────────╮%b\n' "$C_BLUE" "$C_RESET"
     printf '%b  │%b  SONAR  /  RADAR                                    %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
-    printf '%b  │%b  PRO 5.2  ·  Deployment & Control Center          %b│%b\n' "$C_BLUE" "$C_DIM" "$C_BLUE" "$C_RESET"
+    printf '%b  │%b  PRO 5.2.1 · Deployment & Control Center          %b│%b\n' "$C_BLUE" "$C_DIM" "$C_BLUE" "$C_RESET"
     printf '%b  ╰────────────────────────────────────────────────────────╯%b\n' "$C_BLUE" "$C_RESET"
-    printf '  01  Install from this Git checkout\n  02  Update application safely\n  03  Install / repair Mini App panel\n  04  Configure domain + HTTPS\n  05  Settings & credentials\n  06  Service management\n  07  Professional logs (live/filter/JSON)\n  08  Create verified backup\n  09  Restore database from .dump\n  10  Diagnostics / health\n  11  Preflight source check\n  12  Uninstall (archive only)\n  13  Repair installed services\n  00  Exit\n\n'
+    printf '  01  Install Full Stack (Bot + DB + Mini App)\n  02  Update application safely\n  03  Install / repair Mini App panel\n  04  Configure domain + HTTPS\n  05  Settings & credentials\n  06  Service management\n  07  Professional logs (live/filter/JSON)\n  08  Create verified backup\n  09  Restore database from .dump\n  10  Diagnostics / health\n  11  Preflight source check\n  12  Uninstall (archive only)\n  13  Repair installed services\n  00  Exit\n\n'
     local choice s a d e p
     read -r -p '  SONAR › ' choice || break
     case "$choice" in
@@ -715,11 +751,11 @@ case "${1:-}" in
   --logs) require_root;shift;bash "$SOURCE_DIR/scripts/logs.sh" "${1:-bot}" "${@:2}";;
   --uninstall) uninstall_app;;
   --help|-h) cat <<'USAGE'
-Sonar Radar Pro 5.2 | Deployment Manager
+Sonar Radar Pro 5.2.1 | Deployment Manager
   sudo bash install.sh                 Interactive Apple-inspired terminal UI
   sudo bash install.sh --check         Offline source and OS checks
-  sudo bash install.sh --install       Fresh installation
-  sudo bash install.sh --update        Upgrade; archives code and DB before switching
+  sudo bash install.sh --install       Fresh FULL installation: Bot + DB + Mini App
+  sudo bash install.sh --update        Upgrade whole stack; archive code and DB
   sudo bash install.sh --panel         Install local Telegram Mini App API
   sudo bash install.sh --domain NAME   Configure nginx HTTP vhost
   sudo bash install.sh --tls NAME EMAIL  Obtain Let's Encrypt certificate

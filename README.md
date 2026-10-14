@@ -2,7 +2,7 @@
 <p align="center"><strong>مدیریت، پایش و کنترل سرورها از تلگرام و پنل وب</strong></p>
 <p align="center">Telegram Bot · Secure WSS Agent · Mini App · Monitoring Dashboard</p>
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-5.2.0--security-2563eb?style=for-the-badge">
+  <img alt="Version" src="https://img.shields.io/badge/version-5.2.1--github-2563eb?style=for-the-badge">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776ab?style=for-the-badge&amp;logo=python&amp;logoColor=white">
   <img alt="Platform" src="https://img.shields.io/badge/Ubuntu%20%7C%20Debian-Linux-111827?style=for-the-badge&amp;logo=linux&amp;logoColor=white">
   <img alt="Status" src="https://img.shields.io/badge/release-staging%20validation-f59e0b?style=for-the-badge">
@@ -21,38 +21,38 @@
 
 **Sonar Radar Pro** سامانه‌ای برای مدیریت و پایش زیرساخت‌های سروری از طریق **ربات تلگرام** و **Telegram Mini App** است. پروژه از یک ایجنت راه‌دور با ارتباط رمزنگاری‌شده، ذخیره‌سازی PostgreSQL، مدیریت پیکربندی‌ها و مشاهده گزارش‌ها استفاده می‌کند.
 
-> **وضعیت انتشار:** نسخه `5.2.0-security` برای بررسی و تست روی سرور آزمایشی آماده شده است. نصب واقعی روی Ubuntu تمیز، اتصال زنده تلگرام، PostgreSQL و ثبت ایجنت‌ها هنوز به تأیید عملی در محیط شما نیاز دارد. از آن مستقیماً به‌عنوان نسخه Production تضمین‌شده استفاده نکنید.
+> **وضعیت انتشار:** نسخه `5.2.1-github` برای بررسی و تست روی سرور آزمایشی آماده شده است. نصب واقعی روی Ubuntu تمیز، اتصال زنده تلگرام، PostgreSQL و ثبت ایجنت‌ها هنوز به تأیید عملی در محیط شما نیاز دارد. از آن مستقیماً به‌عنوان نسخه Production تضمین‌شده استفاده نکنید.
 
 <a id="installation"></a>
 
 ## 🚀 نصب سریع
 
-برای شروع، روی سرور **Ubuntu/Debian دارای systemd** وارد ترمینال شوید و این سه دستور را اجرا کنید:
+برای شروع، روی سرور **Ubuntu/Debian دارای systemd** وارد ترمینال شوید و این سه دستور را اجرا کنید (این کد را قبل از اجرا از مخزن بررسی کنید):
 
 ```bash
-wget https://raw.githubusercontent.com/Amirtn9/radarsonarlpus/main/install.sh
+wget https://raw.githubusercontent.com/Amirtn9/radarsonarplus/main/install.sh
 chmod +x install.sh
 ./install.sh
 ```
 
 > اگر با کاربر `root` وارد نشده‌اید، دستور آخر را به‌صورت `sudo ./install.sh` اجرا کنید. اجرای این فایل دسترسی مدیریتی می‌خواهد.
 
-اسکریپت ابتدا سورس کامل پروژه را از همان مخزن GitHub دریافت می‌کند و سپس **منوی تعاملی نصب** را باز می‌کند. مراحل پیشنهادی در منو:
+اسکریپت ابتدا سورس کامل پروژه را از مخزن **[Amirtn9/radarsonarplus](https://github.com/Amirtn9/radarsonarplus)** دریافت می‌کند و سپس منوی تعاملی نصب را باز می‌کند. **گزینه 01 به‌تنهایی Bot + PostgreSQL + پنل Mini App را نصب و با systemd فعال می‌کند**. برای عرضه عمومی پنل در تلگرام، دامنه و SSL جداگانه لازم‌اند. مراحل پیشنهادی در منو:
 
-1. انتخاب **`01`** برای نصب ربات و وابستگی‌ها؛ توکن ربات تلگرام و شناسه عددی ادمین در سرور درخواست می‌شوند.
-2. انتخاب **`03`** برای نصب API پنل Mini App روی آدرس محلی سرور.
+1. انتخاب **`01`** برای نصب یک‌جای ربات، PostgreSQL، پنل Mini App و سرویس‌های systemd؛ توکن ربات و شناسه عددی ادمین درخواست می‌شوند.
+2. گزینه **`03`** فقط برای نصب مجدد یا تعمیر پنل به‌صورت مستقل کاربرد دارد.
 3. انتخاب **`04`** برای تنظیم دامنه و دریافت گواهی HTTPS، در صورت داشتن دامنه معتبر.
 4. انتخاب **`10`** برای بررسی سلامت سرویس‌ها و سپس تست دستور `/start` در تلگرام.
 
-**پیش‌نیاز لینک دانلود:** مخزن `Amirtn9/radarsonarlpus` باید وجود داشته باشد، عمومی باشد و فایل `install.sh` و بقیه سورس در شاخه `main` منتشر شده باشند. پیش از انتشار، دانلود با خطای 404 روبه‌رو می‌شود.
+**پیش‌نیاز:** فایل‌های نسخه جدید باید در شاخه `main` مخزن عمومی [`Amirtn9/radarsonarplus`](https://github.com/Amirtn9/radarsonarplus) قرار بگیرند. لینک دانلود فعلی GitHub تا قبل از آپلود نسخه جدید، این اصلاحات را ندارد.
 
 ### روش جایگزین: نصب از کل مخزن
 
 اگر ترجیح می‌دهید قبل از اجرا کدها را بررسی کنید:
 
 ```bash
-git clone https://github.com/Amirtn9/radarsonarlpus.git
-cd radarsonarlpus
+git clone https://github.com/Amirtn9/radarsonarplus.git
+cd radarsonarplus
 bash install.sh --check
 sudo bash install.sh
 ```
@@ -81,10 +81,10 @@ sudo bash install.sh
 ```text
 ╭───────────────────────────────────────────────────────╮
 │                    🦇 SONAR / RADAR                  │
-│                 PRO 5.2 · Control Center            │
+│                 PRO 5.2.1 · Control Center            │
 ╰───────────────────────────────────────────────────────╯
 
-01  Install from this Git checkout
+01  Install Full Stack (Bot + DB + Mini App)
 02  Update application safely
 03  Install / repair Mini App panel
 04  Configure domain + HTTPS
@@ -181,7 +181,7 @@ sudo journalctl -u sonar-web -n 100 --no-pager
 sudo bash install.sh --repair
 ```
 
-`--repair` برای اصلاح و بازراه‌اندازی سرویس‌های نصب‌شده است و مشکلات DNS، فایروال، دیتابیس یا ناسازگاری کد را لزوماً برطرف نمی‌کند.
+`--repair` فقط کامپایل و بازراه‌اندازی سرویس‌های نصب‌شده را بررسی می‌کند؛ رفع DNS، فایروال، دیتابیس یا ناسازگاری کد را تضمین نمی‌کند.
 
 </details>
 
@@ -202,7 +202,7 @@ sudo bash install.sh --repair
 ## 🧱 ساختار پروژه
 
 ```text
-radarsonarlpus/
+radarsonarplus/
 ├── install.sh               # Installer & Service Manager
 ├── bot.py                   # Telegram Bot
 ├── core.py                  # Core & Agent Enrollment
@@ -242,14 +242,14 @@ python3 -m pytest -q tests
 
 1. از دیتابیس، تنظیمات و کلید رمزنگاری نسخه پشتیبان تهیه و **خارج از سرور** نگهداری کنید.
 2. فایل‌های پروژه را در مخزن به نسخه جدید به‌روزرسانی کنید.
-3. سورس جدید را دریافت کنید و از داخل همان پوشه `sudo bash install.sh --update` اجرا کنید.
+3. سورس جدید را دریافت کنید و از داخل همان پوشه `sudo bash install.sh --update` اجرا کنید. اگر `install.sh` را با `wget` دوباره دانلود کرده‌اید، همان فایل ابتدا آخرین سورس `main` را می‌گیرد و بعد `--update` را اجرا می‌کند.
 4. نتیجه `--doctor` و لاگ‌ها را بررسی کنید.
 
 > نکته: Rollback کد لزوماً تغییرات Schema دیتابیس را به عقب برنمی‌گرداند. قبل از ارتقای نسخه‌های دارای Migration حتماً بکاپ معتبر داشته باشید.
 
 ## 📎 لینک پروژه
 
-**GitHub:** [Amirtn9/radarsonarlpus](https://github.com/Amirtn9/radarsonarlpus)
+**GitHub:** [Amirtn9/radarsonarplus](https://github.com/Amirtn9/radarsonarplus)
 
 ---
 

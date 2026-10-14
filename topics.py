@@ -1,5 +1,6 @@
 import asyncio
 import io
+import os
 import requests
 from runtime import SHARED_EXECUTOR  # 🔧 v4.2
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -52,7 +53,12 @@ async def get_group_id_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_group_photo(context, group_id):
     """تابع کمکی برای تغییر عکس پروفایل گروه"""
-    PHOTO_URL = "https://raw.githubusercontent.com/Amirtn9/Radar-Sonar/main/sonar-radar-logo.png"
+    # Optional project image. Can be configured without a hard-coded obsolete repo URL.
+    PHOTO_URL = os.getenv('SONAR_GROUP_PHOTO_URL', '').strip()
+    if not PHOTO_URL:
+        return False, 'عکس گروه تنظیم نشده است (SONAR_GROUP_PHOTO_URL).'
+    if not PHOTO_URL.startswith('https://'):
+        return False, 'آدرس عکس گروه باید HTTPS باشد.' 
     try:
         # دانلود عکس (در ترد جداگانه)
         def _dl():

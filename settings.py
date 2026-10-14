@@ -2,7 +2,7 @@ import os
 import logging
 import json
 
-PROJECT_VERSION = "5.2.0-security"
+PROJECT_VERSION = "5.2.1-github"
 
 # ==============================================================================
 # 📂 FILE PATHS CONFIGURATION
