@@ -44,11 +44,11 @@ def owned_context(update,context):
     # Workspace switch is an explicit command; default always own workspace.
     return int(context.user_data.get('pro_workspace') or update.effective_user.id)
 
-async def safe_call(update,context,fn,*args,write=False):
+async def safe_call(update,context,fn,*args,write=False,**kwargs):
     actor=update.effective_user.id;owner=owned_context(update,context)
     try:
         await invoke(store.require,actor,owner,write)
-        return await invoke(fn,*args)
+        return await invoke(fn,*args,**kwargs)
     except (PermissionError,ValueError) as exc:
         await display(update,'⛔ '+e(str(exc)),kb(nav()))
         return None

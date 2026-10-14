@@ -60,6 +60,25 @@ LAST_CONFIG_REPORT_MIN = {}
 # 🔄 SCHEDULED JOBS
 # ==============================================================================
 
+async def notify_server_owner(context, owner_id, message, category='down'):
+    """Respect configured resource/down channels; fall back to owner's DM."""
+    try:
+        channels = await asyncio.to_thread(db.get_user_channels, owner_id)
+        targets = [c for c in channels if c.get('usage_type') in ('all',category)]
+        if not targets:
+            targets = [{'chat_id':owner_id}]
+        for target in targets:
+            try:
+                kwargs={'chat_id':target['chat_id'],'text':message}
+                if target.get('topic_id'):
+                    kwargs['message_thread_id']=int(target['topic_id'])
+                await context.bot.send_message(**kwargs)
+            except Exception:
+                logger.exception('Owner channel alert delivery failed (owner=%s)', owner_id)
+    except Exception:
+        logger.exception('Owner alert delivery failed (owner=%s)', owner_id)
+
+
 async def global_monitor_job(context: ContextTypes.DEFAULT_TYPE):
     """بررسی وضعیت کلی سرورها (منابع)"""
     try:
@@ -72,7 +91,8 @@ async def global_monitor_job(context: ContextTypes.DEFAULT_TYPE):
 
         for srv in active_servers:
             # اجرای تسک برای هر سرور بدون بلاک کردن بقیه
-            asyncio.create_task(check_single_server_resources(context, srv))
+            task = asyncio.create_task(check_single_server_resources(context, srv))
+            task.add_done_callback(lambda t: logger.error('Monitor task failed: %s', t.exception()) if not t.cancelled() and t.exception() else None)
             
     except Exception as e:
         logger.error(f"Global Monitor Job Error: {e}")
@@ -98,7 +118,14 @@ async def check_single_server_resources(context, srv):
         stats = await StatsManager.check_full_stats(ip, srv['port'], srv['username'], real_pass, ws_port=srv.get('ws_port'))
         
         # 2. بررسی وضعیت آنلاین/آفلاین
-        if stats. get('status') == 'Offline':
+        owner = int(srv['owner_id'])
+        is_offline = stats.get('status') not in ('Online','OK')
+        await asyncio.to_thread(db.record_monitor_result, sid, owner,
+                                'Offline' if is_offline else 'Online',
+                                None if is_offline else stats.get('cpu'),
+                                None if is_offline else stats.get('ram'),
+                                stats.get('error','') if is_offline else '')
+        if is_offline:
             fail_count = SERVER_FAILURE_COUNTS.get(sid, 0) + 1
             SERVER_FAILURE_COUNTS[sid] = fail_count
             
@@ -112,7 +139,7 @@ async def check_single_server_resources(context, srv):
                     except Exception:logger.exception('Pro incident persistence failed')
                 if fail_count == DOWN_RETRY_LIMIT:   # فقط بار اول پیام بده
                     msg = AlertManager.get_down_alert_msg(name, stats. get('error', 'Timeout'))
-                    await alert_admin(context, msg)
+                    await notify_server_owner(context, owner, msg)
             return
         else:
             # اگر سرور برگشت، ریست کن
@@ -123,8 +150,25 @@ async def check_single_server_resources(context, srv):
                     await asyncio.to_thread(ProStore().incident, srv['owner_id'], 'server',sid,
                                             'server_down', f'بازیابی سرور {name}', 'critical',False)
                 except Exception:logger.exception('Pro incident resolution failed')
-                # پیام بازگشت (اختیاری)
-                # await alert_admin(context, f"✅ سرور {name} آنلاین شد.")
+                await notify_server_owner(context, owner, f"✅ سرور {name} دوباره آنلاین شد.")
+            # Honor the thresholds configured in the server settings menu.
+            for metric, setting, default in (('cpu','cpu_threshold',80),
+                                             ('ram','ram_threshold',80),
+                                             ('disk','disk_threshold',90)):
+                try:
+                    value = float(stats.get(metric) or 0)
+                    threshold = float(await asyncio.to_thread(db.get_setting, owner, setting) or default)
+                    threshold = min(100,max(1,threshold))
+                except (ValueError, TypeError):
+                    continue
+                flag = (sid,metric)
+                if value >= threshold and not CPU_ALERT_TRACKER.get(flag):
+                    CPU_ALERT_TRACKER[flag] = True
+                    await notify_server_owner(context, owner,
+                        f'⚠️ {name}: {metric.upper()} {value:.1f}% بالاتر از حد {threshold:.0f}%',
+                        category='resource')
+                elif value < max(0,threshold-5):
+                    CPU_ALERT_TRACKER.pop(flag,None)
 
     except Exception as e:
         logger.error(f"Error checking server {name}: {e}")

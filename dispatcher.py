@@ -47,6 +47,7 @@ def register_all_handlers(app:  Application):
             CallbackQueryHandler(bot_logic.admin_backup_restore_start, pattern='^admin_backup_restore_start$'),
             CallbackQueryHandler(admin_panel.admin_broadcast_start, pattern='^admin_broadcast_start$'),
             CallbackQueryHandler(admin_panel.admin_user_servers_report, pattern='^admin_u_servers_'),
+            CallbackQueryHandler(admin_panel.admin_agent_install_run, pattern=r'^admin_agent_install_all$'),
             CallbackQueryHandler(admin_panel.admin_search_servers_by_uid_start, pattern='^admin_search_servers_by_uid_start$'),
             CallbackQueryHandler(bot_logic.admin_server_detail_action, pattern='^admin_detail_'),
             CallbackQueryHandler(admin_panel.admin_full_report_global_action, pattern='^admin_full_report_global$'),
@@ -145,7 +146,10 @@ def register_all_handlers(app:  Application):
             ADMIN_RESTORE_DB: [MessageHandler(filters.Document.ALL, bot_logic.admin_backup_restore_handler)],
             GET_BROADCAST_MSG: [MessageHandler(filters.ALL & ~filters.COMMAND, admin_panel.admin_broadcast_send)],
             ADMIN_GET_UID_FOR_REPORT: [MessageHandler(filters.TEXT, admin_panel.admin_report_by_uid_handler)],
-            ADMIN_AGENT_PORT_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_panel.admin_agent_port_input)],
+            ADMIN_AGENT_PORT_INPUT: [
+                MessageHandler(filters.Regex(r'^/cancel$'), admin_panel.admin_agent_cancel),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_panel.admin_agent_port_input),
+            ],
             
             ADD_PAY_NET: [MessageHandler(text_filter, bot_logic.get_pay_network)],
             ADD_PAY_ADDR: [MessageHandler(text_filter, bot_logic.get_pay_address)],
@@ -237,7 +241,7 @@ def register_all_handlers(app:  Application):
         '^admin_agent_dashboard$': admin_panel.admin_agent_dashboard,
         '^admin_agent_logs$': admin_panel.admin_agent_logs_menu,
         '^admin_agent_install_menu$': admin_panel.admin_agent_install_menu,
-        '^admin_agent_install_': admin_panel.admin_agent_install_run,
+        '^admin_agent_install_[0-9]+$': admin_panel.admin_agent_install_run,
         '^admin_agent_log_': admin_panel.admin_agent_log_view,
         '^admin_agent_reconnect_all$': admin_panel.admin_agent_reconnect_all,
         '^admin_users_page_': admin_panel.admin_users_list,

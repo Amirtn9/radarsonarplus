@@ -277,7 +277,7 @@ async def get_sub_links_action(update: Update, context: ContextTypes.DEFAULT_TYP
     sub_id = int(query.data.split('_')[3])
     
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (update.effective_user.id, sub_id))
+        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, update.effective_user.id))
         sub = cur.fetchone()
         if not sub:
             await query.answer("❌ اشتراک یافت نشد.", show_alert=True)
@@ -321,14 +321,19 @@ async def delete_full_subscription(update: Update, context: ContextTypes.DEFAULT
     
     # 1. حذف از دیتابیس
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (update.effective_user.id, sub_id))
+        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, update.effective_user.id))
         sub = cur.fetchone()
-        if sub:
-            # حذف سورس
-            cur.execute("DELETE FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (uid, sub_id))
-            cur.execute("DELETE FROM tunnel_configs WHERE id=%s AND owner_id=%s", (sub_id, uid))
-            conn.commit()
-            
+        if not sub:
+            await query.answer("❌ اشتراک یافت نشد.", show_alert=True)
+            return
+        cur.execute("DELETE FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (uid, sub_id))
+        cur.execute("DELETE FROM tunnel_configs WHERE id=%s AND owner_id=%s", (sub_id, uid))
+        if cur.rowcount != 1:
+            conn.rollback()
+            await query.answer("❌ حذف اشتراک تأیید نشد.", show_alert=True)
+            return
+        conn.commit()
+
     # 2. نمایش پیام موفقیت (داخل try برای جلوگیری از کرش)
     try:
         await query.answer("✅ اشتراک حذف شد.", show_alert=True)

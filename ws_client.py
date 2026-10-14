@@ -54,6 +54,7 @@ class _Conn:
     created_at: float
     last_used_at: float
     lock: asyncio.Lock
+    disposed: bool = False
 
     @property
     def is_open(self) -> bool:
@@ -152,6 +153,13 @@ class WebSocketPool:
                         return json.loads(raw)
                     except Exception:
                         return {"error": "invalid_json", "raw": raw}
+            except asyncio.CancelledError:
+                # An in-flight response must never be delivered to the next request.
+                # Shield disposal so cancellation cannot interrupt socket cleanup.
+                if conn is not None:
+                    doomed, conn = conn, None
+                    await asyncio.shield(self._dispose(doomed))
+                raise
             except asyncio.TimeoutError:
                 last_err = "timeout"
                 if conn:
@@ -265,8 +273,8 @@ class WebSocketPool:
             # connect outside global lock
             try:
                 return await asyncio.wait_for(self._connect(key), timeout=self.acquire_timeout)
-            except Exception:
-                # rollback count on connect failure
+            except BaseException:
+                # Also rollback on CancelledError (not a subclass of Exception).
                 async with self._global_lock:
                     self._counts[key] = max(0, self._counts.get(key, 1) - 1)
                 raise
@@ -283,6 +291,8 @@ class WebSocketPool:
 
     def _release(self, conn: _Conn) -> None:
         # 🔧 نسخه ۴.۲: هرگز یک کانکشن بسته را به استخر برنگردان.
+        if conn.disposed:
+            return
         if not conn.is_open:
             asyncio.create_task(self._dispose(conn))
             return
@@ -298,7 +308,10 @@ class WebSocketPool:
             asyncio.create_task(self._dispose(conn))
 
     async def _dispose(self, conn: _Conn) -> None:
-        """Close and decrement count."""
+        """Close at most once and return one reservation to the pool."""
+        if conn.disposed:
+            return
+        conn.disposed = True
         try:
             if conn.ws and not getattr(conn.ws, "closed", False):
                 await conn.ws.close()

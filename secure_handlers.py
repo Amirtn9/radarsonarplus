@@ -9,6 +9,7 @@ import re
 from telegram.ext import CallbackQueryHandler, MessageHandler, CommandHandler
 from settings import SUPER_ADMIN_ID
 from database import Database
+from server_callbacks import parse_server_action
 
 log = logging.getLogger(__name__)
 
@@ -29,7 +30,6 @@ ADMIN_MESSAGES = {
 # act_checkhost_{id}_{IP}; these prefixes are deliberately explicit.
 SERVER_ID = (
     re.compile(r'^detail_(\d+)(?:_|$)'),
-    re.compile(r'^act_[a-z]+_(\d+)(?:_|$)'),
     re.compile(r'^setdns_[a-z]+_(\d+)$'),
     re.compile(r'^toggle_active_(\d+)$'),
     re.compile(r'^srv_multidel_toggle_(\d+)$'),
@@ -49,6 +49,12 @@ def _access_sync(uid, data, callback_name):
     if not uid:
         return False
     if (ADMIN_CALLBACKS.match(data or '') or callback_name in ADMIN_MESSAGES) and uid != SUPER_ADMIN_ID:
+        return False
+    # All act_* requests must use the same parser as the operation handler.
+    if data.startswith('act_') and data != 'act_global_full_report' and parse_server_action(data) is None:
+        return False
+    parsed_action = parse_server_action(data)
+    if parsed_action is not None and not db.owns_resource('servers', parsed_action[1], uid):
         return False
     if uid != SUPER_ADMIN_ID:
         allowed, _ = db.check_access(uid, SUPER_ADMIN_ID)

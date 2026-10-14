@@ -505,6 +505,23 @@ class Database:
     def update_status(self, s_id, status):
         self.execute('UPDATE servers SET last_status = %s WHERE id = %s', (status, s_id))
 
+
+    def record_monitor_result(self, server_id, owner_id, status, cpu=None, ram=None, error=''):
+        """Persist monitor state and bounded historical CPU/RAM for an owned server."""
+        with self.get_connection() as (conn, cur):
+            cur.execute("""UPDATE servers SET last_status=%s,last_error=%s
+                           WHERE id=%s AND owner_id=%s RETURNING id""",
+                        (str(status)[:40], str(error)[:600], int(server_id), int(owner_id)))
+            if not cur.fetchone():
+                conn.rollback()
+                return False
+            if cpu is not None and ram is not None:
+                cur.execute("INSERT INTO server_stats(server_id,cpu,ram) VALUES(%s,%s,%s)",
+                            (int(server_id), float(str(cpu).strip().rstrip('%')),
+                             float(str(ram).strip().rstrip('%'))))
+            conn.commit()
+            return True
+
     def update_server_error(self, s_id, error_text:  str = ""):
         try:
             self.execute('UPDATE servers SET last_error = %s WHERE id = %s', (str(error_text or ""), s_id))

@@ -2,7 +2,7 @@
 <p align="center"><strong>مدیریت، پایش و کنترل سرورها از تلگرام و پنل وب</strong></p>
 <p align="center">Telegram Bot · Secure WSS Agent · Mini App · Monitoring Dashboard</p>
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-5.2.2--install--fix-2563eb?style=for-the-badge">
+  <img alt="Version" src="https://img.shields.io/badge/version-5.2.3-2563eb?style=for-the-badge">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776ab?style=for-the-badge&amp;logo=python&amp;logoColor=white">
   <img alt="Platform" src="https://img.shields.io/badge/Ubuntu%20%7C%20Debian-Linux-111827?style=for-the-badge&amp;logo=linux&amp;logoColor=white">
   <img alt="Status" src="https://img.shields.io/badge/release-staging%20validation-f59e0b?style=for-the-badge">
@@ -21,7 +21,7 @@
 
 **Sonar Radar Pro** سامانه‌ای برای مدیریت و پایش زیرساخت‌های سروری از طریق **ربات تلگرام** و **Telegram Mini App** است. پروژه از یک ایجنت راه‌دور با ارتباط رمزنگاری‌شده، ذخیره‌سازی PostgreSQL، مدیریت پیکربندی‌ها و مشاهده گزارش‌ها استفاده می‌کند.
 
-> **وضعیت انتشار:** نسخه `5.2.2-install-fix` برای بررسی و تست روی سرور آزمایشی آماده شده است. نصب واقعی روی Ubuntu تمیز، اتصال زنده تلگرام، PostgreSQL و ثبت ایجنت‌ها هنوز به تأیید عملی در محیط شما نیاز دارد. از آن مستقیماً به‌عنوان نسخه Production تضمین‌شده استفاده نکنید.
+> **وضعیت انتشار:** نسخه `5.2.3` برای بررسی و تست روی سرور آزمایشی آماده شده است. نصب واقعی روی Ubuntu تمیز، اتصال زنده تلگرام، PostgreSQL و ثبت ایجنت‌ها هنوز به تأیید عملی در محیط شما نیاز دارد. از آن مستقیماً به‌عنوان نسخه Production تضمین‌شده استفاده نکنید.
 
 <a id="installation"></a>
 
@@ -106,7 +106,7 @@ sudo namei -l /opt/radar-sonar/venv/bin/python
 ```text
 ╭───────────────────────────────────────────────────────╮
 │                    🦇 SONAR / RADAR                  │
-│                 PRO 5.2.2 · Control Center            │
+│                 PRO 5.2.3 · Control Center            │
 ╰───────────────────────────────────────────────────────╯
 
 01  Install Full Stack (Bot + DB + Mini App)
@@ -290,3 +290,26 @@ python3 -m pytest -q tests
 </div>
 
 راهنمای جزئیات نصب مجدد و بازیابی: [docs/INSTALL_RECOVERY_FA.md](docs/INSTALL_RECOVERY_FA.md)
+
+
+## 🦇 اصلاحات امنیت و پایداری نسخه 5.2.3
+
+- Callbackهای عملیات سرور یک parser مشترک دارند و مالکیت سرور پیش از هر فرمان SSH دوباره بررسی می‌شود.
+- نصب تمیز فقط با تأیید تعاملی و بکاپ قابل‌اعتبارسنجی اجرا می‌شود. اگر مرحله‌ای شکست بخورد، نصب خودکار ادامه نمی‌یابد. **این کار دیتابیس اختصاصی Sonar را حذف می‌کند.**
+- مجوز کدها و محیط پایتون با کاربر اختصاصی سرویس تست می‌شوند. نصب برای سرویس‌های `sonar-bot` و `sonar-web` است.
+- جست‌وجوی Mini App، pagination بخش Pro، مسیر نصب دسته‌جمعی Agent و ثبت پورت WSS اصلاح شده‌اند.
+- به‌روزرسانی سابسکریپشن شناسه کانفیگ‌های ثابت را حفظ می‌کند؛ ناموفق‌شدن تست به‌معنای حذف لینک نیست.
+- داده‌های CPU/RAM و وضعیت سرورها ذخیره می‌شود و هشدارها با محدودیت‌های تنظیم‌شده کاربر و مقصد کانال مربوطه ارسال می‌شوند.
+- اتصال لغوشدهٔ WebSocket دوباره وارد pool نمی‌شود.
+
+بعد از آپلود نسخه جدید روی شاخه `main`، نصب تمیز را صرفاً روی سرور آزمایشی اجرا کنید:
+
+```bash
+wget https://raw.githubusercontent.com/Amirtn9/radarsonarplus/main/install.sh
+chmod +x install.sh
+sudo ./install.sh
+```
+
+برای بررسی: `sudo bash install.sh --doctor` و `sudo bash install.sh --logs all --follow`.
+ارتقا با حفظ اطلاعات را به نصب تمیز ترجیح بدهید مگر به حذف دیتابیس نیاز داشته باشید.
+**تست آفلاین به معنی تأیید نصب عملیاتی روی VPS واقعی نیست.**

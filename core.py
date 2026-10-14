@@ -238,7 +238,7 @@ class ServerMonitor:
         if not isinstance(link, str) or not 0 < len(link) <= 65536:
             raise ValueError('Invalid agent CLI link length')
         args = ['runuser', '-u', 'sonar-agent', '--',
-                '/opt/sonar-agent/venv/bin/python',
+                '/opt/sonar-agent-venv/bin/python',
                 '/opt/sonar-agent/monitor_agent.py', link]
         if size is not None:
             value = float(size)

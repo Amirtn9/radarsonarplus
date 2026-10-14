@@ -1130,23 +1130,25 @@ async def admin_agent_install_run(update: Update, context: ContextTypes.DEFAULT_
 async def admin_agent_port_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receives WS port from admin and runs bulk install/repair for stored targets."""
     try:
-        if not is_admin(update.effective_user.id):
+        if update.effective_user.id != SUPER_ADMIN_ID:
             return ConversationHandler.END
 
         text = (update.message.text or "").strip()
+        if text in ('/cancel','cancel','لغو'):
+            return await admin_agent_cancel(update, context)
         if not text.isdigit():
-            await update.message.reply_text("❌ لطفاً فقط عدد پورت را ارسال کنید (مثلاً 8181).", reply_markup=make_cancel_keyboard())
+            await update.message.reply_text("❌ لطفاً فقط عدد پورت را ارسال کنید (مثلاً 8181).", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('❌ لغو', callback_data='cancel_flow')]]))
             return ADMIN_AGENT_PORT_INPUT
 
         ws_port = int(text)
-        if ws_port < 1 or ws_port > 65535:
-            await update.message.reply_text("❌ پورت نامعتبر است. عددی بین 1 تا 65535 ارسال کنید.", reply_markup=make_cancel_keyboard())
+        if ws_port < 1024 or ws_port > 65535:
+            await update.message.reply_text("❌ پورت نامعتبر است. عددی بین 1 تا 65535 ارسال کنید.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('❌ لغو', callback_data='cancel_flow')]]))
             return ADMIN_AGENT_PORT_INPUT
 
         targets = context.user_data.get("agent_install_targets") or []
         if not targets:
             await update.message.reply_text("⚠️ لیست سرورها برای نصب/تعمیر پیدا نشد.")
-            return ADMIN_PANEL
+            return ConversationHandler.END
 
         msg = await update.message.reply_text(
             f"🛠 شروع نصب/تعمیر ایجنت روی {len(targets)} سرور...\nپورت انتخابی: {ws_port}"
@@ -1178,18 +1180,16 @@ async def admin_agent_port_input(update: Update, context: ContextTypes.DEFAULT_T
                 chat_id=msg.chat_id,
             )
 
-            # Persist chosen port per-server (so future probes/monitoring use the same port)
-            if not db.update_server_ws_port(int(sid), int(ws_port), int(srv['owner_id'])):
-                failures.append((sid, 'Could not update owned server port'))
-                fail_count += 1
-                continue
-
             def _do_install():
                 return ServerMonitor.install_agent_service(ip, ssh_port, user, password, int(ws_port))
 
             ok, out = await loop.run_in_executor(EXECUTOR, _do_install)  # 🔧 v4.2
             if ok:
-                ok_count += 1
+                if db.update_server_ws_port(int(sid), int(ws_port), int(srv['owner_id'])):
+                    ok_count += 1
+                else:
+                    fail_count += 1
+                    failures.append((sid, 'Agent installed; failed to save matching WSS port'))
             else:
                 fail_count += 1
                 failures.append((srv.get('name', sid), out))
@@ -1203,9 +1203,15 @@ async def admin_agent_port_input(update: Update, context: ContextTypes.DEFAULT_T
 
         # cleanup
         context.user_data.pop("agent_install_targets", None)
-        return ADMIN_PANEL
+        return ConversationHandler.END
 
     except Exception as e:
         logger.error("admin_agent_port_input failed: %s", e, exc_info=True)
-        await update.message.reply_text(f"❌ خطا: {e}")
-        return ADMIN_PANEL
+        await update.message.reply_text("❌ نصب دسته‌جمعی ناموفق بود. لاگ سرور را بررسی کنید.")
+        return ConversationHandler.END
+
+
+async def admin_agent_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop('agent_install_targets', None)
+    await update.effective_message.reply_text('عملیات نصب ایجنت لغو شد.')
+    return ConversationHandler.END

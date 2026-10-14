@@ -162,7 +162,7 @@ async def process_linear_data(update: Update, context: ContextTypes.DEFAULT_TYPE
                         port,
                         username,
                         password,
-                        AGENT_PORT,
+                        int(data.get('ws_port') or AGENT_PORT),
                     )
                     if ok_agent:
                         report.append(f"🟢 **{name}**: ایجنت نصب و فعال شد (WS:{AGENT_PORT}).")
@@ -367,7 +367,7 @@ async def select_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     data['port'],
                     data['username'],
                     sec.decrypt(data['password']),
-                    AGENT_PORT,
+                    int(data.get('ws_port') or AGENT_PORT),
                 )
             finally:
                 running = False
@@ -380,7 +380,7 @@ async def select_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await status_msg.edit_text(
                         "✅ **ایجنت با موفقیت نصب و فعال شد.**\n"
-                        f"🔌 پورت وب‌سوکت: `{AGENT_PORT}`\n\n"
+                        f"🔌 پورت وب‌سوکت: `{int(data.get('ws_port') or AGENT_PORT)}`\n\n"
                         "حالا می‌توانید از دکمه «وضعیت سرور» استفاده کنید.",
                         parse_mode='Markdown'
                     )
@@ -761,25 +761,21 @@ async def server_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, cust
 
 async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = update.callback_query.data
-    parts = data.split('_')
-    # ر... handle incorrect order so we never query id='cleandisk'
-    act = ''
-    sid = None
-    try:
-        if len(parts) >= 3 and str(parts[2]).isdigit():
-            act, sid = parts[1], int(parts[2])
-        elif len(parts) >= 3 and str(parts[1]).isdigit():
-            sid = int(parts[1])
-            act = parts[2]
-        else:
-            # last resort: find any numeric part
-            for p in parts:
-                if str(p).isdigit():
-                    sid = int(p)
-                    break
-            act = parts[1] if len(parts) > 1 else ''
-    except Exception:
-        sid = None
+    from server_callbacks import parse_server_action
+    parsed = parse_server_action(data)
+    if parsed is None:
+        try:
+            await update.callback_query.answer("❌ شناسه سرور نامعتبر", show_alert=True)
+        except Exception:
+            pass
+        return
+    act, sid = parsed
+    # Do not trust the button/handler boundary: enforce ownership in this operation
+    # before decrypting SSH credentials or dispatching any remote command.
+    actor_id = update.effective_user.id
+    if not await asyncio.to_thread(db.owns_resource, 'servers', sid, actor_id):
+        await update.callback_query.answer("⛔ این سرور متعلق به شما نیست.", show_alert=True)
+        return
 
     if sid is None:
         try:
@@ -916,7 +912,7 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif act == 'checkhost':
         await update.callback_query.message.reply_text("🌍 **در حال دریافت گزارش Check-Host...**")
         # استعلام CheckHost از API خارجی است و نیازی به SSH ندارد
-        ok, data = await loop.run_in_executor(EXECUTOR, StatsManager.check_host_api, parts[3])
+        ok, data = await loop.run_in_executor(EXECUTOR, StatsManager.check_host_api, srv['ip'])
         report = StatsManager.format_check_host_results(data) if ok else f"❌ خطا: {data}"
         await update.callback_query.message.reply_text(report, parse_mode='Markdown')
 

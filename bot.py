@@ -41,7 +41,7 @@ def main():
         print("⛔️ Error: Token not set.")
         return
 
-    print("🚀 SONAR RADAR PRO v5.2.2 RUNNING...")
+    print("🚀 SONAR RADAR PRO v5.2.3 RUNNING...")
     
     # 🔧 نسخه ۴.۲: pool_timeout و سقف صریح آپدیت‌های همزمان اضافه شد تا وقتی
     # چند کاربر همزمان کار سنگین می‌کنند، ارسال پیام‌ها پشت هم گیر نکند.

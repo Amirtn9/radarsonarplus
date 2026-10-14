@@ -22,10 +22,10 @@ async function load(){const holder=$('content');holder.replaceChildren(node('p',
 let path;if(['servers','configs'].includes(state.page)){path=`/api/resources/${state.page==='servers'?'server':'config'}?page=${state.index}&q=${encodeURIComponent(state.term)}`;}else{path=state.page==='rankings'?'/api/rankings':'/api/incidents?status=unresolved';}
 const list=await api(path);state.items=list;holder.replaceChildren();if(!list.length)holder.append(node('p','اطلاعاتی برای نمایش پیدا نشد.','muted'));list.forEach(r=>holder.append(addRow(r)));$('next').disabled=!['servers','configs'].includes(state.page)||list.length<12;$('page-number').textContent=state.index.toLocaleString('fa-IR');$('connection').textContent='● متصل';
 }catch(e){holder.replaceChildren(node('p',e.message,'bad'));$('connection').textContent='● خطا';}}
-function choose(page){state.page=page;state.index=1;state.term='';$('search').querySelector('input').value='';document.querySelectorAll('[data-page]').forEach(b=>b.classList.toggle('selected',b.dataset.page===page));load();}
+function choose(page){state.page=page;state.index=1;state.term='';$('search').value='';document.querySelectorAll('[data-page]').forEach(b=>b.classList.toggle('selected',b.dataset.page===page));load();}
 document.querySelectorAll('[data-page]').forEach(b=>b.addEventListener('click',()=>choose(b.dataset.page)));
 $('previous').onclick=()=>{state.index=Math.max(1,state.index-1);load()};$('next').onclick=()=>{state.index++;load()};$('refresh').onclick=()=>{summary().catch(e=>notice(e.message));load()};
-let debounce;$('search').querySelector('input').addEventListener('input',e=>{clearTimeout(debounce);debounce=setTimeout(()=>{state.term=e.target.value;state.index=1;load()},350)});
+let debounce;$('search').addEventListener('input',e=>{clearTimeout(debounce);debounce=setTimeout(()=>{state.term=e.target.value;state.index=1;load()},350)});
 if(tg){tg.ready();tg.expand();}summary().then(load).catch(e=>{$('connection').textContent='● خطا';$('content').replaceChildren(node('p',e.message,'bad'))});
 
 $('trend-close').addEventListener('click',()=>$('trend').close());
