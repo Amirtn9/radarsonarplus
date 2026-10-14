@@ -1,0 +1,13 @@
+# Sonar Radar security boundaries (5.2.0-security)
+
+- **Agent:** Per-node TLS via a self-signed certificate enrolled through SSH and pinned to the agent record. Remote plain `ws://` is blocked by the client; agent refuses unencrypted non-loopback listeners. An existing node must be re-enrolled using the admin agent installer. **TLS does not replace firewall isolation:** configure UFW/security groups to admit only the bot IP and only the agent TCP port.
+- **Host keys:** The bot rejects unknown SSH host keys unless explicitly trusted. Verify the fingerprint independently before enrollment.
+- **SSRF:** HTTPS subscription fetching connects only to an IP from the validated first DNS answer, with TLS hostname verification; redirects and non-global IPs are forbidden.
+- **Xray:** Never silently download `latest`. Set a version-specific trusted `SONAR_XRAY_URL` and independently confirmed `SONAR_XRAY_SHA256` in the agent service environment, or pre-install a trusted executable in the agent workspace. Without a valid pin no Xray download occurs; latency tests needing Xray may fail.
+- **WS payload:** 4 MiB maximum for both bot client and agent server; subscriptions are capped to 2 MiB download and 600 parsed links.
+- **Mini App:** Telegram signed initData is reverified for every request, by default up to 24h after issue, then users must reopen the Mini App. The owner of each workspace is checked even for team access. An API is private on 127.0.0.1 behind nginx+HTTPS. This remains a bearer credential until expiration: use HTTPS, treat any initData as a secret.
+- **Credentials:** `secret.key` uses exclusive 0600 create, no symlinks. Secret and encrypted SSH passwords stored together still do not protect against a fully compromised host; use disk and host isolation.
+- **Logs:** JSON/text journals with rotation and best-effort token redaction. Debug logs may still include sensitive upstream contents: only enable briefly and keep /var/log/sonar private. Never upload raw logs publicly.
+- **RBAC:** Owner checks added to database port update and ProStore membership. Telegram legacy handlers still use callback-name/regex authorization and require a broader audit before the app should be exposed to untrusted multi-tenant users.
+- **Production verification:** Ubuntu clean install/update, Postgres schema, SSH enrollment, certificate verification, UFW, Telegram login and long sessions MUST be exercised on staging. Offline tests are not proof of production readiness.
+- **Updates:** Do not run scripts with `curl | bash`. Review the commit and backup DB/key before upgrade. Rollbacks do not automatically undo SQL migrations.
