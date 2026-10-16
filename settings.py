@@ -2,7 +2,7 @@ import os
 import logging
 import json
 
-PROJECT_VERSION = "5.3.0"
+PROJECT_VERSION = "6.0.0-preview.1"
 
 # ==============================================================================
 # 📂 FILE PATHS CONFIGURATION
@@ -74,7 +74,7 @@ SUBSCRIPTION_PLANS = {
         'limit': 15,
         'days': 30,
         'price': 240000,
-        'desc': 'حرفه‌ای و بدون محدودیت'
+        'desc': 'حرفه‌ای، حداکثر ۱۵ سرور'
     }
 }
 

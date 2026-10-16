@@ -114,23 +114,39 @@ class TunnelLogic:
     # 💾 DATABASE (همه خارج از event loop)
     # ==================================================================
     def _bulk_save_sub_items(self, uid, sub_id, rows):
-        """Replace only this subscription's items, atomically after successful fetch/tests."""
+        # Preserve stable item IDs and history for unchanged subscription links.
         if not rows:
             return False
         with self.db.get_connection() as (conn, cur):
-            # Verify the current owner and source before destructive operations.
             cur.execute("SELECT id FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source' FOR UPDATE",
                         (sub_id, uid))
             if not cur.fetchone():
                 return False
-            cur.execute("DELETE FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'",
+            cur.execute("SELECT link FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item' FOR UPDATE",
                         (uid, sub_id))
-            execute_values(cur, """INSERT INTO tunnel_configs
-                   (owner_id, parent_sub_id, type, link, name, added_at, quality_score,
-                    last_status, last_ping, last_jitter, last_speed_down, last_speed_up)
-                   VALUES %s ON CONFLICT DO NOTHING""", rows)
+            previous = {r['link'] if isinstance(r, dict) else r[0] for r in cur.fetchall()}
+            incoming = {r[3] for r in rows}
+            common = [r for r in rows if r[3] in previous]
+            fresh = [r for r in rows if r[3] not in previous]
+            for r in common:
+                cur.execute('''UPDATE tunnel_configs SET name=%s, quality_score=%s,
+                               last_status=%s, last_ping=%s, last_jitter=%s,
+                               last_speed_down=%s, last_speed_up=%s
+                               WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item' AND link=%s''',
+                            (r[4],r[6],r[7],r[8],r[9],r[10],r[11],uid,sub_id,r[3]))
+            if fresh:
+                execute_values(cur, '''INSERT INTO tunnel_configs
+                      (owner_id,parent_sub_id,type,link,name,added_at,quality_score,
+                       last_status,last_ping,last_jitter,last_speed_down,last_speed_up)
+                      VALUES %s ON CONFLICT DO NOTHING''', fresh)
+            stale=previous-incoming
+            if stale:
+                cur.execute('''DELETE FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s
+                               AND type='sub_item' AND link = ANY(%s)''', (uid,sub_id,list(stale)))
             conn.commit()
-            return True
+            logger.info('Subscription sync owner=%s sub=%s kept=%s added=%s removed=%s',
+                        uid,sub_id,len(common),len(fresh),len(stale))
+            return {'kept':len(common), 'added':len(fresh),'removed':len(stale)}
 
     def _save_sub_info(self, sub_id, sub_info):
         with self.db.get_connection() as (conn, cur):
@@ -238,8 +254,11 @@ class TunnelLogic:
         # 🚀 یک نوشتن، داخل ترد — نه ۳۰۰ نوشتن روی event loop
         if not rows or not any(r[7] == 'OK' for r in rows):
             return ["❌ هیچ کانفیگ سالمی پس از تست دریافت نشد؛ اطلاعات قبلی حفظ شدند."]
-        if not await run_sync(self._bulk_save_sub_items, uid, sub_id, rows):
+        diff = await run_sync(self._bulk_save_sub_items, uid, sub_id, rows)
+        if not diff:
             return ["❌ ذخیره کانفیگ‌ها ناموفق بود؛ داده‌های قبلی حفظ شدند."]
+        if isinstance(diff, dict):
+            report_lines.insert(0, f"🔄 همگام‌سازی: {diff['added']} جدید | {diff['removed']} حذف‌شده | {diff['kept']} بدون تغییر")
         if sub_info:
             try:
                 await run_sync(self._save_sub_info, sub_id, sub_info)

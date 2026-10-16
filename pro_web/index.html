@@ -1,16 +1,48 @@
-<!DOCTYPE html><html lang="fa" dir="rtl"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#101827"><title>Sonar Radar Pro</title>
-<link rel="stylesheet" href="/static/style.css">
-<script defer src="https://telegram.org/js/telegram-web-app.js"></script><script defer src="/static/app.js"></script>
-</head><body>
-<header class="top"><span class="logo" aria-hidden="true">🦇</span><div><strong>SONAR RADAR</strong><small>مرکز مدیریت شبکه</small></div><span id="connection" class="chip">در حال اتصال...</span></header>
-<main>
-<section class="hero"><div><small>نمای کلی شبکه</small><h1>داشبورد مدیریتی</h1><p>سرورها، کانفیگ‌ها و رخدادهای شما در یک نگاه</p></div><button id="refresh" class="soft" type="button" aria-label="بروزرسانی اطلاعات">↻ بروزرسانی</button></section>
-<section class="stats" aria-label="شاخص‌های شبکه"><article><span>سرورهای فعال</span><strong id="srv">—</strong><small>تعداد سرور</small></article><article><span>کانفیگ سالم</span><strong id="cfg">—</strong><small>تعداد کانفیگ</small></article><article><span>رخداد باز</span><strong id="inc">—</strong><small>نیازمند بررسی</small></article></section>
-<nav class="tabs" aria-label="صفحه‌ها"><button data-page="servers" class="selected">سرورها</button><button data-page="configs">کانفیگ‌ها</button><button data-page="rankings">رتبه‌بندی</button><button data-page="incidents">هشدارها</button></nav>
-<section class="panel"><div class="panelhead"><h2 id="section-title">سرورها</h2><label class="search"><span>⌕</span><input id="search" type="search" placeholder="جست‌وجوی نام یا IP..." aria-label="جستجو"></label></div><div id="content" aria-live="polite" class="items"><p class="muted">در حال دریافت داده‌ها...</p></div><div class="paging"><button id="previous" type="button">صفحه قبل</button><span id="page-number">۱</span><button id="next" type="button">صفحه بعد</button></div></section>
-<dialog id="trend" aria-labelledby="trend-title"><div class="trendbar"><h2 id="trend-title">نمودار کیفیت اتصال</h2><button type="button" id="trend-close">✕</button></div><canvas id="trend-canvas" width="620" height="240" role="img" aria-label="نمودار تغییرات پینگ در هفت روز گذشته"></canvas><p id="trend-info" class="muted"></p></dialog>
-<p class="foot">اطلاعات به‌صورت امن از حساب تلگرام شما دریافت می‌شود. آخرین وضعیت، جایگزین تست لحظه‌ای نیست.</p>
-</main><div id="toast" role="status" aria-live="polite"></div>
-</body></html>
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0b1017"><meta name="description" content="Sonar Radar Pro V6">
+  <title>Sonar Radar 6 | Control Center</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script defer src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar" aria-label="منوی پنل">
+    <div class="brand"><div class="brandmark" aria-hidden="true">◈</div><div><b>SONAR <span>RADAR</span></b><small>PRO VERSION 6</small></div></div>
+    <p class="navtitle">مرکز کنترل</p>
+    <nav id="navigation" aria-label="بخش‌ها">
+      <button class="navbtn active" data-tab="overview">▦ <span>داشبورد</span></button>
+      <button class="navbtn" data-tab="servers">▤ <span>سرورها</span></button>
+      <button class="navbtn" data-tab="configs">◈ <span>کانفیگ‌ها</span></button>
+      <button class="navbtn" data-tab="rankings">⌁ <span>رتبه‌بندی</span></button>
+      <button class="navbtn" data-tab="incidents">⚑ <span>رخدادها</span></button>
+      <button class="navbtn" data-tab="team">♧ <span>تیم و دسترسی</span></button>
+      <button class="navbtn" data-tab="audit">≡ <span>تاریخچه فعالیت</span></button>
+      <button class="navbtn" data-tab="settings">⚙ <span>تنظیمات</span></button>
+      <button class="navbtn" data-tab="support" id="admin-tab" hidden>✚ <span>عیب‌یابی مدیر</span></button>
+    </nav>
+    <div class="sidefoot"><span class="statusdot"></span><span id="side-state">در حال اتصال</span><small>مدیریت امن با Telegram</small></div>
+  </aside>
+  <div class="workspace">
+    <header class="topbar"><div><small class="eyebrow">SONAR RADAR / CONTROL CENTER</small><h1 id="page-title">داشبورد</h1></div><div class="topactions"><span class="version">v6.0.0</span><button id="refresh" type="button" class="iconbtn" aria-label="تازه‌سازی">↻</button></div></header>
+    <main id="main" aria-live="polite">
+      <section id="overview" class="view active"><div class="welcome"><span class="eyebrow">NETWORK OVERVIEW</span><h2>همه‌چیز تحت کنترل.</h2><p>سرورها، اتصال‌ها و هشدارها در یک نگاه. آخرین وضعیت ثبت‌شده جایگزین تست لحظه‌ای نیست.</p></div>
+        <div class="metricgrid"><article class="metric"><div class="metric-head">سرورها <span>🖥</span></div><b id="srv">—</b><small>فعال / مجموع</small></article><article class="metric"><div class="metric-head">کانفیگ‌های سالم <span>◈</span></div><b id="cfg">—</b><small>سالم / مجموع</small></article><article class="metric"><div class="metric-head">رخدادهای باز <span>⚑</span></div><b id="inc">—</b><small>نیازمند بررسی</small></article></div>
+        <div class="two-col"><section class="panel"><h3>دسترسی سریع</h3><p class="muted">به بخش موردنظر بروید.</p><div class="quicklinks"><button data-go="servers">🖥 سرورها</button><button data-go="configs">🧩 کانفیگ‌ها</button><button data-go="incidents">🚨 هشدارها</button><button data-go="rankings">🏆 رتبه‌بندی</button></div></section><section class="panel"><h3>امنیت و دسترسی</h3><p>این پنل فقط از طریق تلگرام و داده ورود امضاشده باز می‌شود. دسترسی‌ها براساس نقش کاربر محدود می‌شوند.</p><p class="note" id="last-test">آخرین تست: —</p></section></div>
+      </section>
+      <section id="listing" class="view"><div class="panel"><div class="listbar"><div><h2 id="list-title">سرورها</h2><p id="list-subtitle">مرتب و قابل جست‌وجو</p></div><label class="search">⌕ <input id="search" type="search" placeholder="جست‌وجوی نام یا IP" autocomplete="off" aria-label="جست‌وجو"></label></div><div id="list-content" class="listitems"><p class="muted">در حال بارگیری...</p></div><div class="pager"><button id="prev" type="button">قبلی</button><span id="page-number">۱</span><button id="next" type="button">بعدی</button></div></div></section>
+      <section id="team" class="view"><section class="panel"><h2>👥 اعضای تیم</h2><p class="muted">برای تغییر اعضای فضای کاری، باید مالک آن باشید.</p><div id="team-list" class="listitems"></div><form id="team-form" class="formline"><label>شناسه عددی تلگرام<input id="member-id" type="number" min="1" required placeholder="123456789"></label><label>سطح دسترسی<select id="member-role"><option value="viewer">مشاهده‌گر</option><option value="manager">مدیر</option><option value="remove">حذف دسترسی</option></select></label><button type="submit" class="primary">ثبت تغییر</button></form></section></section>
+      <section id="audit" class="view"><section class="panel"><h2>📜 گزارش فعالیت‌ها</h2><p class="muted">آخرین اقدامات ثبت‌شده.</p><div id="audit-list" class="listitems"></div></section></section>
+      <section id="settings" class="view"><section class="panel"><h2>⚙ تنظیمات مانیتورینگ</h2><p class="muted">تغییرات برای فضای کاری شما ثبت می‌شود.</p><div class="setting"><div><b>گزارش روزانه</b><small>ارسال خلاصه دوره‌ای</small></div><input type="checkbox" id="daily_digest" aria-label="گزارش روزانه"></div><div class="setting"><div><b>تست چندنقطه‌ای</b><small>در صورت داشتن نود واجد شرایط</small></div><input type="checkbox" id="multi_probe" aria-label="تست چندنقطه‌ای"></div><h3>قوانین هشدار</h3><div id="rule-list" class="listitems"></div></section></section>
+      <section id="support" class="view"><section class="panel"><h2>🩺 مرکز عیب‌یابی مدیر</h2><p class="muted">گزارش‌های سیستم فقط برای مدیر اصلی در دسترس‌اند. خروجی اطلاعات حساس رایج را حذف می‌کند، اما قبل از اشتراک‌گذاری آن را بررسی کنید.</p><div class="quicklinks"><button class="primary" id="health-btn">بررسی سلامت</button><button id="download-btn">📦 دریافت ZIP امن</button></div><pre id="health-output" class="healthlog">برای بررسی سلامت دکمه بالا را بزنید.</pre></section></section>
+    </main>
+    <footer class="footer">SONAR RADAR PRO <span>•</span> نسخه ۶ <span>•</span> ورود امن با Telegram Mini App</footer>
+  </div>
+</div>
+<dialog id="trend"><div class="dialoghead"><h2 id="trend-title">تاریخچه عملکرد</h2><button type="button" id="trend-close" aria-label="بستن">✕</button></div><canvas id="trend-canvas" width="620" height="260"></canvas><p id="trend-info" class="muted"></p></dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

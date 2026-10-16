@@ -20,6 +20,9 @@ import ssl
 from datetime import datetime, timedelta
 import logging
 
+AGENT_VERSION = '6.0.0-preview.1'
+AGENT_PROTOCOL = 2
+
 logger = logging.getLogger('sonar.agent')  # ✅ خودکار به سیستم متصل می‌شه
 
 # ✅ جمع‌آوری لاگ‌های WS (بدون ارجاع به متغیرهای تعریف‌نشده در سطح ماژول)
@@ -172,22 +175,114 @@ def extract_name_from_link(link):
     except Exception:
         return ""
 
-def parse_subscription_links(text_data, limit=0):
-    """Parse subscription text and return list of {'name','link'}."""
-    results = []
-    seen = set()
-    if not text_data:
-        return results
-    lines = [ln.strip() for ln in text_data.replace("\r", "\n").split("\n") if ln.strip()]
-    for ln in lines:
-        if not (ln.startswith(("vmess://", "vless://", "trojan://", "ss://")) or ln.startswith("{")):
-            continue
-        if ln in seen: continue
-        seen.add(ln)
-        name = extract_name_from_link(ln) or f"Item_{len(results)+1}"
-        results.append({"name": name, "link": ln})
-        if limit and len(results) >= limit:
-            break
+def _clash_link(proxy):
+    """Convert common Clash proxy records to ordinary Xray share links.
+
+    Non-Xray protocols are deliberately not advertised as supported.
+    """
+    if not isinstance(proxy, dict): return None
+    kind = str(proxy.get('type', '')).lower()
+    host = str(proxy.get('server') or '').strip()
+    name = str(proxy.get('name') or host or 'Proxy')[:180]
+    try: port = int(proxy.get('port'))
+    except (ValueError, TypeError): return None
+    if not host or not 1 <= port <= 65535: return None
+    # Encode IPv6 host in URL authority; never append untrusted raw query fragments.
+    netloc = '[' + host + ']' if ':' in host and not host.startswith('[') else host
+    import urllib.parse as urlparse
+    qs = {'type': str(proxy.get('network') or 'tcp')}
+    ws_opts = proxy.get('ws-opts') if isinstance(proxy.get('ws-opts'), dict) else {}
+    if qs['type'] == 'ws':
+        qs['path'] = str(ws_opts.get('path') or '/')
+        headers = ws_opts.get('headers') or {}
+        if isinstance(headers, dict) and headers.get('Host'): qs['host'] = str(headers['Host'])
+    if qs['type'] == 'grpc':
+        grpc = proxy.get('grpc-opts') or {}
+        qs['serviceName'] = str(grpc.get('grpc-service-name') or '') if isinstance(grpc, dict) else ''
+    if proxy.get('servername') or proxy.get('sni'):
+        qs['sni'] = str(proxy.get('servername') or proxy.get('sni'))
+    if kind == 'vmess':
+        uuid = proxy.get('uuid')
+        if not uuid: return None
+        cfg = {'v':'2','ps':name,'add':host,'port':str(port),'id':uuid,'aid':str(proxy.get('alterId',0)),
+               'scy':str(proxy.get('cipher','auto')),'net':qs['type'],
+               'tls':'tls' if proxy.get('tls') else 'none','path':qs.get('path','/'),
+               'host':qs.get('host',''),'sni':qs.get('sni','')}
+        return 'vmess://' + base64.urlsafe_b64encode(json.dumps(cfg).encode()).decode().rstrip('=')
+    if kind == 'vless':
+        uuid=proxy.get('uuid')
+        if not uuid:return None
+        qs['security']='tls' if proxy.get('tls') else 'none'
+        reality=proxy.get('reality-opts') or {}
+        if isinstance(reality,dict) and reality.get('public-key'):
+            qs.update(security='reality',pbk=str(reality['public-key']),sid=str(reality.get('short-id','')))
+        if proxy.get('flow'):qs['flow']=str(proxy['flow'])
+        return 'vless://' + urlparse.quote(str(uuid),safe='')+'@'+netloc+':'+str(port)+'?'+urlparse.urlencode(qs)+'#'+urlparse.quote(name)
+    if kind == 'trojan':
+        password=proxy.get('password')
+        if not password:return None
+        qs['security']='tls'
+        return 'trojan://'+urlparse.quote(str(password),safe='')+'@'+netloc+':'+str(port)+'?'+urlparse.urlencode(qs)+'#'+urlparse.quote(name)
+    if kind in ('ss','shadowsocks'):
+        method,password=proxy.get('cipher'),proxy.get('password')
+        if not method or not password:return None
+        user=base64.urlsafe_b64encode((str(method)+':'+str(password)).encode()).decode().rstrip('=')
+        return 'ss://'+user+'@'+netloc+':'+str(port)+'#'+urlparse.quote(name)
+    return None
+
+
+def _structured_sub_links(text_data):
+    """Safely parse common JSON/sing-box and Clash YAML subscriptions."""
+    text_data=text_data.strip()
+    obj=None
+    if text_data.startswith(('{','[')):
+        try: obj=json.loads(text_data)
+        except (TypeError,ValueError):pass
+    elif ('proxies:' in text_data[:400] or text_data.startswith('mixed-port:')) and len(text_data)<=2*1024*1024:
+        try:
+            import yaml
+            class NoAliasLoader(yaml.SafeLoader):
+                # Subscription data is untrusted: reject potentially explosive YAML anchors.
+                def compose_node(self, parent, index):
+                    if self.check_event(yaml.AliasEvent):
+                        raise ValueError('Subscription YAML aliases not allowed')
+                    return super().compose_node(parent,index)
+            obj=yaml.load(text_data,Loader=NoAliasLoader)
+        except Exception as _exc:
+            logger.debug('YAML parse not available: %s',type(_exc).__name__)
+    if not obj:return []
+    if isinstance(obj,list): proxies=obj
+    elif isinstance(obj,dict): proxies=obj.get('proxies') or obj.get('outbounds') or []
+    else:return []
+    if not isinstance(proxies,list):return []
+    out=[]
+    for proxy in proxies[:600]:
+        if not isinstance(proxy,dict):continue
+        # sing-box types and keys -> normalized Clash common entries
+        if 'server_port' in proxy and proxy.get('type') in ('vmess','vless','trojan','shadowsocks'):
+            proxy={**proxy,'port':proxy['server_port'],'type':'ss' if proxy['type']=='shadowsocks' else proxy['type'],
+                   'name':proxy.get('tag','Proxy'),'uuid':proxy.get('uuid'),
+                   'cipher':proxy.get('method',proxy.get('security','auto')),
+                   'tls':bool(proxy.get('tls',{}).get('enabled')) if isinstance(proxy.get('tls'),dict) else False,
+                   'servername':proxy.get('tls',{}).get('server_name') if isinstance(proxy.get('tls'),dict) else None}
+        link=_clash_link(proxy)
+        if link:out.append({'name':str(proxy.get('name') or proxy.get('tag') or 'Proxy')[:180], 'link':link})
+    return out
+
+
+def parse_subscription_links(text_data, limit=600):
+    """Parse ordinary, base64-decoded and structured subscriptions; unique URLs."""
+    results, seen = [], set()
+    if not text_data: return results
+    structured=_structured_sub_links(text_data)
+    plain=[] if structured else [ln.strip() for ln in text_data.replace("\r", "\n").split("\n") if ln.strip()]
+    for item in structured + [{'link':x,'name':None} for x in plain]:
+        link=item['link']
+        if not (link.startswith(('vmess://','vless://','trojan://','ss://')) or link.startswith('{')):continue
+        if link in seen or len(link)>65536:continue
+        seen.add(link)
+        results.append({'name': item.get('name') or extract_name_from_link(link) or f'Item_{len(results)+1}', 'link':link})
+        if limit and len(results)>=limit:break
     return results
 
 # ==============================================================================
@@ -309,7 +404,7 @@ def parse_xray_config(link):
             if tls == 'tls':
                 stream["tlsSettings"] = {
                     "serverName": (c.get('sni') or c.get('host') or c.get('add') or ""),
-                    "allowInsecure": True
+                    "allowInsecure": False
                 }
 
             return {
@@ -320,7 +415,7 @@ def parse_xray_config(link):
                         "port": int(c.get('port') or 443),
                         "users": [{
                             "id": c.get('id'),
-                            "alterId": 0,
+                            "alterId": int(c.get("aid") or 0),
                             "security": c.get('scy', 'auto') or "auto"
                         }]
                     }]
@@ -351,7 +446,7 @@ def parse_xray_config(link):
             if sec == 'tls':
                 stream['tlsSettings'] = {
                     "serverName": q.get('sni', [p.hostname or ""])[0] or (p.hostname or ""),
-                    "allowInsecure": True
+                    "allowInsecure": False
                 }
             elif sec == 'reality':
                 stream['realitySettings'] = {
@@ -400,7 +495,7 @@ def parse_xray_config(link):
             if sec == 'tls':
                 stream['tlsSettings'] = {
                     "serverName": q.get('sni', [p.hostname or ""])[0] or (p.hostname or ""),
-                    "allowInsecure": True
+                    "allowInsecure": False
                 }
 
             return {
@@ -628,8 +723,11 @@ async def get_stats():
         return {'status':'Online','cpu':cpu,'ram':psutil.virtual_memory().percent,
             'disk':psutil.disk_usage('/').percent,
             'traffic_gb':round((net.bytes_sent+net.bytes_recv)/(1024**3),2),
+            'agent_version':AGENT_VERSION,'agent_protocol':AGENT_PROTOCOL,
             'uptime_sec':uptime,'uptime_str':str(timedelta(seconds=uptime)),
-            'capabilities':{'xray_ready':os.path.isfile(XRAY_BIN) and os.path.isfile(os.path.join(WORK_DIR,'geoip.dat'))}}
+            'capabilities':{'xray_ready':os.path.isfile(XRAY_BIN) and os.path.isfile(os.path.join(WORK_DIR,'geoip.dat')),
+                            'formats':['plain','base64','clash_yaml','singbox_json'],
+                            'proxies':['vmess','vless','trojan','shadowsocks']}}
     return await asyncio.get_running_loop().run_in_executor(_get_test_executor(),snapshot)
 
 

@@ -63,7 +63,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port):
     setup = '''apt-get update -y
 apt-get install -y python3 python3-venv ca-certificates curl openssl iproute2
 test -x /opt/sonar-agent-venv/bin/python || python3 -m venv /opt/sonar-agent-venv
-/opt/sonar-agent-venv/bin/python -m pip install --disable-pip-version-check 'websockets==13.1' 'psutil==6.1.1'
+/opt/sonar-agent-venv/bin/python -m pip install --disable-pip-version-check 'websockets==13.1' 'psutil==6.1.1' 'PyYAML>=6.0,<7'
 chmod -R a+rX /opt/sonar-agent-venv
 id -u sonar-agent >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/sonar-agent --shell /usr/sbin/nologin sonar-agent
 install -d -m 0750 -o sonar-agent -g sonar-agent /var/lib/sonar-agent

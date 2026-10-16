@@ -41,33 +41,24 @@ def ws_port_confirm_kb() -> InlineKeyboardMarkup:
 
 # --- جایگزین تابع main_menu_kb قبلی شود ---
 def main_menu_kb(user_id, is_monitor_ready, admin_id):
-    """منوی اصلی ربات (ویرایش شده: انتقال دکمه‌ها به تنظیمات)"""
+    """Version 6 grouped home; old callbacks remain available in category pages."""
     kb = [
-        # ردیف ۱: حساب کاربری
-        [InlineKeyboardButton("👤 حساب کاربری و کیف پول", callback_data='open_account_menu')],
-        
-        # ردیف ۲: خرید و دعوت
-        [InlineKeyboardButton("🛍 خرید اشتراک", callback_data='wallet_menu'),
-         InlineKeyboardButton("🤝 دعوت (رایگان)", callback_data='referral_menu')],
-        
-        # ردیف ۳: سرویس‌ها
-        [InlineKeyboardButton("➕ افزودن سرویس جدید", callback_data='open_add_menu')],
-        [InlineKeyboardButton("📂 مدیریت لیست‌ها (سرور/کانفیگ)", callback_data='open_lists_menu')],
-        
-        # ردیف ۴: داشبورد
-        [InlineKeyboardButton('📊 مرکز حرفه‌ای سونار', callback_data='pro_home')],
-        [InlineKeyboardButton("📊 داشبورد شبکه", callback_data='status_dashboard')],
-        
-        # ردیف ۵: فقط دکمه تنظیمات باقی ماند
-        [InlineKeyboardButton("⚙️ تنظیمات پیشرفته", callback_data='settings_menu')]
+        [InlineKeyboardButton('🖥 سرورها', callback_data='v6_servers'),
+         InlineKeyboardButton('🧩 کانفیگ و اشتراک', callback_data='v6_configs')],
+        [InlineKeyboardButton('📡 مانیتورینگ', callback_data='v6_monitor'),
+         InlineKeyboardButton('🧰 ابزارها', callback_data='v6_tools')],
+        [InlineKeyboardButton('📊 مرکز حرفه‌ای Pro', callback_data='pro_home')],
+        [InlineKeyboardButton('👤 حساب من', callback_data='v6_account'),
+         InlineKeyboardButton('📚 همه دسته‌بندی‌ها', callback_data='v6_home')],
     ]
-
-    webapp=_webapp_button()
-    if webapp:kb.insert(1,[webapp])
-    if user_id == admin_id:
-        kb.insert(0, [InlineKeyboardButton("🤖 مدیریت ربات", callback_data='admin_panel_main')])
-
+    webapp = _webapp_button()
+    if webapp:
+        kb.append([webapp])
+    if user_id == admin_id and admin_id:
+        kb.insert(0, [InlineKeyboardButton('👑 مرکز مدیریت ربات', callback_data='v6_admin'),
+                      InlineKeyboardButton('🩺 عیب‌یابی', callback_data='v6_diag')])
     return InlineKeyboardMarkup(kb)
+
 def account_dashboard_kb():
     """منوی داخلی حساب کاربری و کیف پول"""
     kb = [

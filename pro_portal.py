@@ -11,6 +11,9 @@ import os
 from pathlib import Path
 from fastapi import FastAPI, Depends, HTTPException, Header, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.background import BackgroundTask
+from settings import SUPER_ADMIN_ID
+from diagnostics import snapshot, build_bundle
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from pro_auth import verify_init_data
@@ -18,7 +21,7 @@ from pro_store import ProStore
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
-app=FastAPI(title='Sonar Radar Pro',docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='Sonar Radar Pro V6',docs_url=None,redoc_url=None,openapi_url=None)
 app.mount('/static',StaticFiles(directory=BASE/'pro_web'/'static'),name='static')
 store=ProStore()
 
@@ -120,4 +123,43 @@ async def acknowledge(body:IncidentAction,uid:int=Depends(actor)):
 @app.post('/api/preferences')
 async def set_preferences(body:PreferencesUpdate,uid:int=Depends(actor)):
     await guarded(store.set_preference,uid,body.owner or uid,body.key,body.value)
+    return {'ok':True}
+
+
+@app.get('/api/me')
+async def me(uid:int=Depends(actor)):
+    return {'id':uid,'admin': bool(SUPER_ADMIN_ID and uid==SUPER_ADMIN_ID),'version':'6.0.0'}
+
+@app.get('/api/rules')
+async def rules(uid:int=Depends(actor),owner:int|None=None):
+    return await guarded(store.rules,uid,owner)
+
+@app.get('/api/diagnostics/health')
+async def diagnostic_health(uid:int=Depends(actor)):
+    if not SUPER_ADMIN_ID or uid != SUPER_ADMIN_ID:
+        raise HTTPException(status_code=403,detail='Admin only')
+    return await asyncio.to_thread(snapshot)
+
+@app.get('/api/diagnostics/bundle')
+async def diagnostic_bundle(uid:int=Depends(actor)):
+    if not SUPER_ADMIN_ID or uid != SUPER_ADMIN_ID:
+        raise HTTPException(status_code=403,detail='Admin only')
+    try:
+        from database import Database
+        agents=await asyncio.wait_for(asyncio.to_thread(lambda: Database().get_all_servers()),timeout=20)
+        path=await asyncio.wait_for(asyncio.to_thread(build_bundle,agent_rows=agents),timeout=65)
+    except Exception:
+        log.exception('Diagnostic report failed')
+        raise HTTPException(status_code=503,detail='Diagnostic report unavailable')
+    return FileResponse(path,media_type='application/zip',filename='sonar-v6-support.zip',
+                        background=BackgroundTask(path.unlink,missing_ok=True))
+
+class TeamUpdate(BaseModel):
+    member:int=Field(gt=0)
+    role:str
+    owner:int|None=None
+
+@app.post('/api/team')
+async def set_team(body:TeamUpdate,uid:int=Depends(actor)):
+    await guarded(store.set_member,uid,body.owner or uid,body.member,body.role)
     return {'ok':True}

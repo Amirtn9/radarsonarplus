@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sonar Radar Pro 5.3.0 | resilient GitHub deployment manager
+# Sonar Radar Pro 6.0.0 | resilient GitHub deployment manager
 # Supported: Ubuntu/Debian with systemd. Never execute remotely piped scripts as root.
 set -Eeuo pipefail
 umask 077
@@ -28,6 +28,7 @@ GITHUB_URL="https://github.com/${GITHUB_REPOSITORY}.git"
 STATE_STAGE=''; STATE_OLD=''; STATE_SWITCH=0; STATE_OLD_PRESENT=0
 STATE_BOT_ACTIVE=0; STATE_WEB_ACTIVE=0; STATE_BOT_UNIT=''; STATE_WEB_UNIT=''
 STATE_OK=0
+STATE_INSTALL_ATTEMPT=0
 UI_ENABLED=0
 [[ -t 1 && -t 0 && -z "${NO_COLOR:-}" ]] && UI_ENABLED=1
 
@@ -534,6 +535,25 @@ WantedBy=multi-user.target
 EOF
   chmod 0644 "$BOT_UNIT"
 }
+# Generates a bounded/redacted report regardless of whether system services are up.
+# Never reads env files, SSH keys, raw DB records or private configuration values.
+support_report() {
+  require_root
+  install -d -m 0700 "$BACKUP_DIR"
+  local source="$SOURCE_DIR" stamp output
+  [[ -f "$APP_DIR/diagnostics.py" ]] && source="$APP_DIR"
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  output="$BACKUP_DIR/sonar-support-${stamp}.zip"
+  if python3 "$source/diagnostics.py" --output "$output";then
+    chmod 0600 "$output"
+    say "Support ZIP: $output"
+    say 'Review the bundle before sharing. Redaction cannot guarantee removal of every secret.'
+  else
+    warn 'Support bundle creation failed; check installer log.'
+    return 1
+  fi
+}
+
 rollback() {
   local rc=$?
   trap - EXIT
@@ -550,11 +570,16 @@ rollback() {
     if (( STATE_WEB_ACTIVE == 1 )); then systemctl start "$WEB_SERVICE" || true; fi
   fi
   [[ -z "$STATE_STAGE" || ! -d "$STATE_STAGE" ]] || rm -rf -- "$STATE_STAGE"
+  if (( STATE_INSTALL_ATTEMPT == 1 ));then
+    # Errors are still available even when code deployment rolls back.
+    support_report || true
+  fi
   exit "$rc"
 }
 trap rollback EXIT
 install_app() {
   local mode="$1"
+  STATE_INSTALL_ATTEMPT=1
   require_root; require_service_host; ensure_directories; preflight
   [[ ! -L "$APP_DIR" ]] || die 'Refusing symlinked installation root.'
   if [[ "$mode" == new ]]; then
@@ -948,7 +973,7 @@ menu() {
     clear 2>/dev/null || true
     printf '\n%b  ╭────────────────────────────────────────────────────────╮%b\n' "$C_BLUE" "$C_RESET"
     printf '%b  │%b    /\  /\        SONAR  /  RADAR                  %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
-    printf '%b  │%b   ( \__/ )       PRO 5.3.0 · Control Center      %b│%b\n' "$C_BLUE" "$C_DIM" "$C_BLUE" "$C_RESET"
+    printf '%b  │%b   ( \__/ )       PRO 6.0.0 · Control Center      %b│%b\n' "$C_BLUE" "$C_DIM" "$C_BLUE" "$C_RESET"
     printf '%b  ╰────────────────────────────────────────────────────────╯%b\n' "$C_BLUE" "$C_RESET"
     printf '  ─────── DEPLOY ────────────────────────────────────────\n  01  Install Full Stack (Bot + DB + Mini App)\n  02  Update application safely\n  03  Install / repair Mini App panel\n  04  Configure domain + HTTPS\n  05  Settings & credentials\n  06  Service management\n  07  Professional logs (live/filter/JSON)\n  08  Create verified backup\n  09  Restore database from .dump\n  10  Diagnostics / health\n  11  Preflight source check\n  12  Uninstall (archive only)\n  13  Repair installed services\n  14  Clean reset + reinstall (includes Sonar database)\n  00  Exit\n\n'
     local choice s a d e p
@@ -964,7 +989,7 @@ menu() {
             [[ "$a" =~ ^[Yy]$ ]] && bash "$SOURCE_DIR/scripts/logs.sh" "$s" --follow || bash "$SOURCE_DIR/scripts/logs.sh" "$s";;
       8|08) run --backup;;
       9|09) read -r -p '  Path to verified .dump: ' p;run --restore "$p";;
-      10) run --doctor;;11) run --check;;12) run --uninstall;;13) run --repair;;14) run --clean-install;;
+      10) run --doctor;;11) run --check;;12) run --uninstall;;13) run --repair;;14) run --clean-install;;15) run --support;;
       0|00) break;; *) warn 'Unknown option.';;
     esac
     printf '\n';read -r -p '  Press Enter to continue...' _ || break
@@ -987,12 +1012,13 @@ case "${1:-}" in
   --backup) require_root;require_service_host;make_backup;;
   --restore) require_service_host;restore_dump "${2:-}";;
   --doctor) require_root;require_service_host;doctor;;
+  --support) require_root;support_report;;
   --repair) require_root;require_service_host;bash "$SOURCE_DIR/scripts/repair.sh";;
   --status) require_root;status;;
   --logs) require_root;shift;bash "$SOURCE_DIR/scripts/logs.sh" "${1:-bot}" "${@:2}";;
   --uninstall) uninstall_app;;
   --help|-h) cat <<'USAGE'
-Sonar Radar Pro 5.3.0 | Deployment Manager
+Sonar Radar Pro 6.0.0 | Deployment Manager
   sudo bash install.sh                 Interactive Apple-inspired terminal UI
   sudo bash install.sh --check         Offline source and OS checks
   sudo bash install.sh --install       Fresh FULL installation: Bot + DB + Mini App
@@ -1007,6 +1033,7 @@ Sonar Radar Pro 5.3.0 | Deployment Manager
   sudo bash install.sh --trust-ssh HOST PORT  Verify and trust remote SSH host key
   sudo bash install.sh --service sonar-bot restart
   sudo bash install.sh --status|--doctor|--repair
+  sudo bash install.sh --support      Generate a redacted ZIP for diagnosis
   sudo bash install.sh --logs [bot|web|all|errors|json|install] [--follow] [--lines N] [--since TIME] [--grep TEXT]
   sudo bash install.sh --backup
   sudo bash install.sh --restore /path/backup.dump
