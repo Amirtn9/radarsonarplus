@@ -52,7 +52,7 @@ from tunnel_logic import tunnel_manager
 from server_stats import StatsManager
 from scoring import ScoreEngine
 from core import (
-    ServerMonitor, get_jalali_str, generate_plot, 
+    ServerMonitor, get_jalali_str, generate_plot, format_speed, 
     get_tehran_datetime, extract_safe_json, sec
 )
 from settings import (

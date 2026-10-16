@@ -17,6 +17,8 @@ import matplotlib
 from cryptography.fernet import Fernet
 
 from settings import KEY_FILE, AGENT_FILE_PATH, AGENT_PORT
+from ssh_support import connect_ssh, describe_ssh_error
+from access_policy import valid_agent_port
 
 # Persistent WebSocket pool (keeps connections open + auto-reconnect)
 from ws_client import GLOBAL_WS_POOL
@@ -43,7 +45,7 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 def get_tehran_datetime():
     """Get current Tehran time"""
-    return datetime.now(timezone.utc) + timedelta(hours=3, minutes=30)
+    return datetime.now(__import__('zoneinfo').ZoneInfo('Asia/Tehran'))
 
 
 def get_jalali_str():
@@ -99,6 +101,12 @@ def extract_safe_json(text):
 # ==============================================================================
 # 📊 PLOTTING
 # ==============================================================================
+def format_speed(value):
+    if value is None:return 'اندازه‌گیری نشده'
+    try:return f'{float(value):g} Mbps'
+    except (TypeError,ValueError):return 'نامعلوم'
+
+
 def generate_plot(server_name, stats):
     """Generate resource usage plot"""
     if not stats:
@@ -147,20 +155,12 @@ class ServerMonitor:
     @staticmethod
     def get_ssh_client(ip, port, user, password):
         """Create SSH connection"""
-        client = paramiko.SSHClient()
-        # Default to known-host validation to avoid credential theft via SSH MITM.
-        # Explicit trust-on-first-use is available for deployments without known_hosts.
-        client.load_system_host_keys()
-        try:
-            client.load_host_keys(os.path.expanduser('~/.ssh/known_hosts'))
-        except OSError:
-            pass
-        client.set_missing_host_key_policy(
-            paramiko.AutoAddPolicy() if os.getenv('SONAR_SSH_TRUST_ON_FIRST_USE') == '1'
-            else paramiko.RejectPolicy()
-        )
-        client.connect(ip, port=port, username=user, password=password, timeout=10)
-        return client
+        return connect_ssh(ip, port, user, password)
+
+    @staticmethod
+    def check_ssh_connection(ip, port, user, password):
+        ok, detail = ServerMonitor._run_ssh_command(ip,port,user,password,'printf SONAR_SSH_OK',20)
+        return {'status':'Online'} if ok and 'SONAR_SSH_OK' in detail else {'status':'Offline','error':detail or 'SSH_CHECK_FAILED'}
 
     @staticmethod
     def _get_agent_script():
@@ -187,9 +187,9 @@ class ServerMonitor:
             result = (out + "\n" + err).strip()
             return exit_code == 0, result if exit_code == 0 else f"exit={exit_code}: {result}"
         except paramiko.AuthenticationException:
-            return False, "AUTH_FAILED"
+            return False, "AUTH_FAILED: نام کاربری، رمز یا روش ورود SSH پذیرفته نشد."
         except Exception as e:
-            return False, str(e)
+            return False, describe_ssh_error(e)
         finally:
             if client is not None:
                 try:
@@ -200,7 +200,8 @@ class ServerMonitor:
     # ✅ سازگار با install_agent_service (قبلاً صدا زده می‌شد ولی وجود نداشت)
     @staticmethod
     def _ssh_exec_sync(ip, port, user, password, command, timeout=120):
-        return ServerMonitor._run_ssh_command(ip, port, user, password, command, timeout=timeout)
+        from agent_deploy import privileged_script
+        return ServerMonitor._run_ssh_command(ip, port, user, password, privileged_script(command), timeout)
 
     # ---------------------------------------------------------
     # 🚀 WEBSOCKET COMMAND RUNNER (New Architecture)
@@ -248,6 +249,18 @@ class ServerMonitor:
         return shlex.join(args)
 
     @staticmethod
+    async def agent_request(monitor, link, size=0.5, timeout=60, uid=None):
+        from tunnel_logic import tunnel_manager
+        async with tunnel_manager._user_sem(uid or monitor.get('owner_id')), tunnel_manager.global_sem:
+            port=int(monitor.get('ws_port') or AGENT_PORT)
+            if str(link).startswith(('https://','http://')):
+                result=await ServerMonitor.ws_send_command(monitor['ip'],port,None,{'action':'fetch_sub','link':link},timeout)
+                if result.get('error'): return False,json.dumps(result,ensure_ascii=False)
+                return True,json.dumps({'type':'sub','configs':result.get('links',[]),'sub_info':result.get('sub_info',{})},ensure_ascii=False)
+            ok,result=await ServerMonitor.ws_test_config(monitor['ip'],port,None,link,size=size,timeout=timeout)
+            return ok,json.dumps(result,ensure_ascii=False)
+
+    @staticmethod
     async def run_remote_command(ip, port, user, password, command, timeout=60):
         """Execute command via SSH (operations/maintenance)."""
         try:
@@ -292,172 +305,20 @@ class ServerMonitor:
         if "error" in res:
             return {"status": "Offline", "error": res["error"], "uptime_sec": 0, "traffic_gb": 0}
 
-        return {
-            "status": "Online",
-            "cpu": res.get("cpu", 0),
-            "ram": res.get("ram", 0),
-            "disk": res.get("disk", 0),
-            "traffic_out": res.get("traffic_gb", 0),
-            "uptime_str": res.get("uptime_str", "N/A"),
-        }
+        return {**res, 'status':'Online', 'transport':'wss', 'agent_status':'Online',
+                'traffic_out':res.get('traffic_gb',0)}
 
     # ---------------------------------------------------------
     # 🛠 INSTALLATION & SETUP
     # ---------------------------------------------------------
     @staticmethod
     def install_agent_service(ip, port_ssh, user, password, ws_port):
-        """Install/Update Sonar monitor agent via SSH."""
-        AGENT_PATH = "/opt/sonar-agent/monitor_agent.py"
-        VENV_DIR = "/opt/sonar-agent-venv"
-        VENV_PY = f"{VENV_DIR}/bin/python"
-        VENV_PIP = f"{VENV_DIR}/bin/pip"
-        SERVICE_PATH = "/etc/systemd/system/sonar-agent.service"
-
+        from agent_deploy import deploy_agent
+        from database import Database
         try:
-            # Reject any shell-metacharacters before interpolating remote commands.
-            import ipaddress
-            try:
-                ipaddress.ip_address(str(ip))
-            except ValueError:
-                if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}', str(ip)):
-                    return False, 'Invalid server address'
-            if not 1024 <= int(ws_port) <= 65535:
-                return False, 'Invalid agent port'
-            # One strong per-server token, not the SSH password.
-            from database import Database
-            token = Database().get_or_create_agent_token(ip, port_ssh)
-            # 1) Upload agent
-            script = ServerMonitor._get_agent_script()
-            if not script:
-                return False, "monitor_agent.py not found near this file (cannot upload agent)."
-
-            upload_cmd = (
-                "install -d -m 0755 /opt/sonar-agent\n"
-                f"cat > {AGENT_PATH} <<'PY'\n"
-                f"{script}\n"
-                "PY\n"
-                f"chmod 755 {AGENT_PATH}\n"
-            )
-            ok, out = ServerMonitor._ssh_exec_sync(ip, port_ssh, user, password, upload_cmd, timeout=120)
-            if not ok:
-                return False, f"Upload agent failed: {out}"
-
-            # 2) Ensure venv + deps
-            setup_cmd = (
-                "bash -lc 'set -e\n"
-                "export DEBIAN_FRONTEND=noninteractive\n"
-                "apt-get update -y\n"
-                "apt-get install -y python3 python3-venv ca-certificates curl openssl\n"
-                f"if [ ! -d {VENV_DIR} ]; then python3 -m venv {VENV_DIR}; fi\n"
-                f"{VENV_PY} -m pip install --upgrade pip\n"
-                f"{VENV_PIP} install websockets==13.1 psutil==6.1.1\n"
-                "id -u sonar-agent >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/sonar-agent --shell /usr/sbin/nologin sonar-agent\n"
-                "chown -R sonar-agent:sonar-agent /opt/sonar-agent /var/lib/sonar-agent\n"
-                "'"
-            )
-            ok, out = ServerMonitor._ssh_exec_sync(ip, port_ssh, user, password, setup_cmd, timeout=600)
-            if not ok:
-                return False, f"Agent dependency setup failed: {out}"
-
-            # 3) Systemd service
-            service_content = (
-                "[Unit]\n"
-                "Description=Sonar Monitor Agent\n"
-                "After=network.target\n\n"
-                "[Service]\n"
-                "Type=simple\n"
-                "User=sonar-agent\n"
-                "Group=sonar-agent\n"
-                "WorkingDirectory=/var/lib/sonar-agent\n"
-                "EnvironmentFile=/etc/sonar-agent.env\n"
-                f"ExecStart={VENV_PY} -u {AGENT_PATH} {int(ws_port)}\n"
-                "NoNewPrivileges=true\n"
-                "ProtectSystem=strict\n"
-                "ProtectHome=true\n"
-                "PrivateTmp=true\n"
-                "ReadWritePaths=/var/lib/sonar-agent\n"
-                "LimitNOFILE=4096\n"
-                "StandardOutput=journal\n"
-                "StandardError=journal\n"
-                "SyslogIdentifier=sonar-agent\n"
-                # 🔧 نسخه ۴.۳: ایجنت با اولویت پایین اجرا می‌شود و حداکثر ۶۰٪
-                # از CPU را می‌گیرد. روی نودهایی که ربات هم همان‌جاست، این خط
-                # جلوی خوابیدن کل ماشین موقع تست کانفیگ را می‌گیرد.
-                "Nice=15\n"
-                "IOSchedulingClass=idle\n"
-                "CPUWeight=20\n"
-                f"CPUQuota={os.getenv('SONAR_AGENT_CPU_QUOTA', '60%')}\n"
-                "Environment=SONAR_AGENT_MAX_TESTS=3\n"
-                "Restart=always\n"
-                "RestartSec=3\n\n"
-                "[Install]\n"
-                "WantedBy=multi-user.target\n"
-            )
-            # The environment file is root-owned. A dedicated service user runs the agent.
-            # The service uses a remote bind only after auth is explicitly installed.
-            import shlex
-            # Generate a unique certificate tied to this node's configured IP/DNS.
-            import ipaddress
-            try:
-                ipaddress.ip_address(str(ip))
-                san = f"IP:{ip}"
-            except ValueError:
-                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", str(ip)):
-                    return False, "Invalid agent hostname"
-                san = f"DNS:{ip}"
-            cert_setup = (
-                "install -d -m 0750 -o root -g sonar-agent /etc/sonar-agent\n"
-                "if [ ! -s /etc/sonar-agent/tls.crt ] || [ ! -s /etc/sonar-agent/tls.key ]; then\n"
-                "  openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 3650 "
-                f"-subj '/CN=sonar-agent' -addext 'subjectAltName={san}' "
-                "-keyout /etc/sonar-agent/tls.key -out /etc/sonar-agent/tls.crt >/dev/null 2>&1\n"
-                "fi\n"
-                "chown root:sonar-agent /etc/sonar-agent/tls.key /etc/sonar-agent/tls.crt\n"
-                "chmod 0640 /etc/sonar-agent/tls.key /etc/sonar-agent/tls.crt\n"
-                "openssl x509 -in /etc/sonar-agent/tls.crt -noout -checkend 604800 >/dev/null\n"
-            )
-            ok, out = ServerMonitor._ssh_exec_sync(ip, port_ssh, user, password, cert_setup, timeout=90)
-            if not ok:
-                return False, f"Agent TLS provisioning failed: {out}"
-            service_env = (f"SONAR_AGENT_TOKEN={token}\nSONAR_AGENT_BIND=0.0.0.0\n"
-                           "SONAR_AGENT_TLS_CERT=/etc/sonar-agent/tls.crt\n"
-                           "SONAR_AGENT_TLS_KEY=/etc/sonar-agent/tls.key\n")
-            service_cmd = (
-                f"cat > /etc/sonar-agent.env <<'ENV'\n{service_env}ENV\n"
-                "chmod 600 /etc/sonar-agent.env\n"
-                f"cat > {SERVICE_PATH} <<'SERVICE'\n{service_content}\nSERVICE\n"
-                "systemctl daemon-reload\n"
-                "systemctl enable --now sonar-agent\n"
-                "systemctl restart sonar-agent\n"
-                "systemctl --no-pager --full status sonar-agent || true\n"
-            )
-            ok, out = ServerMonitor._ssh_exec_sync(ip, port_ssh, user, password, service_cmd, timeout=180)
-            if not ok:
-                return False, f"Agent service setup failed: {out}"
-
-            # 4) Healthcheck
-            check_cmd = (
-                f"ss -lntp | grep -q :{int(ws_port)} || "
-                f"(echo 'Port {int(ws_port)} is not listening'; ss -lntp; exit 6); "
-                "systemctl is-active --quiet sonar-agent || "
-                "(echo 'sonar-agent is not active'; systemctl --no-pager --full status sonar-agent || true; exit 7)"
-            )
-            ok, out = ServerMonitor._ssh_exec_sync(ip, port_ssh, user, password, check_cmd, timeout=60)
-            if not ok:
-                ok2, logs = ServerMonitor._ssh_exec_sync(
-                    ip, port_ssh, user, password, "journalctl -u sonar-agent -n 120 --no-pager || true", timeout=60
-                )
-                return False, f"Agent healthcheck failed: {out}\n\n--- sonar-agent logs ---\n{logs if ok2 else ''}"
-
-            ok, cert = ServerMonitor._ssh_exec_sync(
-                ip, port_ssh, user, password, 'cat /etc/sonar-agent/tls.crt', timeout=30)
-            if not ok:
-                return False, 'Could not retrieve enrolled agent TLS certificate over SSH'
-            from database import Database
-            Database().store_agent_certificate(ip, port_ssh, cert.strip())
-            return True, f"Agent installed and TLS-enrolled on WSS:{int(ws_port)}"
-        except Exception as e:
-            return False, str(e)
+            return deploy_agent(ServerMonitor, Database(), ip, port_ssh, user, password, ws_port)
+        except (ValueError, LookupError) as exc:
+            return False, str(exc)
 
     @staticmethod
     def get_bot_public_ip():
@@ -477,23 +338,16 @@ class ServerMonitor:
 
     @staticmethod
     def whitelist_bot_ip(target_ip, port, user, password, bot_ip, agent_port=None):
-        """Allow ONLY the selected agent port from the verified bot public IP.
-
-        Uses UFW only when it is enabled; never installs a blanket iptables ACCEPT.
-        """
         import ipaddress
         try:
             source = str(ipaddress.ip_address(bot_ip))
-            agent_port = int(agent_port)
-            if not 1024 <= agent_port <= 65535:
-                return False, 'Invalid agent port'
+            agent_port = valid_agent_port(agent_port)
         except (ValueError, TypeError):
             return False, 'Invalid public IP/port'
-        command = ("if command -v ufw >/dev/null 2>&1 && "
-                   "ufw status | grep -q 'Status: active'; then "
+        command = ("if command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active'; then "
                    f"ufw allow from {shlex.quote(source)} to any port {agent_port} proto tcp; "
-                   "else echo 'Firewall not active; WSS still required'; fi")
-        return ServerMonitor._run_ssh_command(target_ip, port, user, password, command, timeout=25)
+                   "else echo 'UFW inactive; confirm the host/datacenter firewall allows only the bot IP'; fi")
+        return ServerMonitor._ssh_exec_sync(target_ip, port, user, password, command, timeout=25)
 
     # ---------------------------------------------------------
     # 📡 MONITORING & TOOLS (Legacy SSH Fallback & New Tools)
@@ -511,9 +365,9 @@ class ServerMonitor:
                 parts = out.split("_")
                 return {"status": "Online", "cpu": float(parts[0]), "ram": float(parts[1])}
 
-            if str(out) == "AUTH_FAILED":
-                return {"status": "Offline", "error": "Auth Failed"}
-            return {"status": "Offline", "error": "SSH Error"}
+            if str(out).startswith("AUTH_FAILED"):
+                return {"status": "Offline", "error": str(out)}
+            return {"status": "Offline", "error": str(out), "transport": "ssh"}
         except Exception:
             return {"status": "Offline", "error": "Connect Fail"}
 
@@ -673,6 +527,21 @@ class ServerMonitor:
         return ServerMonitor.format_check_host_results(check_host_data)
 
     @staticmethod
+    def format_full_global_results(data):
+        if not isinstance(data,dict): return '❌ دادهٔ پینگ جهانی معتبر نیست.'
+        lines=[]
+        for node,result in data.items():
+            samples=[]
+            try:
+                for packet in result[0] if result else []:
+                    if packet and packet[0]=='OK': samples.append(float(packet[1])*1000)
+            except (TypeError,ValueError,IndexError):
+                pass
+            latency=f'{min(samples):.0f}/{statistics.mean(samples):.0f}/{max(samples):.0f} ms' if samples else 'Timeout'
+            lines.append(f'{node}: {latency}')
+        return ('🌍 پینگ جهانی (حداقل/میانگین/حداکثر)\n'+'\n'.join(lines))[:3600] if lines else 'داده‌ای دریافت نشد.'
+
+    @staticmethod
     def make_bar(percentage, length=10):
         if not isinstance(percentage, (int, float)):
             percentage = 0
@@ -699,6 +568,7 @@ class ServerMonitor:
 # ==============================================================================
 class Security:
     def __init__(self):
+        os.makedirs(os.path.dirname(KEY_FILE), mode=0o700, exist_ok=True)
         if not os.path.exists(KEY_FILE):
             # O_EXCL prevents symlink attacks and ensures restrictive permissions.
             import errno
@@ -710,7 +580,8 @@ class Security:
                 pass
         if os.path.islink(KEY_FILE):
             raise PermissionError('Refusing symlinked encryption key')
-        os.chmod(KEY_FILE, 0o600)
+        if os.stat(KEY_FILE).st_mode & 0o777 != 0o600:
+            os.chmod(KEY_FILE, 0o600)
 
         with open(KEY_FILE, "rb") as f:
             self.key = f.read()

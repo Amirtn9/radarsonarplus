@@ -58,6 +58,7 @@ def test_no_automatic_xray_without_independently_pinned_sha(monkeypatch, tmp_pat
     import monitor_agent
     monkeypatch.setattr(monitor_agent, 'XRAY_BIN', str(tmp_path / 'xray'))
     monkeypatch.setattr(monitor_agent, 'WORK_DIR', str(tmp_path))
+    monkeypatch.setattr(monitor_agent, 'RUNTIME_LOCK_FILE', str(tmp_path/'absent-lock.json'))
     monkeypatch.delenv('SONAR_XRAY_URL', raising=False)
     monkeypatch.delenv('SONAR_XRAY_SHA256', raising=False)
     with patch.object(monitor_agent.subprocess, 'run', side_effect=AssertionError('Must not download')):

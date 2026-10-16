@@ -14,7 +14,7 @@ def files():
         if not file.is_file() or file.is_symlink():
             continue
         parts = set(file.relative_to(ROOT).parts)
-        if parts.intersection({'.git', '.pytest_cache', '__pycache__', '.venv', 'venv', '.ruff_cache'}):
+        if parts.intersection({'.git', '.pytest_cache', '__pycache__', '.venv', 'venv', '.ruff_cache', 'runtime'}):
             continue
         if file.name in {'MANIFEST_SHA256.txt', 'sonar_config.json', 'secret.key'}:
             continue

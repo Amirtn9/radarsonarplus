@@ -507,7 +507,7 @@ def monitor_size_kb(curr, setting_type):
     if setting_type == 'small':
         opts = [('0.5', '0.5'), ('1', '1'), ('2', '2')]
     else:
-        opts = [('10', '10'), ('20', '20'), ('50', '50')]
+        opts = [('2', '2'), ('5', '5'), ('10', '10')]
 
     row1 = [InlineKeyboardButton(f"{get_mark(curr, o[0])}{o[1]} MB", callback_data=f'{cb_prefix}_{o[0]}') for o in opts[:2]]
     row2 = [InlineKeyboardButton(f"{get_mark(curr, opts[2][0])}{opts[2][1]} MB", callback_data=f'{cb_prefix}_{opts[2][0]}'), InlineKeyboardButton("✍️ عدد دلخواه", callback_data=f'{cb_prefix}_custom')]

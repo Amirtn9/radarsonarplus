@@ -123,3 +123,30 @@ def start_watchdog(threshold: float = 1.0) -> None:
         logger.info("🩺 Event-loop watchdog started (threshold=%.1fs)", threshold)
     except RuntimeError:
         logger.warning("watchdog not started: no running loop")
+
+
+_BACKGROUND_TASKS = set()
+
+def spawn_background(context, coroutine, *, name='sonar-job'):
+    """Keep long jobs independent of ordered Telegram conversation updates."""
+    app = getattr(context, 'application', None)
+    if app is not None and hasattr(app, 'create_task'):
+        task = app.create_task(coroutine, name=name)
+    else:
+        task = asyncio.create_task(coroutine, name=name)
+    _BACKGROUND_TASKS.add(task)
+    def done(job):
+        _BACKGROUND_TASKS.discard(job)
+        if not job.cancelled() and job.exception() is not None:
+            logger.error('Background job %s failed: %s', name, type(job.exception()).__name__)
+    task.add_done_callback(done)
+    return task
+
+
+def background_callback(callback):
+    from functools import wraps
+    @wraps(callback)
+    async def handler(update, context):
+        spawn_background(context,callback(update,context),name=callback.__name__)
+        return None
+    return handler

@@ -4,6 +4,7 @@ Section: menu
 """
 
 from bot_logic_mod.base import *  # noqa
+from access_policy import has_premium
 
 # 🚀 STARTUP & MENU HANDLERS
 # ==============================================================================
@@ -94,7 +95,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         overview = "📊 آمار شبکه موقتاً در دسترس نیست"
 
-    txt = ("📡 *SONAR RADAR | Pro 5.2.2*\n"
+    txt = ("📡 *SONAR RADAR | Pro 5.3.0*\n"
            "━━━━━━━━━━━━━━━━━━━━\n"
            f"👤 اعتبار حساب: `{remaining}`\n{overview}\n"
            "━━━━━━━━━━━━━━━━━━━━\n"
@@ -131,7 +132,7 @@ async def user_profile_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sub_type = "👑 مدیریت کل (God Mode)"
         expiry_str = "♾ نامحدود"
     else:
-        sub_type = "💎 پریمیوم (VIP)" if user['server_limit'] > 10 else "👤 عادی (Normal)"
+        sub_type = "💎 پریمیوم (VIP)" if has_premium(user,uid,SUPER_ADMIN_ID) else "👤 عادی (Normal)"
         expiry_str = f"{time_left} روز مانده" if isinstance(time_left, int) else "نامحدود"
 
     servers = db.get_all_user_servers(uid)

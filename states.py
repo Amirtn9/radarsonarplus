@@ -34,3 +34,5 @@ ADMIN_AGENT_PORT_INPUT = 106
 
 # گرفتن پورت WS سفارشی هنگام افزودن سرور (Custom WS Port)
 GET_CUSTOM_WS_PORT = 107
+
+CONFIRM_SSH_HOST = 108

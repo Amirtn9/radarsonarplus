@@ -45,7 +45,8 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 # 🔧 نسخه ۴.۲: استخر مشترک پروژه (قبلاً یک استخر ۱۰ تایی جدا بود)
-from runtime import SHARED_EXECUTOR
+from runtime import SHARED_EXECUTOR, run_sync, spawn_background
+from notifications import send_notification
 EXECUTOR = SHARED_EXECUTOR
 
 SERVER_FAILURE_COUNTS = {}
@@ -53,6 +54,8 @@ CPU_ALERT_TRACKER = {}
 DAILY_REPORT_USAGE = {}
 TUNNEL_FAIL_STREAKS = {}
 IS_SYSTEM_INITIALIZED = False
+_RESOURCE_RUNNING=set()
+_RESOURCE_LIMIT=asyncio.Semaphore(8)
 LAST_SERVER_REPORT_MIN = {}
 LAST_CONFIG_REPORT_MIN = {}
 
@@ -60,118 +63,62 @@ LAST_CONFIG_REPORT_MIN = {}
 # 🔄 SCHEDULED JOBS
 # ==============================================================================
 
-async def notify_server_owner(context, owner_id, message, category='down'):
-    """Respect configured resource/down channels; fall back to owner's DM."""
-    try:
-        channels = await asyncio.to_thread(db.get_user_channels, owner_id)
-        targets = [c for c in channels if c.get('usage_type') in ('all',category)]
-        if not targets:
-            targets = [{'chat_id':owner_id}]
-        for target in targets:
-            try:
-                kwargs={'chat_id':target['chat_id'],'text':message}
-                if target.get('topic_id'):
-                    kwargs['message_thread_id']=int(target['topic_id'])
-                await context.bot.send_message(**kwargs)
-            except Exception:
-                logger.exception('Owner channel alert delivery failed (owner=%s)', owner_id)
-    except Exception:
-        logger.exception('Owner alert delivery failed (owner=%s)', owner_id)
-
-
 async def global_monitor_job(context: ContextTypes.DEFAULT_TYPE):
-    """بررسی وضعیت کلی سرورها (منابع)"""
     try:
-        loop = asyncio.get_running_loop()
-        # دریافت لیست سرورهای فعال از دیتابیس
-        active_servers = await loop.run_in_executor(EXECUTOR, db.get_active_servers)
-        
-        if not active_servers:
-            return
-
-        for srv in active_servers:
-            # اجرای تسک برای هر سرور بدون بلاک کردن بقیه
-            task = asyncio.create_task(check_single_server_resources(context, srv))
-            task.add_done_callback(lambda t: logger.error('Monitor task failed: %s', t.exception()) if not t.cancelled() and t.exception() else None)
-            
-    except Exception as e:
-        logger.error(f"Global Monitor Job Error: {e}")
+        servers=await run_sync(db.get_active_servers)
+        for srv in servers:
+            sid=srv['id']
+            if sid not in _RESOURCE_RUNNING:
+                _RESOURCE_RUNNING.add(sid)
+                spawn_background(context,check_single_server_resources(context,dict(srv)),name=f'server-monitor-{sid}')
+    except Exception as exc:
+        logger.error('Resource scheduler failed: %s',type(exc).__name__)
 
 async def check_single_server_resources(context, srv):
-    """بررسی منابع یک سرور خاص"""
-    sid = srv['id']
-    ip = srv['ip']
-    name = srv['name']
-    
+    sid,owner=srv['id'],srv['owner_id']
     try:
-        # ✅ پسورد رو رمزگشایی کن (اگر خالی بود، خالی بمون)
-        password = srv.get('password', '')
-        if password:
-            try:
-                real_pass = sec. decrypt(password)
-            except Exception: 
-                real_pass = password  # اگر رمزگشایی شکست خورد، خود رو استفاده کن
-        else:
-            real_pass = ""
-        
-        # 1. دریافت آمار (اول وب‌سوکت، بعد SSH)
-        stats = await StatsManager.check_full_stats(ip, srv['port'], srv['username'], real_pass, ws_port=srv.get('ws_port'))
-        
-        # 2. بررسی وضعیت آنلاین/آفلاین
-        owner = int(srv['owner_id'])
-        is_offline = stats.get('status') not in ('Online','OK')
-        await asyncio.to_thread(db.record_monitor_result, sid, owner,
-                                'Offline' if is_offline else 'Online',
-                                None if is_offline else stats.get('cpu'),
-                                None if is_offline else stats.get('ram'),
-                                stats.get('error','') if is_offline else '')
-        if is_offline:
-            fail_count = SERVER_FAILURE_COUNTS.get(sid, 0) + 1
-            SERVER_FAILURE_COUNTS[sid] = fail_count
-            
-            # اگر از حد مجاز گذشت، هشدار بده
-            if fail_count >= DOWN_RETRY_LIMIT:
-                if fail_count == DOWN_RETRY_LIMIT:
-                    try:
-                        from pro_store import ProStore
-                        await asyncio.to_thread(ProStore().incident, srv['owner_id'], 'server', sid,
-                                                'server_down', f'قطع ارتباط با سرور {name}', 'critical', True)
-                    except Exception:logger.exception('Pro incident persistence failed')
-                if fail_count == DOWN_RETRY_LIMIT:   # فقط بار اول پیام بده
-                    msg = AlertManager.get_down_alert_msg(name, stats. get('error', 'Timeout'))
-                    await notify_server_owner(context, owner, msg)
+        allowed,_=await run_sync(db.check_access,owner,SUPER_ADMIN_ID)
+        if not allowed:return
+        async with _RESOURCE_LIMIT:
+            stats=await StatsManager.check_full_stats(srv['ip'],srv['port'],srv['username'],sec.decrypt(srv.get('password') or ''),ws_port=srv.get('ws_port'))
+        await run_sync(db.persist_server_observation,srv,stats)
+        settings=(await _settings_snapshot()).get(owner,{})
+        down_enabled=settings.get('down_alert_enabled','1')=='1'
+        from pro_store import ProStore
+        store=ProStore()
+        if stats.get('status')!='Online':
+            failures=SERVER_FAILURE_COUNTS.get(sid,0)+1
+            SERVER_FAILURE_COUNTS[sid]=failures
+            if failures==DOWN_RETRY_LIMIT:
+                await run_sync(store.incident,owner,'server',sid,'server_down',f'قطع ارتباط با {srv["name"]}','critical',True)
+                if down_enabled and await run_sync(store.should_notify,owner,'server_down'):
+                    await send_notification(context,owner,f'🚨 قطع ارتباط با سرور {srv["name"]}\n{stats.get("error","Connection failed")}', 'down',db=db)
             return
+        previous=SERVER_FAILURE_COUNTS.pop(sid,0)
+        if previous>=DOWN_RETRY_LIMIT:
+            await run_sync(store.incident,owner,'server',sid,'server_down',f'بازیابی {srv["name"]}','critical',False)
+            if down_enabled and await run_sync(store.should_notify,owner,'recovery'):
+                await send_notification(context,owner,f'✅ اتصال سرور {srv["name"]} دوباره برقرار شد.','down',db=db)
+        exceeded=[]
+        for name,default in (('cpu',80),('ram',80),('disk',90)):
+            value=stats.get(name)
+            try:limit=max(0,min(100,float(settings.get(name+'_threshold',default))))
+            except (ValueError,TypeError):limit=default
+            if value is not None and float(value)>=limit:
+                exceeded.append(f'{name.upper()}: {float(value):.1f}% | حد: {limit:g}%')
+        if exceeded:
+            now=time.monotonic()
+            if now-CPU_ALERT_TRACKER.get(sid,-1000)>=600:
+                sent=await send_notification(context,owner,'⚠️ مصرف منابع '+srv['name']+'\n'+'\n'.join(exceeded),'resource',db=db)
+                if sent:CPU_ALERT_TRACKER[sid]=now
         else:
-            # اگر سرور برگشت، ریست کن
-            if SERVER_FAILURE_COUNTS.get(sid, 0) > 0:
-                SERVER_FAILURE_COUNTS[sid] = 0
-                try:
-                    from pro_store import ProStore
-                    await asyncio.to_thread(ProStore().incident, srv['owner_id'], 'server',sid,
-                                            'server_down', f'بازیابی سرور {name}', 'critical',False)
-                except Exception:logger.exception('Pro incident resolution failed')
-                await notify_server_owner(context, owner, f"✅ سرور {name} دوباره آنلاین شد.")
-            # Honor the thresholds configured in the server settings menu.
-            for metric, setting, default in (('cpu','cpu_threshold',80),
-                                             ('ram','ram_threshold',80),
-                                             ('disk','disk_threshold',90)):
-                try:
-                    value = float(stats.get(metric) or 0)
-                    threshold = float(await asyncio.to_thread(db.get_setting, owner, setting) or default)
-                    threshold = min(100,max(1,threshold))
-                except (ValueError, TypeError):
-                    continue
-                flag = (sid,metric)
-                if value >= threshold and not CPU_ALERT_TRACKER.get(flag):
-                    CPU_ALERT_TRACKER[flag] = True
-                    await notify_server_owner(context, owner,
-                        f'⚠️ {name}: {metric.upper()} {value:.1f}% بالاتر از حد {threshold:.0f}%',
-                        category='resource')
-                elif value < max(0,threshold-5):
-                    CPU_ALERT_TRACKER.pop(flag,None)
-
-    except Exception as e:
-        logger.error(f"Error checking server {name}: {e}")
+            CPU_ALERT_TRACKER.pop(sid,None)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.error('Resource monitor failed server=%s type=%s',sid,type(exc).__name__)
+    finally:
+        _RESOURCE_RUNNING.discard(sid)
 
 # Safe, bounded background work; prevent overlapping job runs.
 _ACTIVE_JOB_TYPES = set()
@@ -203,12 +150,12 @@ async def monitor_tunnels_job(context: ContextTypes.DEFAULT_TYPE):
         from tunnel_logic import tunnel_manager
         rows = await asyncio.get_running_loop().run_in_executor(EXECUTOR, _scheduled_items_snapshot)
         settings = await _settings_snapshot()
-        monitor = await asyncio.get_running_loop().run_in_executor(EXECUTOR, tunnel_manager._get_active_monitor)
-        if not monitor: return
         now = datetime.now()
         for uid, configs in rows.items():
             allowed, _ = await asyncio.get_running_loop().run_in_executor(EXECUTOR, db.check_access, uid)
             if not allowed: continue
+            monitor=await run_sync(tunnel_manager._get_active_monitor,uid)
+            if not monitor:continue
             st = settings.get(uid, {})
             try: interval = int(st.get('config_report_interval', '0'))
             except ValueError: continue
@@ -217,10 +164,16 @@ async def monitor_tunnels_job(context: ContextTypes.DEFAULT_TYPE):
             # Save the timestamp *before* starting, preventing duplicate overlapping jobs.
             await asyncio.get_running_loop().run_in_executor(EXECUTOR, db.set_setting, uid, 'last_config_report_at', now.isoformat())
             try:
-                result = await tunnel_manager.process_singles_async(configs, monitor, uid=uid)
-                await context.bot.send_message(uid,
-                    f'📡 گزارش دوره‌ای: {len(result)} کانفیگ سالم از {len(configs)} مورد' +
-                    ('\n⚠️ برخی کانفیگ‌ها ناموفق هستند.' if len(result) < len(configs) else ''))
+                def size_setting(key,default):
+                    try:return max(0.0,min(10.0,float(st.get(key,default))))
+                    except (ValueError,TypeError):return default
+                try:big_interval=max(10,int(st.get('monitor_big_interval','60')))
+                except ValueError:big_interval=60
+                heavy=(now-_datetime_setting(st,'last_big_test_at')).total_seconds()>=big_interval*60
+                size=size_setting('monitor_big_size',10.0) if heavy else size_setting('monitor_small_size',0.5)
+                if heavy:await run_sync(db.set_setting,uid,'last_big_test_at',now.isoformat())
+                result = await tunnel_manager.process_singles_async(configs, monitor, uid=uid,size=size)
+                await send_notification(context,uid,f'📡 گزارش دوره‌ای: {len(result)} کانفیگ سالم از {len(configs)} مورد'+('\n⚠️ برخی کانفیگ‌ها ناموفق هستند.' if len(result)<len(configs) else ''),'config_report',db=db)
             except Exception:
                 logger.exception('Config monitoring failed for %s', uid)
     finally:
@@ -229,7 +182,7 @@ async def monitor_tunnels_job(context: ContextTypes.DEFAULT_TYPE):
 
 def _scheduled_items_snapshot():
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT * FROM tunnel_configs WHERE type='single' ORDER BY owner_id,id")
+        cur.execute("SELECT * FROM tunnel_configs WHERE type IN ('single','json') ORDER BY owner_id,id")
         rows = cur.fetchall()
     by_owner = {}
     for row in rows:
@@ -329,13 +282,13 @@ async def auto_update_subs_job(context: ContextTypes.DEFAULT_TYPE):
                 return cur.fetchall()
         sources = await asyncio.get_running_loop().run_in_executor(EXECUTOR, _load)
         st_all = await _settings_snapshot()
-        monitor = await asyncio.get_running_loop().run_in_executor(EXECUTOR, tunnel_manager._get_active_monitor)
-        if not monitor: return
         now = datetime.now()
         for sub in sources:
             uid = sub['owner_id']
             allowed, _ = await asyncio.get_running_loop().run_in_executor(EXECUTOR, db.check_access, uid)
             if not allowed: continue
+            monitor=await run_sync(tunnel_manager._get_active_monitor,uid)
+            if not monitor:continue
             st = st_all.get(uid, {})
             try: interval = int(st.get('auto_sub_update_hours', '0'))
             except ValueError: continue
@@ -357,12 +310,13 @@ async def check_expiry_job(context: ContextTypes.DEFAULT_TYPE):
         loop = asyncio.get_running_loop()
         near_expiry = await loop.run_in_executor(EXECUTOR, db.get_near_expiry_services)
         
-        if near_expiry:
-            msg = "⏳ **لیست سرویس‌های در حال انقضا (۳ روز مانده):**\n\n"
-            for s in near_expiry:
-                msg += f"🔸 {s['name']} - {s['ip']}\n"
-            
-            await alert_admin(context, msg)
+        by_owner = {}
+        for server in near_expiry:
+            by_owner.setdefault(server['owner_id'], []).append(server)
+        for owner, servers in by_owner.items():
+            msg = '⏳ سرویس‌های در حال انقضا (۳ روز مانده):\n'
+            msg += '\n'.join(f'🔸 {s["name"]} - {s["ip"]}' for s in servers)
+            await send_notification(context, owner, msg, 'expiry', db=db)
             
     except Exception as e:
         logger.error(f"Expiry Job Error: {e}")
@@ -480,3 +434,32 @@ async def alert_admin(context, text):
     try:
         await context.bot.send_message(chat_id=SUPER_ADMIN_ID, text=text, parse_mode='Markdown')
     except: pass
+
+async def server_report_job(context):
+    if 'server-report' in _ACTIVE_JOB_TYPES:return
+    _ACTIVE_JOB_TYPES.add('server-report')
+    try:
+        settings=await _settings_snapshot()
+        now=get_tehran_datetime().replace(tzinfo=None)
+        for uid,values in settings.items():
+            try:interval=int(values.get('report_interval','0'))
+            except (ValueError,TypeError):continue
+            # Values above the UI's maximum are legacy seconds, never legal new minutes.
+            if interval>1440 and interval%60==0:interval//=60
+            if interval<=0 or (now-_datetime_setting(values,'last_server_report_at')).total_seconds()<interval*60:continue
+            allowed,_=await run_sync(db.check_access,uid,SUPER_ADMIN_ID)
+            if not allowed:continue
+            rows=await run_sync(db.get_all_user_servers,uid)
+            active=[s for s in rows if s.get('is_active')]
+            if not active:continue
+            text='📊 گزارش دوره‌ای سرورها\n'+get_jalali_str()+'\n\n'
+            for row in active:
+                cpu='?' if row.get('last_cpu') is None else f'{row["last_cpu"]:.1f}'
+                ram='?' if row.get('last_ram') is None else f'{row["last_ram"]:.1f}'
+                text+=f'{row["name"]}: {row["last_status"]} | CPU {cpu}% | RAM {ram}% | Agent {row.get("last_agent_status","Unknown")}\n'
+            if await send_notification(context,uid,text,'report',db=db):
+                await run_sync(db.set_setting,uid,'last_server_report_at',now.isoformat())
+    except Exception as exc:
+        logger.error('Server report job failed: %s',type(exc).__name__)
+    finally:
+        _ACTIVE_JOB_TYPES.discard('server-report')

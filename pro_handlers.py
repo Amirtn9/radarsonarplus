@@ -15,6 +15,7 @@ from secure_handlers import SecureCommandHandler, SecureCallbackQueryHandler
 from pro_store import ProStore
 from pro_scoring import likely_cause
 from settings import SUPER_ADMIN_ID
+from runtime import background_callback
 
 store=ProStore()
 _LAST_ACTION={}
@@ -366,7 +367,7 @@ async def probe(update,context):
     uid=update.effective_user.id;owner=owned_context(update,context);cid=int(args[0]);now=time.monotonic()
     try:
         await invoke(store.require,uid,owner,write=True)
-        cfg=await invoke(store.db.execute,"SELECT id,link FROM tunnel_configs WHERE owner_id=%s AND id=%s AND type IN ('single','sub_item')",(owner,cid),fetch='one')
+        cfg=await invoke(store.db.execute,"SELECT id,link FROM tunnel_configs WHERE owner_id=%s AND id=%s AND type IN ('single','sub_item','json')",(owner,cid),fetch='one')
         if not cfg:raise ValueError('کانفیگ پیدا نشد.')
     except (PermissionError,ValueError) as exc:
         await display(update,'⛔ '+e(exc));return
@@ -469,4 +470,4 @@ def register(app):
     for cmd,handler in [('pro',home),('find',find),('tag',tag_command),('quiet',quiet),
                         ('member',member),('team',team),('workspace',workspace),
                         ('history',history),('diagnose',diagnose),('probe',probe),('insights',insights),('pdfreport',pdf_report),('rule',rule_command)]:
-        app.add_handler(SecureCommandHandler(cmd,handler))
+        app.add_handler(SecureCommandHandler(cmd,background_callback(handler) if cmd in ('probe','diagnose','pdfreport') else handler))

@@ -65,8 +65,8 @@ def test_rollbacks_backup_and_restore_are_guarded():
 def test_agent_does_not_use_insecure_archive_extraction_or_shell_curl():
     script=(ROOT/'monitor_agent.py').read_text('utf8')
     segment=script.split('def install_xray():',1)[1].split('# ==============================================================================',1)[0]
-    assert '"--fail"' in segment
-    assert '"--location"' in segment
+    assert '"--fail"' in segment or "'--fail'" in segment
+    assert '"--location"' in segment or "'--location'" in segment
     assert 'extractall(' not in segment
     assert 'shell=True' not in segment
     testing=script.split('def test_config_logic(',1)[1].split('def ',1)[0]

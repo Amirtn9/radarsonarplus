@@ -34,16 +34,16 @@ def _snapshot():
 
 def _select_configs(uid):
     with store.db.get_connection() as (conn,cur):
-        cur.execute("SELECT COUNT(*) n FROM tunnel_configs WHERE owner_id=%s AND type IN ('single','sub_item')",(uid,));n=cur.fetchone()['n']
+        cur.execute("SELECT COUNT(*) n FROM tunnel_configs WHERE owner_id=%s AND type IN ('single','sub_item','json')",(uid,));n=cur.fetchone()['n']
         if not n:return []
         limit=min(8,n);offset=_CURSOR.get(uid,0)%n
         cur.execute('''SELECT id,link FROM tunnel_configs
-                       WHERE owner_id=%s AND type IN ('single','sub_item')
+                       WHERE owner_id=%s AND type IN ('single','sub_item','json')
                        ORDER BY id LIMIT %s OFFSET %s''',(uid,limit,offset))
         rows=cur.fetchall()
         if len(rows)<limit:
             cur.execute('''SELECT id,link FROM tunnel_configs
-                           WHERE owner_id=%s AND type IN ('single','sub_item')
+                           WHERE owner_id=%s AND type IN ('single','sub_item','json')
                            ORDER BY id LIMIT %s''',(uid,limit-len(rows)))
             rows+=cur.fetchall()
         _CURSOR[uid]=(offset+len(rows))%n

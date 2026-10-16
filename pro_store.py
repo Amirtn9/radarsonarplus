@@ -111,7 +111,7 @@ class ProStore:
                 FROM servers WHERE owner_id=%s""",(owner,)); servers=cur.fetchone()
             cur.execute("""SELECT COUNT(*) total,COUNT(*) FILTER(WHERE last_status='OK') healthy,
                 COUNT(*) FILTER(WHERE last_status='Fail') failed
-                FROM tunnel_configs WHERE owner_id=%s AND type IN ('single','sub_item')""",(owner,)); configs=cur.fetchone()
+                FROM tunnel_configs WHERE owner_id=%s AND type IN ('single','sub_item','json')""",(owner,)); configs=cur.fetchone()
             cur.execute("SELECT COUNT(*) n FROM pro_incidents WHERE owner_id=%s AND status<>'resolved'",(owner,))
             inc=cur.fetchone()['n']
             cur.execute("SELECT MAX(measured_at) last FROM pro_metrics WHERE owner_id=%s",(owner,))
@@ -125,7 +125,7 @@ class ProStore:
         page=max(1,min(int(page),10000));per_page=max(1,min(int(per_page),50))
         sql=f"SELECT r.id,r.name,r.last_status,{'r.ip,r.is_active,r.location_type' if kind=='server' else 'r.type,r.last_ping,r.last_jitter,r.quality_score'}, EXISTS(SELECT 1 FROM pro_favorites f WHERE f.owner_id=r.owner_id AND f.resource_type=%s AND f.resource_id=r.id) favorite FROM {table} r WHERE r.owner_id=%s"
         params=[kind,owner]
-        if kind=='config':sql+=" AND r.type IN ('single','sub_item','sub_source')"
+        if kind=='config':sql+=" AND r.type IN ('single','sub_item','json','sub_source')"
         if term:
             sql+=' AND (r.name ILIKE %s'+(' OR r.ip ILIKE %s' if kind=='server' else '')+')'
             needle='%'+term[:80].replace('%',r'\%').replace('_',r'\_')+'%'
@@ -188,7 +188,7 @@ class ProStore:
            FROM tunnel_configs c LEFT JOIN LATERAL (
              SELECT region,ok,ping,jitter FROM pro_metrics
              WHERE owner_id=c.owner_id AND config_id=c.id ORDER BY measured_at DESC LIMIT 1
-           ) m ON TRUE WHERE c.owner_id=%s AND c.type IN ('single','sub_item')
+           ) m ON TRUE WHERE c.owner_id=%s AND c.type IN ('single','sub_item','json')
            ORDER BY c.id DESC LIMIT 300'''
         rows=self.db.execute(q,(owner,),fetch='all')
         from pro_scoring import score_config

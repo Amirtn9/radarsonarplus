@@ -2,7 +2,7 @@
 <p align="center"><strong>مدیریت، پایش و کنترل سرورها از تلگرام و پنل وب</strong></p>
 <p align="center">Telegram Bot · Secure WSS Agent · Mini App · Monitoring Dashboard</p>
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-5.2.3-2563eb?style=for-the-badge">
+  <img alt="Version" src="https://img.shields.io/badge/version-5.3.0-2563eb?style=for-the-badge">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776ab?style=for-the-badge&amp;logo=python&amp;logoColor=white">
   <img alt="Platform" src="https://img.shields.io/badge/Ubuntu%20%7C%20Debian-Linux-111827?style=for-the-badge&amp;logo=linux&amp;logoColor=white">
   <img alt="Status" src="https://img.shields.io/badge/release-staging%20validation-f59e0b?style=for-the-badge">
@@ -21,13 +21,29 @@
 
 **Sonar Radar Pro** سامانه‌ای برای مدیریت و پایش زیرساخت‌های سروری از طریق **ربات تلگرام** و **Telegram Mini App** است. پروژه از یک ایجنت راه‌دور با ارتباط رمزنگاری‌شده، ذخیره‌سازی PostgreSQL، مدیریت پیکربندی‌ها و مشاهده گزارش‌ها استفاده می‌کند.
 
-> **وضعیت انتشار:** نسخه `5.2.3` برای بررسی و تست روی سرور آزمایشی آماده شده است. نصب واقعی روی Ubuntu تمیز، اتصال زنده تلگرام، PostgreSQL و ثبت ایجنت‌ها هنوز به تأیید عملی در محیط شما نیاز دارد. از آن مستقیماً به‌عنوان نسخه Production تضمین‌شده استفاده نکنید.
+> **نسخهٔ اصلاح‌شدهٔ 5.3.0:** خطای مبهم SSH، پورت WSS/8080، نصب ایجنت و Xray، پنل و گزارش‌ها اصلاح شده‌اند. 68 تست موفق و آزمون‌های محلی واقعی SSH، WSS/TLS، Xray و SQL اجرا شده‌اند. نتیجه و حدود آزمون‌ها در [QA_5.3_FA.md](QA_5.3_FA.md) آمده است؛ نصب systemd/UFW و تلگرام زنده روی محیط مقصد هنوز باید تأیید شوند.
 
 <a id="installation"></a>
 
 ## 🚀 نصب سریع
 
-برای شروع، روی سرور **Ubuntu/Debian دارای systemd** وارد ترمینال شوید و این سه دستور را اجرا کنید (این کد را قبل از اجرا از مخزن بررسی کنید):
+### نصب مستقیم از این بسته
+
+ZIP را استخراج و وارد پوشهٔ `Sonar_Radar_Pro_5.3.0` شوید. فایل نصب را همراه بقیهٔ سورس اجرا کنید:
+
+```bash
+python3 scripts/verify_manifest.py
+bash install.sh --check
+sudo bash install.sh
+```
+
+برای ارتقای نصب قبلی، از داخل همین پوشه `sudo bash install.sh --update` را اجرا کنید. مراحل بکاپ، حفظ کلید قبلی و تعمیر ایجنت در [UPGRADE_NOTES_FA.md](UPGRADE_NOTES_FA.md) آمده است. برای اعمال این اصلاحات به نصب تمیز نیاز ندارید.
+
+**پورت پیش‌فرض ایجنت 8080 است؛ در پرسش پورت SSH، پورت واقعی SSH مقصد را وارد کنید.** میزبان تازه، مرحلهٔ تأیید مستقل اثرانگشت SSH دارد.
+
+### نصب از GitHub پس از انتشار نسخه
+
+پس از قرارگرفتن فایل‌های همین نسخه در مخزن، روی سرور **Ubuntu/Debian دارای systemd** این دستورات را اجرا کنید:
 
 ```bash
 wget https://raw.githubusercontent.com/Amirtn9/radarsonarplus/main/install.sh
@@ -91,7 +107,7 @@ sudo bash install.sh --clean-install
 
 ## 🔎 رفع خطای `203/EXEC` و دسترسی پایتون
 
-در نسخه قدیمی، محیط مجازی با `umask 077` ساخته می‌شد و `sonar-bot` به برخی پوشه‌های آن دسترسی اجرا نداشت. در نسخه جدید سطح دسترسی خواندن/اجرای venv تنظیم می‌شود و قبل از روشن‌شدن سرویس، اجرای پایتون و import ماژول‌ها با خود کاربر `sonar-bot` بررسی می‌شود. فایل‌های حساس `secret.key` و `sonar_config.json` همچنان `0600` باقی می‌مانند.
+در نسخه قدیمی، ساخت venv و سورس زیر `umask 077` می‌توانست دسترسی `sonar-bot` را قطع کند. اکنون سطح دسترسی سورس و venv تنظیم می‌شود و خواندن سورس، اجرای پایتون و import کتابخانه‌ها با خود کاربر سرویس بررسی می‌شود. فایل‌های حساس `secret.key` و `sonar_config.json` همچنان `0600` باقی می‌مانند.
 
 برای تشخیص خطا:
 
@@ -106,7 +122,7 @@ sudo namei -l /opt/radar-sonar/venv/bin/python
 ```text
 ╭───────────────────────────────────────────────────────╮
 │                    🦇 SONAR / RADAR                  │
-│                 PRO 5.2.3 · Control Center            │
+│                 PRO 5.3.0 · Control Center            │
 ╰───────────────────────────────────────────────────────╯
 
 01  Install Full Stack (Bot + DB + Mini App)
@@ -217,11 +233,11 @@ sudo bash install.sh --repair
 
 - اتصال ایجنت‌ها در این نسخه باید **WSS** باشد. ایجنت‌های قدیمی `ws://` باید از مسیر مدیریتی دوباره ثبت و نصب شوند.
 - پورت هر ایجنت را در فایروال **فقط به IP ربات** محدود کنید. TLS به‌تنهایی جایگزین محدودسازی شبکه نیست.
-- نصب خودکار Xray فقط با URL نسخه معین و SHA-256 معتبر انجام می‌شود؛ در غیر این صورت ممکن است تست‌های وابسته به Xray اجرا نشوند.
+- نسخه و SHA-256 پیش‌فرض Xray در `agent_runtime.lock.json` ثبت شده است؛ نصب باینری و geodata فقط پس از تطبیق هش انجام می‌شود. تنظیمات pin دلخواه هنگام تعمیر حفظ می‌شوند.
 - فایل‌های `sonar_config.json`، `secret.key`، `.env` و کلیدهای خصوصی را هرگز در GitHub آپلود نکنید.
 - API مینی‌اپ روی `127.0.0.1` راه‌اندازی می‌شود؛ برای دسترسی عمومی باید پشت nginx و HTTPS قرار بگیرد.
 - اعتبار Telegram Mini App محدود است و پس از انقضای نشست، باید مینی‌اپ را دوباره باز کنید.
-- کنترل دسترسی بعضی مسیرهای قدیمی Telegram هنوز نیازمند بازبینی گسترده‌تر است. برای محیط چندمستاجری نامطمئن، پیش از استفاده عملی ممیزی امنیتی ضروری است.
+- عملیات سرور parser و کنترل مالکیت مشترک دارند؛ دسترسی پلن و مالکیت در مرز اجرای دستور نیز بررسی می‌شود.
 
 برای جزئیات کامل به [`SECURITY.md`](SECURITY.md) و [`UPGRADE_NOTES_FA.md`](UPGRADE_NOTES_FA.md) مراجعه کنید.
 
@@ -255,12 +271,13 @@ radarsonarplus/
 
 ```bash
 python3 scripts/verify_manifest.py
-bash -n install.sh scripts/*.sh
+for script in install.sh install_web_panel.sh scripts/*.sh; do bash -n "$script"; done
+node --check pro_web/static/app.js
 python3 -m compileall -q .
 python3 -m pytest -q tests
 ```
 
-بعضی تست‌ها به کتابخانه‌های پروژه نیاز دارند. نتیجه موفق تست آفلاین، به معنی تأیید نصب واقعی، ارتباط SSH و TLS، دیتابیس یا تلگرام نیست.
+تست‌ها به وابستگی‌های پروژه و `pytest` نیاز دارند. آزمون‌های یکپارچهٔ تکمیلی و محدودیت اجرای آن‌ها در [QA_5.3_FA.md](QA_5.3_FA.md) و فهرست رفع ایرادها در [FIXES_5.3_FA.md](FIXES_5.3_FA.md) آمده‌اند.
 
 ## 🔄 ارتقا و نسخه پشتیبان
 
@@ -290,26 +307,3 @@ python3 -m pytest -q tests
 </div>
 
 راهنمای جزئیات نصب مجدد و بازیابی: [docs/INSTALL_RECOVERY_FA.md](docs/INSTALL_RECOVERY_FA.md)
-
-
-## 🦇 اصلاحات امنیت و پایداری نسخه 5.2.3
-
-- Callbackهای عملیات سرور یک parser مشترک دارند و مالکیت سرور پیش از هر فرمان SSH دوباره بررسی می‌شود.
-- نصب تمیز فقط با تأیید تعاملی و بکاپ قابل‌اعتبارسنجی اجرا می‌شود. اگر مرحله‌ای شکست بخورد، نصب خودکار ادامه نمی‌یابد. **این کار دیتابیس اختصاصی Sonar را حذف می‌کند.**
-- مجوز کدها و محیط پایتون با کاربر اختصاصی سرویس تست می‌شوند. نصب برای سرویس‌های `sonar-bot` و `sonar-web` است.
-- جست‌وجوی Mini App، pagination بخش Pro، مسیر نصب دسته‌جمعی Agent و ثبت پورت WSS اصلاح شده‌اند.
-- به‌روزرسانی سابسکریپشن شناسه کانفیگ‌های ثابت را حفظ می‌کند؛ ناموفق‌شدن تست به‌معنای حذف لینک نیست.
-- داده‌های CPU/RAM و وضعیت سرورها ذخیره می‌شود و هشدارها با محدودیت‌های تنظیم‌شده کاربر و مقصد کانال مربوطه ارسال می‌شوند.
-- اتصال لغوشدهٔ WebSocket دوباره وارد pool نمی‌شود.
-
-بعد از آپلود نسخه جدید روی شاخه `main`، نصب تمیز را صرفاً روی سرور آزمایشی اجرا کنید:
-
-```bash
-wget https://raw.githubusercontent.com/Amirtn9/radarsonarplus/main/install.sh
-chmod +x install.sh
-sudo ./install.sh
-```
-
-برای بررسی: `sudo bash install.sh --doctor` و `sudo bash install.sh --logs all --follow`.
-ارتقا با حفظ اطلاعات را به نصب تمیز ترجیح بدهید مگر به حذف دیتابیس نیاز داشته باشید.
-**تست آفلاین به معنی تأیید نصب عملیاتی روی VPS واقعی نیست.**

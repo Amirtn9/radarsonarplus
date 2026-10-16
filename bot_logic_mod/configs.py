@@ -4,6 +4,7 @@ Section: configs
 """
 
 from bot_logic_mod.base import *  # noqa
+from access_policy import valid_subscription_url
 
 # 📝 CONFIG MANAGEMENT (NEW GRAPHICAL MENU)
 # ==============================================================================
@@ -101,8 +102,10 @@ async def process_sub_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link = update.message.text.strip()
     uid = update.effective_user.id
 
-    if not link.startswith(('http://', 'https://')):
-        await update.message.reply_text("❌ لینک باید با http یا https شروع شود.")
+    try:
+        link = valid_subscription_url(link)
+    except ValueError as exc:
+        await update.message.reply_text('❌ ' + str(exc))
         return GET_SUB_LINK
 
     msg = await update.message.reply_text("⏳ **در حال دریافت و آنالیز کانفیگ‌ها...**")
@@ -110,7 +113,7 @@ async def process_sub_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # دریافت اطلاعات سرور ایران
     with db.get_connection() as (conn, cur):
         # FIX: psycopg2 cursor.execute() returns None; use cursor.fetchone()
-        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1")
+        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
         monitor = cur.fetchone()
 
     if not monitor:
@@ -119,11 +122,10 @@ async def process_sub_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ip, port, user = monitor['ip'], monitor['port'], monitor['username']
     password = sec.decrypt(monitor['password'])
-    cmd = ServerMonitor.agent_cli_command(link)
 
     loop = asyncio.get_running_loop()
     # افزایش تایم‌اوت به 30 ثانیه برای ساب‌های سنگین
-    ok, output = await ServerMonitor.run_remote_command(ip, port, user, password, cmd, 30)
+    ok, output = await ServerMonitor.agent_request(monitor,link,timeout=45,uid=uid)
 
     try:
         data = None

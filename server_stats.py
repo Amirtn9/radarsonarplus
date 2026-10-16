@@ -41,6 +41,9 @@ class StatsManager:
             loop = asyncio.get_running_loop()
             # اجرای متد همگام SSH در ترد جداگانه برای جلوگیری از قفل شدن ربات
             ssh_res = await loop.run_in_executor(SHARED_EXECUTOR, ServerMonitor.check_full_stats, ip, port, user, password)  # 🔧 v4.2
+            ssh_res['transport']='ssh'
+            ssh_res['agent_status']='Offline'
+            ssh_res['agent_error']=ws_res.get('error','Agent unreachable') if isinstance(locals().get('ws_res'),dict) else 'Agent unreachable'
             return ssh_res
         except Exception as e:
             logger.error(f"SSH Check failed for {ip}: {e}")
@@ -64,12 +67,16 @@ class StatsManager:
 
     @staticmethod
     def get_datacenter_info(ip):
-        """دریافت اطلاعات دیتاسنتر و لوکیشن"""
         try:
-            r = requests.get(f"http://ip-api.com/json/{ip}?fields=status,message,country,countryCode,isp,query", timeout=5)
-            return True, r.json()
-        except Exception as e:
-            return False, str(e)
+            response=requests.get(f'http://ip-api.com/json/{ip}',params={'fields':'status,message,country,countryCode,isp,query'},timeout=7)
+            response.raise_for_status()
+            value=response.json()
+            if value.get('status')!='success': return False,str(value.get('message') or 'Lookup failed')
+            return True,{'country_name':value.get('country','?'),'country_code2':value.get('countryCode','?'),
+                'isp':value.get('isp','?'),'ip_number':value.get('query',ip),'ip':value.get('query',ip),
+                'response_message':value['status']}
+        except (requests.RequestException,ValueError,TypeError) as exc:
+            return False,type(exc).__name__
 
     @staticmethod
     def make_bar(percentage, length=10):

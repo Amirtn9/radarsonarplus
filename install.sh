@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sonar Radar Pro 5.2.3 | installer import/DB/cache hotfix
+# Sonar Radar Pro 5.3.0 | resilient GitHub deployment manager
 # Supported: Ubuntu/Debian with systemd. Never execute remotely piped scripts as root.
 set -Eeuo pipefail
 umask 077
@@ -7,6 +7,7 @@ export LC_ALL=C.UTF-8
 
 APP_DIR=/opt/radar-sonar
 APP_USER=sonar-bot
+STATE_DIR=/var/lib/sonar-radar
 ENV_FILE=/etc/sonar-bot.env
 SERVICE=sonar-bot
 WEB_SERVICE=sonar-web
@@ -14,7 +15,6 @@ BOT_UNIT=/etc/systemd/system/sonar-bot.service
 WEB_UNIT=/etc/systemd/system/sonar-web.service
 BACKUP_DIR=/var/backups/sonar-radar
 LOG_DIR=/var/log/sonar
-CACHE_DIR=/var/lib/sonar-radar
 INSTALL_LOG=/var/log/sonar-install.log
 DB_NAME=sonar_ultra_pro
 DB_USER=sonar_user
@@ -95,7 +95,7 @@ spinner_run() {
 }
 ok() { printf '  %b✓%b %s\n' "$C_GREEN" "$C_RESET" "$*"; }
 warn() { printf '  %b!%b %s\n' "$C_ORANGE" "$C_RESET" "$*" >&2; }
-die() { printf '  %b✕%b %s\n' "$C_RED" "$C_RESET" "$*" >&2; return 1; }
+die() { printf '  %b✕%b %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 section() { printf '\n%b  ┌────────────────────────────────────────────────────────┐%b\n' "$C_BLUE" "$C_RESET"; printf '%b  │%b  %-54s%b│%b\n' "$C_BLUE" "$C_WHITE" "$1" "$C_BLUE" "$C_RESET"; printf '%b  └────────────────────────────────────────────────────────┘%b\n' "$C_BLUE" "$C_RESET"; }
 require_root() { (( EUID == 0 )) || die 'Root access required. Run: sudo bash install.sh'; }
 require_service_host() {
@@ -121,6 +121,7 @@ app_role_exists() {
 existing_components() {
   local found=0
   section 'EXISTING INSTALLATION  ·  Inventory'
+  if [[ -d "$STATE_DIR" ]];then say "Runtime data: $STATE_DIR";found=1;fi
   if [[ -e "$APP_DIR" || -L "$APP_DIR" ]]; then say "Application: $APP_DIR";found=1;fi
   if [[ -e "$BOT_UNIT" || -L "$BOT_UNIT" ]];then say "Bot service: $BOT_UNIT";found=1;fi
   if [[ -e "$WEB_UNIT" || -L "$WEB_UNIT" ]];then say "Web service: $WEB_UNIT";found=1;fi
@@ -138,59 +139,66 @@ existing_components() {
 }
 archive_existing_components() {
   # Archive all of the project-owned configuration before a destructive reset.
-  local dest
+  local dest db_present=''
   dest="$BACKUP_DIR/before-reset-$(date -u +%Y%m%dT%H%M%SZ)-$$"
   install -d -m 0700 "$dest"
   if [[ -d "$APP_DIR" && ! -L "$APP_DIR" ]];then
-    tar -C /opt -czf "$dest/app.tar.gz" radar-sonar || { die 'Application archive failed. Refusing reset.'; return 1; }
+    tar -C /opt -czf "$dest/app.tar.gz" radar-sonar || die 'Application archive failed. Refusing reset.'
   fi
-  [[ ! -f "$ENV_FILE" || -L "$ENV_FILE" ]] || cp -p "$ENV_FILE" "$dest/sonar-bot.env" || { die "Could not archive sonar-bot.env"; return 1; }
-  [[ ! -f "$BOT_UNIT" || -L "$BOT_UNIT" ]] || cp -p "$BOT_UNIT" "$dest/sonar-bot.service" || { die "Could not archive sonar-bot.service"; return 1; }
-  [[ ! -f "$WEB_UNIT" || -L "$WEB_UNIT" ]] || cp -p "$WEB_UNIT" "$dest/sonar-web.service" || { die "Could not archive sonar-web.service"; return 1; }
-  [[ ! -f "$NGINX_SITE" || -L "$NGINX_SITE" ]] || cp -p "$NGINX_SITE" "$dest/sonar-nginx.conf" || { die "Could not archive sonar-nginx.conf"; return 1; }
-  if app_database_exists;then
-    runuser -u postgres -- pg_dump -Fc --no-owner --no-acl -d "$DB_NAME" > "$dest/database.dump" || { die 'Database archive failed. Refusing reset.'; return 1; }
-    [[ -s "$dest/database.dump" ]] && pg_restore --list "$dest/database.dump" >/dev/null || { die 'Backup verification failed. Refusing reset.'; return 1; }
+  [[ ! -f "$ENV_FILE" || -L "$ENV_FILE" ]] || cp -p "$ENV_FILE" "$dest/sonar-bot.env" || die 'Environment archive failed.'
+  [[ ! -f "$BOT_UNIT" || -L "$BOT_UNIT" ]] || cp -p "$BOT_UNIT" "$dest/sonar-bot.service" || die 'Bot unit archive failed.'
+  [[ ! -f "$WEB_UNIT" || -L "$WEB_UNIT" ]] || cp -p "$WEB_UNIT" "$dest/sonar-web.service" || die 'Web unit archive failed.'
+  [[ ! -f "$NGINX_SITE" || -L "$NGINX_SITE" ]] || cp -p "$NGINX_SITE" "$dest/sonar-nginx.conf" || die 'nginx archive failed.'
+  if command -v psql >/dev/null 2>&1 && id -u postgres >/dev/null 2>&1;then
+    db_present="$(runuser -u postgres -- psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'")" || die 'Database inventory failed; refusing reset without a verified archive.'
   fi
-  chmod -R go-rwx "$dest" || return 1
+  if [[ "$db_present" == 1 ]];then
+    runuser -u postgres -- pg_dump -Fc --no-owner --no-acl -d "$DB_NAME" > "$dest/database.dump" || die 'Database archive failed. Refusing reset.'
+    [[ -s "$dest/database.dump" ]] && pg_restore --list "$dest/database.dump" >/dev/null || die 'Backup verification failed. Refusing reset.'
+  fi
+  if [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]]; then
+    tar -C /var/lib -czf "$dest/runtime.tar.gz" sonar-radar || die 'Runtime archive failed. Refusing reset.'
+  fi
+  chmod -R go-rwx "$dest"
   ok "Verified reset archive saved: $dest"
-  return 0
 }
 reset_project_components() {
   require_root;require_service_host;ensure_directories
-  [[ ! -L "$APP_DIR" && ! -L "$ENV_FILE" && ! -L "$NGINX_SITE" ]] || { die 'Symlinked Sonar path detected. Refusing unsafe reset.'; return 1; }
+  [[ ! -L "$APP_DIR" && ! -L "$STATE_DIR" && ! -L "$ENV_FILE" && ! -L "$NGINX_SITE" ]] || die 'Symlinked Sonar path detected. Refusing unsafe reset.'
   # Fail closed: never mistake an offline PostgreSQL instance for an absent database.
   if command -v psql >/dev/null 2>&1 && id -u postgres >/dev/null 2>&1;then
-    systemctl start postgresql >> "$INSTALL_LOG" 2>&1 || { die 'PostgreSQL cannot be started; refusing unsafe reset.'; return 1; }
-    runuser -u postgres -- psql -tAc 'SELECT 1' 2>> "$INSTALL_LOG" | grep -qx 1 || { die 'PostgreSQL unreachable; refusing unsafe reset.'; return 1; }
+    systemctl start postgresql >> "$INSTALL_LOG" 2>&1 || die 'PostgreSQL cannot be started; refusing unsafe reset.'
+    runuser -u postgres -- psql -tAc 'SELECT 1' 2>> "$INSTALL_LOG" | grep -qx 1 || die 'PostgreSQL unreachable; refusing unsafe reset.'
   fi
   if existing_components;then return 0;fi
   local confirm
   warn 'This removes ONLY Sonar-specific code, services, nginx config, env, DB, and role.'
   warn 'It does NOT remove PostgreSQL itself, SSH, other databases, or unrelated services.'
   warn 'A verified backup of existing Sonar data is REQUIRED before deletion.'
-  [[ -t 0 ]] || { die 'Interactive approval required for destructive reset. Use a terminal.'; return 1; }
+  [[ -t 0 ]] || die 'Interactive approval required for destructive reset. Use a terminal.'
   read -r -p '  Type DELETE SONAR DATA to reset including PostgreSQL database: ' confirm
-  [[ "$confirm" == 'DELETE SONAR DATA' ]] || { die 'Reset cancelled; no data was deleted.'; return 1; }
-  archive_existing_components || { die 'Backup failed: refusing ALL destructive actions.'; return 1; }
+  [[ "$confirm" == 'DELETE SONAR DATA' ]] || die 'Reset cancelled; no data was deleted.'
+  archive_existing_components || return 1
   systemctl disable --now "$SERVICE" "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1 || true
   if app_database_exists;then
     # Only sessions connected to Sonar DB are terminated.
-    runuser -u postgres -- psql -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${DB_NAME}' AND pid <> pg_backend_pid()" >> "$INSTALL_LOG" 2>&1 || { die 'Could not disconnect Sonar database users.'; return 1; }
-    runuser -u postgres -- dropdb --if-exists "$DB_NAME" >> "$INSTALL_LOG" 2>&1 || { die 'Failed to drop Sonar database; archive retained.'; return 1; }
+    runuser -u postgres -- psql -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${DB_NAME}' AND pid <> pg_backend_pid()" >> "$INSTALL_LOG" 2>&1 || die 'Could not disconnect Sonar database users.'
+    runuser -u postgres -- dropdb --if-exists "$DB_NAME" >> "$INSTALL_LOG" 2>&1 || die 'Failed to drop Sonar database; archive retained.'
   fi
   if app_role_exists;then
     if ! runuser -u postgres -- dropuser "$DB_USER" >> "$INSTALL_LOG" 2>&1;then
       warn 'Database role is referenced elsewhere; keeping role instead of forcing deletion.'
     fi
   fi
-  [[ "$APP_DIR" == /opt/radar-sonar && ! -L "$APP_DIR" ]] || { die 'Refusing unsafe application path.'; return 1; }
-  rm -rf -- "$APP_DIR" || { die 'Could not remove Sonar code'; return 1; }
-  [[ ! -L "$ENV_FILE" ]] || { die 'Unsafe env symlink; remove it manually.'; return 1; }
-  rm -f -- "$ENV_FILE" "$BOT_UNIT" "$WEB_UNIT" || { die 'Could not remove Sonar units/config'; return 1; }
+  [[ "$APP_DIR" == /opt/radar-sonar && ! -L "$APP_DIR" ]] || die 'Refusing unsafe application path.'
+  rm -rf -- "$APP_DIR"
+  [[ "$STATE_DIR" == /var/lib/sonar-radar && ! -L "$STATE_DIR" ]] || die 'Refusing unsafe runtime path.'
+  rm -rf -- "$STATE_DIR"
+  [[ ! -L "$ENV_FILE" ]] || die 'Unsafe env symlink; remove it manually.'
+  rm -f -- "$ENV_FILE" "$BOT_UNIT" "$WEB_UNIT"
   if [[ -L "$NGINX_LINK" ]] && [[ "$(readlink -f "$NGINX_LINK")" == "$NGINX_SITE" ]];then rm -f -- "$NGINX_LINK";fi
-  [[ ! -L "$NGINX_SITE" ]] || { die 'Unsafe nginx symlink; remove manually.'; return 1; }
-  rm -f -- "$NGINX_SITE" || { die 'Could not remove Sonar nginx site'; return 1; }
+  [[ ! -L "$NGINX_SITE" ]] || die 'Unsafe nginx symlink; remove manually.'
+  rm -f -- "$NGINX_SITE"
   # Orphaned staging directories use a dedicated, predictable /opt prefix.
   local orphan
   for orphan in /opt/.sonar-stage.*;do
@@ -198,10 +206,9 @@ reset_project_components() {
     [[ "$orphan" =~ ^/opt/\.sonar-stage\.[A-Za-z0-9]+$ ]] || { warn "Skipped unexpected staging path: $orphan";continue; }
     rm -rf -- "$orphan"
   done
-  systemctl daemon-reload || return 1
-  if command -v nginx >/dev/null 2>&1 && nginx -t >> "$INSTALL_LOG" 2>&1;then systemctl reload nginx || warn 'Nginx reload failed';fi
+  systemctl daemon-reload
+  if command -v nginx >/dev/null 2>&1 && nginx -t >> "$INSTALL_LOG" 2>&1;then systemctl reload nginx || true;fi
   ok 'Previous Sonar deployment and its database removed. Backups remain available.'
-  return 0
 }
 select_install_strategy() {
   # Return code 0 = proceed fresh, 2 = upgrade, 1 = abort.
@@ -216,7 +223,7 @@ select_install_strategy() {
   read -r -p '  Select [0-2]: ' choice
   case "$choice" in
     1) if [[ -f "$APP_DIR/bot.py" ]];then return 2;else die 'Application missing. Choose archive and reset for a clean installation.';fi;;
-    2) reset_project_components || return 1; return 0;;
+    2) reset_project_components || return 1;return 0;;
     0|*) die 'Installation cancelled. Nothing changed.';;
   esac
 }
@@ -252,7 +259,7 @@ read_env() {
 set_env() {
   local key="$1" val="$2" out
   case "$key" in
-    SONAR_DB_PASSWORD|SONAR_WEBAPP_URL|SONAR_WS_POOL_MAX|SONAR_GLOBAL_TEST_LIMIT|SONAR_USER_TEST_LIMIT|SONAR_DB_POOL_MAX|SONAR_EXECUTOR_WORKERS|SONAR_WEB_PORT|SONAR_AGENT_BIND|SONAR_LOG_LEVEL|SONAR_MINIAPP_SESSION_MAX_AGE) ;;
+    SONAR_STATE_DIR|SONAR_DB_PASSWORD|SONAR_WEBAPP_URL|SONAR_WS_POOL_MAX|SONAR_GLOBAL_TEST_LIMIT|SONAR_USER_TEST_LIMIT|SONAR_DB_POOL_MAX|SONAR_EXECUTOR_WORKERS|SONAR_WEB_PORT|SONAR_AGENT_BIND|SONAR_LOG_LEVEL|SONAR_MINIAPP_SESSION_MAX_AGE) ;;
     *) die 'Environment key not permitted';;
   esac
   [[ "$val" != *$'\n'* && "$val" != *$'\r'* ]] || die 'Newline in setting not allowed'
@@ -296,7 +303,8 @@ PY
 preflight() {
   section 'PREFLIGHT  ·  Source and environment'
   [[ -f "$SOURCE_DIR/bot.py" && -f "$SOURCE_DIR/settings.py" && -f "$SOURCE_DIR/requirements.txt" && -f "$SOURCE_DIR/pro_portal.py" && -f "$SOURCE_DIR/install_web_panel.sh" ]] || die "Run from a complete repository checkout ($SOURCE_DIR)."
-  bash -n "$SOURCE_DIR/install.sh" "$SOURCE_DIR/install_web_panel.sh" || die 'Bash syntax check failed'
+  local check_script
+  for check_script in "$SOURCE_DIR/install.sh" "$SOURCE_DIR/install_web_panel.sh" "$SOURCE_DIR"/scripts/*.sh;do bash -n "$check_script" || die 'Bash syntax check failed';done
   command -v python3 >/dev/null || die 'Python3 is required for preflight. Install python3 then retry.'
   python3 - "$SOURCE_DIR" <<'PY'
 import pathlib,json,sys,ast
@@ -345,7 +353,7 @@ PY
 }
 prepare_release() {
   STATE_STAGE="$(mktemp -d /opt/.sonar-stage.XXXXXXXX)"
-  tar -C "$SOURCE_DIR" --exclude='./venv' --exclude='./.venv' --exclude='./.git' --exclude='./__pycache__' --exclude='./.pytest_cache' --exclude='./secret.key' --exclude='./.env' --exclude='./tests' --exclude='./logs' -cf - . | tar -C "$STATE_STAGE" -xf -
+  tar -C "$SOURCE_DIR" --exclude='./venv' --exclude='./.venv' --exclude='./.git' --exclude='./__pycache__' --exclude='./.pytest_cache' --exclude='./secret.key' --exclude='./.env' --exclude='./tests' --exclude='./logs' --exclude='./runtime' -cf - . | tar -C "$STATE_STAGE" -xf -
   if command -v git >/dev/null 2>&1 && git -C "$SOURCE_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
     git -C "$SOURCE_DIR" rev-parse HEAD > "$STATE_STAGE/SOURCE_REVISION"
   else
@@ -360,7 +368,10 @@ prepare_release() {
   else
     ask_new_credentials
   fi
-  if [[ -f "$APP_DIR/secret.key" ]]; then
+  if [[ -f "$STATE_DIR/secret.key" ]]; then
+    [[ ! -L "$STATE_DIR/secret.key" ]] || die 'Unsafe runtime encryption key symlink'
+    cp -p "$STATE_DIR/secret.key" "$STATE_STAGE/secret.key"
+  elif [[ -f "$APP_DIR/secret.key" ]]; then
     [[ ! -L "$APP_DIR/secret.key" ]] || die 'Unsafe existing encryption key symlink'
     cp -p "$APP_DIR/secret.key" "$STATE_STAGE/secret.key"
   fi
@@ -437,16 +448,61 @@ make_backup() {
   require_install
   local stamp file
   stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$";file="$BACKUP_DIR/sonar-${stamp}"
-  [[ -f "$ENV_FILE" ]] && cp -p "$ENV_FILE" "${file}.env"
-  cp -p "$APP_DIR/sonar_config.json" "${file}.config.json"
-  [[ -f "$APP_DIR/secret.key" ]] && cp -p "$APP_DIR/secret.key" "${file}.secret.key"
-  if runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -qx 1; then
-    runuser -u postgres -- pg_dump -Fc -d "$DB_NAME" > "${file}.dump" || { rm -f "${file}.dump"; die 'pg_dump failed, refusing to proceed.'; }
-    [[ -s "${file}.dump" ]] || die 'Database backup empty!'
-    pg_restore --list "${file}.dump" >/dev/null || die 'Database dump verification failed.'
-  fi
+  [[ ! -f "$ENV_FILE" ]] || cp -p "$ENV_FILE" "${file}.env" || die 'Environment backup failed.'
+  cp -p "$APP_DIR/sonar_config.json" "${file}.config.json" || die 'Configuration backup failed.'
+  local key_source="$STATE_DIR/secret.key"
+  [[ -f "$key_source" ]] || key_source="$APP_DIR/secret.key"
+  [[ -f "$key_source" && ! -L "$key_source" ]] || die 'Encryption key missing; cannot make a usable backup.'
+  cp -p "$key_source" "${file}.secret.key" || die 'Encryption key backup failed.'
+  runuser -u postgres -- psql -v ON_ERROR_STOP=1 -tAc 'SELECT 1' | grep -qx 1 || die 'PostgreSQL unreachable; no verified database backup was created.'
+  local db_present
+  db_present="$(runuser -u postgres -- psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'")" || die 'Database inventory failed; refusing backup success.'
+  [[ "$db_present" == 1 ]] || die 'Sonar database is missing; cannot create a verified database backup.'
+  runuser -u postgres -- pg_dump -Fc -d "$DB_NAME" > "${file}.dump" || { rm -f "${file}.dump"; die 'pg_dump failed, refusing to proceed.'; }
+  [[ -s "${file}.dump" ]] || die 'Database backup empty!'
+  pg_restore --list "${file}.dump" >/dev/null || die 'Database dump verification failed.'
+
   chmod 0600 "${file}"*; printf '%s\n' "$file"
 }
+normalize_source_permissions() {
+  local source="$1"
+  # Keep credential files private while opening only source/readable code paths.
+  find "$source" -type d -not -path "$source/venv/*" -exec chmod 0755 {} +
+  find "$source" -type f -not -path "$source/venv/*"     ! -name sonar_config.json ! -name secret.key ! -name known_hosts ! -name .env     -exec chmod 0644 {} +
+  find "$source" -type f -name '*.sh' -not -path "$source/venv/*" -exec chmod 0755 {} +
+}
+prepare_runtime_state() {
+  [[ "$STATE_DIR" == /var/lib/sonar-radar && ! -L "$STATE_DIR" ]] || die 'Unsafe runtime directory'
+  install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$STATE_DIR"
+  if [[ ! -f "$STATE_DIR/secret.key" ]];then
+    [[ -f "$APP_DIR/secret.key" && ! -L "$APP_DIR/secret.key" ]] || die 'Encryption key missing before runtime migration'
+    cp -p "$APP_DIR/secret.key" "$STATE_DIR/secret.key"
+  fi
+  [[ ! -L "$STATE_DIR/secret.key" ]] || die 'Unsafe runtime key symlink'
+  chown "$APP_USER:$APP_USER" "$STATE_DIR/secret.key";chmod 0600 "$STATE_DIR/secret.key"
+  install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$STATE_DIR/.ssh"
+  if [[ -f "$APP_DIR/.ssh/known_hosts" && ! -f "$STATE_DIR/.ssh/known_hosts" ]];then
+    cp -p "$APP_DIR/.ssh/known_hosts" "$STATE_DIR/.ssh/known_hosts"
+  fi
+  if [[ -f "$STATE_DIR/.ssh/known_hosts" ]];then
+    chown "$APP_USER:$APP_USER" "$STATE_DIR/.ssh/known_hosts";chmod 0600 "$STATE_DIR/.ssh/known_hosts"
+  fi
+  set_env SONAR_STATE_DIR "$STATE_DIR"
+}
+verify_service_sources() {
+  local source="$1"
+  runuser -u "$APP_USER" -- "$source/venv/bin/python" - "$source" <<'SERVICE_SOURCE_PY'
+from pathlib import Path
+import ast,sys
+root=Path(sys.argv[1])
+for p in list(root.glob('*.py'))+list((root/'bot_logic_mod').glob('*.py')):
+ ast.parse(p.read_text('utf8'),filename=str(p))
+for p in [root/'pro_web/index.html',root/'pro_web/static/app.js',root/'agent_runtime.lock.json']:
+ p.read_bytes()
+print('Service user can read all application sources/assets')
+SERVICE_SOURCE_PY
+}
+
 create_unit() {
   cat > "$BOT_UNIT" <<EOF
 [Unit]
@@ -461,10 +517,6 @@ User=$APP_USER
 Group=$APP_USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$ENV_FILE
-Environment=MPLCONFIGDIR=$CACHE_DIR/matplotlib
-Environment=XDG_CACHE_HOME=$CACHE_DIR/cache
-StateDirectory=sonar-radar
-StateDirectoryMode=0700
 ExecStart=$APP_DIR/venv/bin/python $APP_DIR/bot.py
 StandardOutput=journal
 StandardError=journal
@@ -475,7 +527,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=$LOG_DIR $APP_DIR/sonar_config.json $APP_DIR/secret.key
+ReadWritePaths=$LOG_DIR $STATE_DIR
 UMask=0077
 [Install]
 WantedBy=multi-user.target
@@ -527,42 +579,13 @@ install_app() {
   create_venv
   ensure_db
   id -u "$APP_USER" >/dev/null 2>&1 || useradd --system --home-dir "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
-  # The bootstrap inherits umask 077. Grant only the dedicated service GROUP
-  # access to code and packages, never 'other'. This also fixes private package
-  # directories outside venv (bot_logic_mod, pro_web, etc.).
-  chown -R root:"$APP_USER" "$STATE_STAGE" || die 'Cannot assign service group.'
-  chmod -R g+rX "$STATE_STAGE" || die 'Cannot make installed code readable.'
-  chmod 0750 "$STATE_STAGE" || die 'Cannot set application root permissions.'
+  chown -R root:root "$STATE_STAGE"
+  normalize_source_permissions "$STATE_STAGE"
+  chmod 0755 "$STATE_STAGE"
   # Python venv created with umask 077 has 0700 directories. Fix traversability.
-  # Public Python dependencies may be read by any unprivileged process.
+  # This ONLY opens read/execute on the venv; config and secret.key stay 0600.
   chmod -R a+rX "$STATE_STAGE/venv"
-  # Secure mutable credentials BEFORE making the staging path live.
-  chown "$APP_USER:$APP_USER" "$STATE_STAGE/sonar_config.json" "$STATE_STAGE/secret.key"
-  chmod 0600 "$STATE_STAGE/sonar_config.json" "$STATE_STAGE/secret.key"
-  # bot.py configures rotating file loggers on import; ensure service can
-  # create its journal-backed log files *before* doing the import smoke test.
-  chown "$APP_USER:$APP_USER" "$LOG_DIR" || die 'Cannot grant service access to log directory.'
-  chmod 0750 "$LOG_DIR" || die 'Cannot secure log directory.'
-  # Matplotlib must not try to write to /opt/radar-sonar/.config.  This path
-  # is owned by the service account, both during smoke tests and after launch.
-  install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$CACHE_DIR" "$CACHE_DIR/matplotlib" "$CACHE_DIR/cache" || die 'Could not prepare application cache.'
-  # The Python interpreter -c starts with the caller's CWD, not the module
-  # directory.  We add the STAGING directory explicitly, and pass the same
-  # database environment that systemd EnvironmentFile will provide at runtime.
-  # Without either fix, import bot raises ModuleNotFoundError or logs the
-  # misleading "fe_sendauth: no password supplied" message.
-  local smoke_db_password
-  smoke_db_password="$(read_env SONAR_DB_PASSWORD)"
-  [[ -n "$smoke_db_password" ]] || die 'Missing SONAR_DB_PASSWORD after database setup.'
-  if ! SONAR_DB_PASSWORD="$smoke_db_password" MPLCONFIGDIR="$CACHE_DIR/matplotlib" XDG_CACHE_HOME="$CACHE_DIR/cache" \
-      runuser -u "$APP_USER" -- "$STATE_STAGE/venv/bin/python" -c \
-      'import sys;sys.path.insert(0,sys.argv[1]);import bot, pro_portal, secure_handlers, bot_logic_mod.servers' \
-      "$STATE_STAGE" >> "$INSTALL_LOG" 2>&1; then
-    warn 'Staging application imports failed. Diagnostic output follows:'
-    tail -n 40 "$INSTALL_LOG" >&2 || true
-    die 'Service user cannot import Sonar application code; see installer log.'
-  fi
-  # Explicitly check the service account can run all key dependencies.
+  # Explicitly check the service account can run the EXACT promoted interpreter.
   runuser -u "$APP_USER" -- "$STATE_STAGE/venv/bin/python" -c 'import sys, telegram, psycopg2, websockets, fastapi, uvicorn; print(sys.version.split()[0])' >> "$INSTALL_LOG" 2>&1 || die 'Service user cannot execute Python/dependencies (permission or import failure).'
   chown "$APP_USER:$APP_USER" "$STATE_STAGE/sonar_config.json" "$STATE_STAGE/secret.key"
   chmod 0600 "$STATE_STAGE/sonar_config.json" "$STATE_STAGE/secret.key"
@@ -570,6 +593,7 @@ install_app() {
     chown root:"$APP_USER" "$STATE_STAGE/.ssh" "$STATE_STAGE/.ssh/known_hosts"
     chmod 0750 "$STATE_STAGE/.ssh";chmod 0640 "$STATE_STAGE/.ssh/known_hosts"
   fi
+  verify_service_sources "$STATE_STAGE" || die 'Service user cannot read application sources/assets.'
   chown "$APP_USER:$APP_USER" "$LOG_DIR"
   if systemctl is-active --quiet "$SERVICE"; then STATE_BOT_ACTIVE=1; fi
   if systemctl is-active --quiet "$WEB_SERVICE"; then STATE_WEB_ACTIVE=1; fi
@@ -579,19 +603,11 @@ install_app() {
   STATE_SWITCH=1
   if [[ -d "$APP_DIR" ]]; then STATE_OLD="$BACKUP_DIR/previous-code-$(date -u +%Y%m%dT%H%M%SZ)-$$";mv -- "$APP_DIR" "$STATE_OLD";fi
   mv -- "$STATE_STAGE" "$APP_DIR";STATE_STAGE=''
+  prepare_runtime_state
   create_unit
   systemctl daemon-reload
   systemd-analyze verify "$BOT_UNIT" >> "$INSTALL_LOG" 2>&1 || die 'Invalid systemd unit generated.'
-  # Confirm promoted code can be imported regardless of installer CWD
-  # (e.g. /root when started by sudo).  Do not print the DB password.
-  if ! SONAR_DB_PASSWORD="$(read_env SONAR_DB_PASSWORD)" MPLCONFIGDIR="$CACHE_DIR/matplotlib" XDG_CACHE_HOME="$CACHE_DIR/cache" \
-      runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c \
-      'import sys;sys.path.insert(0,sys.argv[1]);import telegram, psycopg2, websockets, bot, pro_portal' \
-      "$APP_DIR" >> "$INSTALL_LOG" 2>&1; then
-    warn 'Installed source import failed; last installer log lines:'
-    tail -n 45 "$INSTALL_LOG" >&2 || true
-    die 'Installed Python source is not importable by the service user.'
-  fi
+  runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import telegram, psycopg2, websockets' >> "$INSTALL_LOG" 2>&1 || die 'Installed interpreter is not executable by the service user.'
   systemctl enable --now "$SERVICE" >> "$INSTALL_LOG" 2>&1 || die 'Bot service did not start.'
   spinner_run 'Checking bot startup' sleep 5
   if ! systemctl is-active --quiet "$SERVICE";then
@@ -636,10 +652,6 @@ User=$APP_USER
 Group=$APP_USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$ENV_FILE
-Environment=MPLCONFIGDIR=$CACHE_DIR/matplotlib
-Environment=XDG_CACHE_HOME=$CACHE_DIR/cache
-StateDirectory=sonar-radar
-StateDirectoryMode=0700
 ExecStart=$APP_DIR/venv/bin/python -m uvicorn pro_portal:app --host 127.0.0.1 --port $port --workers 2 --access-log
 StandardOutput=journal
 StandardError=journal
@@ -789,7 +801,7 @@ trust_ssh_host() {
   require_root;require_install
   local host="$1" port="${2:-22}" scan fingerprint expected storedir temp
   [[ "$host" =~ ^[A-Za-z0-9.:_-]{1,253}$ && "$host" != -* ]] || die 'Invalid SSH host.'
-  valid_port "$port" || { [[ "$port" == 22 ]] || die 'Invalid SSH port.'; }
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || die 'Invalid SSH port.'
   command -v ssh-keyscan >/dev/null && command -v ssh-keygen >/dev/null || die 'Install openssh-client first.'
   say "Fetching SSH host key from $host:$port (not yet trusted)"
   temp="$(mktemp "$BACKUP_DIR/ssh-hostkey.XXXXXXXX")"
@@ -800,11 +812,18 @@ trust_ssh_host() {
   warn 'Verify this SHA256 fingerprint independently with the server provider or console; an SSH keyscan alone does NOT authenticate the host.'
   read -r -p '  Paste independently verified SHA256 fingerprint to trust: ' expected
   [[ "$expected" == "$fingerprint" ]] || die 'Fingerprint mismatch. Not trusted.'
-  storedir="$APP_DIR/.ssh"
-  install -d -o root -g "$APP_USER" -m 0750 "$storedir"
-  touch "$storedir/known_hosts"
-  chmod 0640 "$storedir/known_hosts";chown root:"$APP_USER" "$storedir/known_hosts"
-  if ! grep -Fqx -f "$temp" "$storedir/known_hosts";then cat "$temp" >> "$storedir/known_hosts";fi
+  prepare_runtime_state
+  local candidate
+  candidate="$(python3 - "$temp" "$host" "$port" <<'SSH_CANDIDATE_PY'
+import json,sys
+line=next(line for line in open(sys.argv[1]) if line.strip() and not line.startswith('#'))
+_,kind,key=line.split()[:3]
+print(json.dumps({'host':sys.argv[2],'port':int(sys.argv[3]),'type':kind,'key':key}))
+SSH_CANDIDATE_PY
+)" || die 'Invalid SSH candidate key'
+  runuser -u "$APP_USER" -- env SONAR_STATE_DIR="$STATE_DIR" SONAR_SOURCE_DIR="$APP_DIR" \
+    "$APP_DIR/venv/bin/python" -c 'import json,os,sys;sys.path.insert(0,os.environ["SONAR_SOURCE_DIR"]);from ssh_support import trust_host_key;trust_host_key(json.loads(sys.argv[1]),sys.argv[2])' \
+    "$candidate" "$expected" || die 'SSH key enrollment failed; existing trust was preserved.'
   rm -f "$temp"
   ok 'Verified SSH host key added. Remote agent installs can now validate this host.'
 }
@@ -842,11 +861,6 @@ doctor() {
   if [[ -x "$APP_DIR/venv/bin/python" ]]; then
     if id -u "$APP_USER" >/dev/null 2>&1 && runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import sys;print(sys.version)' >/dev/null 2>&1;then
       ok 'Python executable works as sonar-bot (not root)'
-      if PYTHONPATH="$APP_DIR" runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import importlib.util;assert importlib.util.find_spec("bot") is not None;assert importlib.util.find_spec("pro_portal") is not None' >/dev/null 2>&1; then
-        ok 'Application modules are discoverable as sonar-bot'
-      else
-        warn 'Application modules not discoverable as sonar-bot';((problems+=1))
-      fi
     else
       warn 'Python is not executable by sonar-bot. Inspect directory permissions (namei -l).'
       namei -l "$APP_DIR/venv/bin/python" >&2 || true
@@ -861,13 +875,6 @@ doctor() {
   else warn 'Mini App not running';((problems+=1));fi
   if systemctl is-active --quiet postgresql;then
     if runuser -u postgres -- psql -tAc 'SELECT 1' | grep -qx 1;then ok 'PostgreSQL responds';else warn 'PostgreSQL unhealthy';((problems+=1));fi
-    local db_health_password
-    db_health_password="$(read_env SONAR_DB_PASSWORD)"
-    if [[ -n "$db_health_password" ]] && PGPASSWORD="$db_health_password" psql -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" -tAc 'SELECT 1' 2>> "$INSTALL_LOG" | grep -qx 1; then
-      ok 'Sonar database login works with configured password'
-    else
-      warn 'Sonar database credentials missing or authentication failed';((problems+=1))
-    fi
   fi
   if ((problems));then warn "$problems diagnostic warnings. Check journalctl and README.";return 1;fi
   ok 'Checks passed. Telegram/remote agent end-to-end verification still required.'
@@ -941,7 +948,7 @@ menu() {
     clear 2>/dev/null || true
     printf '\n%b  ╭────────────────────────────────────────────────────────╮%b\n' "$C_BLUE" "$C_RESET"
     printf '%b  │%b    /\  /\        SONAR  /  RADAR                  %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
-    printf '%b  │%b   ( \__/ )       PRO 5.2.3 · Control Center      %b│%b\n' "$C_BLUE" "$C_DIM" "$C_BLUE" "$C_RESET"
+    printf '%b  │%b   ( \__/ )       PRO 5.3.0 · Control Center      %b│%b\n' "$C_BLUE" "$C_DIM" "$C_BLUE" "$C_RESET"
     printf '%b  ╰────────────────────────────────────────────────────────╯%b\n' "$C_BLUE" "$C_RESET"
     printf '  ─────── DEPLOY ────────────────────────────────────────\n  01  Install Full Stack (Bot + DB + Mini App)\n  02  Update application safely\n  03  Install / repair Mini App panel\n  04  Configure domain + HTTPS\n  05  Settings & credentials\n  06  Service management\n  07  Professional logs (live/filter/JSON)\n  08  Create verified backup\n  09  Restore database from .dump\n  10  Diagnostics / health\n  11  Preflight source check\n  12  Uninstall (archive only)\n  13  Repair installed services\n  14  Clean reset + reinstall (includes Sonar database)\n  00  Exit\n\n'
     local choice s a d e p
@@ -985,7 +992,7 @@ case "${1:-}" in
   --logs) require_root;shift;bash "$SOURCE_DIR/scripts/logs.sh" "${1:-bot}" "${@:2}";;
   --uninstall) uninstall_app;;
   --help|-h) cat <<'USAGE'
-Sonar Radar Pro 5.2.3 | Deployment Manager
+Sonar Radar Pro 5.3.0 | Deployment Manager
   sudo bash install.sh                 Interactive Apple-inspired terminal UI
   sudo bash install.sh --check         Offline source and OS checks
   sudo bash install.sh --install       Fresh FULL installation: Bot + DB + Mini App

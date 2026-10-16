@@ -4,6 +4,7 @@ Section: tunnels
 """
 
 from bot_logic_mod.base import *  # noqa
+from access_policy import valid_subscription_url, monitoring_setting
 
 # 🚇 TUNNEL CONFIG MANAGER (ADVANCED)
 # ==============================================================================
@@ -67,7 +68,7 @@ async def perform_fast_scan(context, uid, mode):
     # گرفتن کانفیگ‌های کاربر
     with db.get_connection() as (conn, cur):
         # FIX: psycopg2 cursor.execute() returns None; use cursor.fetchone()
-        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1")
+        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
         monitor = cur.fetchone()
         # فقط ۵۰ کانفیگ آخر را برای سرعت بیشتر چک می‌کنیم (یا همه را بسته به نیاز)
         # FIX: psycopg2 cursor.execute() returns None; use cursor.fetchall()
@@ -88,10 +89,9 @@ async def perform_fast_scan(context, uid, mode):
     for cfg in configs:
         # آماده‌سازی دستور
         link_arg = cfg['link']
-        cmd = ServerMonitor.agent_cli_command(link_arg, size=1.0)
 
         # تایم‌اوت کوتاه (۱۵ ثانیه) برای عدم معطلی کاربر
-        tasks.append(ServerMonitor.run_remote_command(ip, port, user, password, cmd, 15))
+        tasks.append(ServerMonitor.agent_request(monitor,link_arg,size=1.0,timeout=30,uid=uid))
 
     # اجرای همزمان همه تست‌ها
     results = await asyncio.gather(*tasks)
@@ -277,7 +277,7 @@ async def get_sub_links_action(update: Update, context: ContextTypes.DEFAULT_TYP
     sub_id = int(query.data.split('_')[3])
     
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, update.effective_user.id))
+        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (update.effective_user.id, sub_id))
         sub = cur.fetchone()
         if not sub:
             await query.answer("❌ اشتراک یافت نشد.", show_alert=True)
@@ -321,19 +321,14 @@ async def delete_full_subscription(update: Update, context: ContextTypes.DEFAULT
     
     # 1. حذف از دیتابیس
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, update.effective_user.id))
+        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (update.effective_user.id, sub_id))
         sub = cur.fetchone()
-        if not sub:
-            await query.answer("❌ اشتراک یافت نشد.", show_alert=True)
-            return
-        cur.execute("DELETE FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (uid, sub_id))
-        cur.execute("DELETE FROM tunnel_configs WHERE id=%s AND owner_id=%s", (sub_id, uid))
-        if cur.rowcount != 1:
-            conn.rollback()
-            await query.answer("❌ حذف اشتراک تأیید نشد.", show_alert=True)
-            return
-        conn.commit()
-
+        if sub:
+            # حذف سورس
+            cur.execute("DELETE FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (uid, sub_id))
+            cur.execute("DELETE FROM tunnel_configs WHERE id=%s AND owner_id=%s", (sub_id, uid))
+            conn.commit()
+            
     # 2. نمایش پیام موفقیت (داخل try برای جلوگیری از کرش)
     try:
         await query.answer("✅ اشتراک حذف شد.", show_alert=True)
@@ -351,7 +346,7 @@ async def update_all_configs_status(update: Update, context: ContextTypes.DEFAUL
     with db.get_connection() as (conn, cur):
         cur.execute("SELECT * FROM tunnel_configs WHERE owner_id=%s", (uid,))
         configs = cur.fetchall()
-        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1")
+        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
         monitor = cur.fetchone()
 
     if not monitor:
@@ -378,9 +373,8 @@ async def background_update_all(context, uid, configs, monitor):
         tasks = []
         
         for cfg in chunk:
-            cmd = ServerMonitor.agent_cli_command(cfg['link'])
 
-            tasks.append(ServerMonitor.run_remote_command(ip, port, user, password, cmd, 25))
+            tasks.append(ServerMonitor.agent_request(monitor,cfg['link'],timeout=45,uid=uid))
         
         results = await asyncio.gather(*tasks)
         
@@ -422,7 +416,7 @@ async def handle_single_config_auto(update: Update, context: ContextTypes.DEFAUL
             
             # 1. دریافت اطلاعات سرور مانیتورینگ
             with db.get_connection() as (conn, cur):
-                cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1")
+                cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
                 monitor = cur.fetchone()
             
             if not monitor:
@@ -437,9 +431,8 @@ async def handle_single_config_auto(update: Update, context: ContextTypes.DEFAUL
             
             # 2. اجرای دستور تست
             safe_link = shlex.quote(link)
-            cmd = ServerMonitor.agent_cli_command(link)
             
-            ok, output = await ServerMonitor.run_remote_command(ip, port, user, password, cmd, 30)
+            ok, output = await ServerMonitor.agent_request(monitor,link,timeout=45,uid=uid)
             
             # 3. تحلیل خروجی
             data = extract_safe_json(output)
@@ -491,6 +484,11 @@ async def process_add_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # --- حالت ۱: لینک سابسکریپشن (http/https) ---
     if link.startswith(('http://', 'https://')):
+        try:
+            link = valid_subscription_url(link)
+        except ValueError as exc:
+            await update.message.reply_text('❌ ' + str(exc))
+            return GET_CONFIG_LINKS
         context.user_data['temp_sub_link'] = link
         
         await update.message.reply_text(
@@ -510,7 +508,7 @@ async def process_add_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         await update.message.reply_text(
             "❌ **فرمت لینک شناسایی نشد!**\n"
-            "لینک باید با `http` (ساب) یا `vless/vmess...` (تکی) شروع شود.",
+            "لینک باید با `https` (ساب) یا `vless/vmess...` (تکی) شروع شود.",
             reply_markup=keyboard.get_cancel_markup()
         )
         return GET_CONFIG_LINKS
@@ -549,7 +547,7 @@ async def handle_config_type_selection(update: Update, context: ContextTypes.DEF
                 
                 # 1. دریافت اطلاعات سرور مانیتورینگ
                 with db.get_connection() as (conn, cur):
-                    cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1")
+                    cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
                     monitor = cur.fetchone()
                 
                 if not monitor:
@@ -563,10 +561,9 @@ async def handle_config_type_selection(update: Update, context: ContextTypes.DEF
                 
                 # دستور اجرا (با shlex برای امنیت)
                 safe_link = shlex.quote(link)
-                cmd = ServerMonitor.agent_cli_command(link)
                 
                 # 2. اجرای دستور در ترد جداگانه (Non-Blocking)
-                ok, output = await ServerMonitor.run_remote_command(ip, port, user, password, cmd, 60)
+                ok, output = await ServerMonitor.agent_request(monitor,link,timeout=60,uid=uid)
                 
                 # 3. تحلیل خروجی
                 data = extract_safe_json(output)
@@ -591,14 +588,14 @@ async def handle_config_type_selection(update: Update, context: ContextTypes.DEF
                              )
                              conn.commit()
                         
-                        dl_spd = data.get('down', '0')
+                        dl_spd = format_speed(data.get('down'))
                         
                         # پیام موفقیت نهایی
                         await status_msg.edit_text(
                             f"✅ **کانفیگ تکی ذخیره شد!**\n"
                             f"🏷 نام: `{final_name}`\n"
                             f"⭐️ امتیاز: `{score}/10`\n"
-                            f"🚀 سرعت دانلود: `{dl_spd} MB/s`"
+                            f"🚀 سرعت دانلود: `{dl_spd}`"
                         )
                         await asyncio.sleep(2)
                         
@@ -638,6 +635,7 @@ async def finalize_sub_adding(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """تست دستی و دقیق (Heavy Test) یک کانفیگ با UI حرفه‌ای"""
     query = update.callback_query
+    uid = update.effective_user.id
     try:
         cid = int(query.data.split('_')[2])
     except:
@@ -652,7 +650,7 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
     with db.get_connection() as (conn, cur):
         cur.execute("SELECT * FROM tunnel_configs WHERE id=%s", (cid,))
         cfg = cur.fetchone()
-        cur.execute("SELECT * FROM servers WHERE is_monitor_node = 1 AND is_active = 1")
+        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
         monitor_node = cur.fetchone()
     
     # 2. بررسی موجود بودن
@@ -670,7 +668,7 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
             update, 
             f"🔎 **در حال آنالیز عمیق (Heavy Test)...**\n"
             f"🏷 `{cfg['name']}`\n"
-            f"⚖️ حجم تست: `10 MB` (دانلود + آپلود)\n"
+            f"⚖️ حجم تست: `10 MB` (دانلود؛ آپلود اندازه‌گیری نمی‌شود)\n"
             f"⏳ لطفاً تا ۶۰ ثانیه صبر کنید..."
         )
     
@@ -683,7 +681,7 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         # تست سنگین ۱۰ مگابایتی روی کانکشن پایدار، با رعایت صف عادلانه
         # تا یک کاربر نتواند کل ظرفیت نود مانیتورینگ را بگیرد.
-        async with tunnel_manager.global_sem, tunnel_manager._user_sem(update.effective_user.id):
+        async with tunnel_manager._user_sem(update.effective_user.id), tunnel_manager.global_sem:
             ok, res = await ServerMonitor.ws_test_config(
                 ip, ws_port, token, cfg['link'], size=10.0, timeout=90
             )
@@ -694,8 +692,8 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if res.get("status") == "OK":
             ping = res.get('ping', 0)
             jitter = res.get('jitter', 0)
-            up = res.get('up', '0')
-            down = res.get('down', '0')
+            up = format_speed(res.get('up'))
+            down = format_speed(res.get('down'))
             score = res.get('score', 0)
             
             # تعیین آیکون کیفیت بر اساس امتیاز
@@ -720,8 +718,8 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"🛡 امتیاز کیفی: `{score}/10` ({q_icon})\n\n"
                 f"📶 **Ping:** `{ping} ms`\n"
                 f"📉 **Jitter:** `{jitter} ms`\n"
-                f"📥 **Download:** `{down} MB/s`\n"
-                f"📤 **Upload:** `{up} MB/s`"
+                f"📥 **Download:** `{down}`\n"
+                f"📤 **Upload:** `{up}`"
             )
         else:
             # ثبت خطا در دیتابیس (🔧 v4.2: خارج از event loop)
@@ -806,13 +804,16 @@ async def advanced_monitoring_settings(update: Update, context: ContextTypes.DEF
         
     s_size = db.get_setting(uid, 'monitor_small_size') or '0.5'
     b_size = db.get_setting(uid, 'monitor_big_size') or '10'
+    interval = db.get_setting(uid, 'config_report_interval') or '0'
+    big_interval = db.get_setting(uid, 'monitor_big_interval') or '60'
     
     reply_markup = keyboard.advanced_monitor_kb(s_size, b_size)
     txt = (
         "⚙️ **تنظیمات پیشرفته مانیتورینگ تانل**\n"
         "➖➖➖➖➖➖➖➖➖➖\n"
-        "🔹 **تست سبک:** هر ۱۰ دقیقه برای بررسی پینگ و اتصال (کم‌مصرف).\n"
-        "🔸 **تست سنگین:** هر چند ساعت برای بررسی دقیق سرعت و کیفیت.\n\n"
+        f"🔹 فاصلهٔ گزارش و تست دوره‌ای: {interval} دقیقه (0 یعنی خاموش).\n"
+        f"🔸 تست سنگین در اولین اجرای دوره‌ای پس از {big_interval} دقیقه انجام می‌شود.\n"
+        "حجم مجاز هر تست 0 تا 10 MB است؛ مقدار 0 فقط پینگ می‌سنجد.\n\n"
         "👇 مقادیر مورد نظر را تغییر دهید:"
     )
     await safe_edit_message(update, txt, reply_markup=reply_markup)
@@ -849,6 +850,9 @@ async def save_setting_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     data = query.data 
     
     parts = data.split('_')
+    if len(parts) != 3 or parts[1] not in ('small', 'big', 'int'):
+        await query.answer('❌ تنظیم نامعتبر.', show_alert=True)
+        return
     setting_type = parts[1] # small, big, int
     value = parts[2]
     
@@ -874,7 +878,12 @@ async def save_setting_action(update: Update, context: ContextTypes.DEFAULT_TYPE
         'big': 'monitor_big_size', 
         'int': 'monitor_big_interval'
     }
-    db.set_setting(uid, key_map[setting_type], value)
+    try:
+        value = monitoring_setting(setting_type, value)
+    except ValueError as exc:
+        await query.answer(str(exc), show_alert=True)
+        return
+    await run_sync(db.set_setting, uid, key_map[setting_type], value)
     
     await query.answer("✅ ذخیره شد.")
     await advanced_monitoring_settings(update, context)
@@ -884,37 +893,37 @@ async def save_setting_action(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def custom_small_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        val = float(update.message.text)
+        val = monitoring_setting('small', update.message.text)
         db.set_setting(update.effective_user.id, 'monitor_small_size', val)
         await update.message.reply_text("✅ ذخیره شد.")
         await advanced_monitoring_settings(update, context)
         return ConversationHandler.END
-    except:
-        await update.message.reply_text("❌ عدد نامعتبر.")
+    except (ValueError, TypeError) as exc:
+        await update.message.reply_text('❌ ' + str(exc))
         return GET_CUSTOM_SMALL_SIZE
 
 
 async def custom_big_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        val = float(update.message.text)
+        val = monitoring_setting('big', update.message.text)
         db.set_setting(update.effective_user.id, 'monitor_big_size', val)
         await update.message.reply_text("✅ ذخیره شد.")
         await advanced_monitoring_settings(update, context)
         return ConversationHandler.END
-    except:
-        await update.message.reply_text("❌ عدد نامعتبر.")
+    except (ValueError, TypeError) as exc:
+        await update.message.reply_text('❌ ' + str(exc))
         return GET_CUSTOM_BIG_SIZE
 
 
 async def custom_int_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        val = int(update.message.text)
+        val = monitoring_setting('int', update.message.text)
         db.set_setting(update.effective_user.id, 'monitor_big_interval', val)
         await update.message.reply_text("✅ ذخیره شد.")
         await advanced_monitoring_settings(update, context)
         return ConversationHandler.END
-    except:
-        await update.message.reply_text("❌ عدد نامعتبر.")
+    except (ValueError, TypeError) as exc:
+        await update.message.reply_text('❌ ' + str(exc))
         return GET_CUSTOM_BIG_INTERVAL
 
 
@@ -1114,7 +1123,7 @@ async def mass_update_test_start(update: Update, context: ContextTypes.DEFAULT_T
             cur.execute("SELECT * FROM tunnel_configs WHERE owner_id=%s AND type='single'", (uid,))
             singles = cur.fetchall()
             # دریافت سرور مانیتورینگ
-            cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1")
+            cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
             monitor = cur.fetchone()
 
         # بررسی اینکه آیا اصلا چیزی برای تست هست؟
@@ -1241,7 +1250,7 @@ async def refresh_conf_dash_action(update: Update, context: ContextTypes.DEFAULT
     with db.get_connection() as (conn, cur):
         cur.execute("SELECT * FROM tunnel_configs WHERE owner_id=%s", (uid,))
         configs = cur.fetchall()
-        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1")
+        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
         monitor = cur.fetchone()
 
     if not monitor:
@@ -1403,7 +1412,7 @@ async def schedules_settings_menu(update: Update, context: ContextTypes.DEFAULT_
     if update.callback_query: await update.callback_query.answer()
     uid = update.effective_user.id
     # دریافت تنظیمات فعلی برای نمایش تیک
-    srv_alert = "✅" if db.get_setting(uid, 'down_alert_enabled') == '1' else "❌"
+    srv_alert = "✅" if (db.get_setting(uid, 'down_alert_enabled') or '1') == '1' else "❌"
     conf_alert = "✅" if (db.get_setting(uid, 'config_alert_enabled') or '1') == '1' else "❌"
     
     # مقادیر toggle (برای دکمه بعدی)

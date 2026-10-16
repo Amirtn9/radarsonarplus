@@ -4,6 +4,9 @@ Section: servers
 """
 
 from bot_logic_mod.base import *  # noqa
+from access_policy import parse_server_action, has_premium, valid_agent_port
+from ssh_support import normalize_host, ssh_port, scan_host_key, trust_host_key
+from runtime import spawn_background
 
 # 🛠 SERVER & GROUP MANAGEMENT
 # ==============================================================================
@@ -57,144 +60,45 @@ async def add_server_linear_start(update: Update, context: ContextTypes.DEFAULT_
     await update.callback_query.message.reply_text(txt, reply_markup=keyboard.get_cancel_markup(), parse_mode='Markdown')
     return GET_LINEAR_DATA
 async def process_linear_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پردازش متن خطی با فرمت ۵ خطی (همراه با سیستم ضد بلاک اصلاح شده)"""
-    text = update.message.text
-    # حذف خطوط خالی اضافی
-    lines = [line.strip() for line in text.split('\n') if line.strip()]
-
-    uid = update.effective_user.id
-    user = db.get_user(uid)
-    
-    limit = user['server_limit']
-    current_count = len(db.get_all_user_servers(uid))
-
-    success = 0
-    failed = 0
-    report = []
-
-    msg = await update.message.reply_text("⏳ **در حال پردازش، تست اتصال و ایمن‌سازی...**")
-
-    # بررسی فرمت
-    if len(lines) % 5 != 0:
-        await msg.edit_text(
-            f"❌ **فرمت ارسال اشتباه است!**\n\n"
-            f"تعداد خطوط باید مضربی از ۵ باشد.\n"
-            f"شما {len(lines)} خط فرستادید.\n\n"
-            "لطفاً اصلاح کنید و مجدد ارسال نمایید."
-        )
+    lines=(update.message.text or '').splitlines()
+    while lines and not lines[-1].strip(): lines.pop()
+    if not lines or len(lines)%5 or len(lines)>250:
+        await update.message.reply_text('❌ هر سرور باید ۵ خط داشته باشد: نام، IP، پورت SSH، کاربر، رمز. حداکثر ۵۰ سرور.')
         return GET_LINEAR_DATA
-
-    loop = asyncio.get_running_loop()
-
-    # 1. دریافت آی‌پی ربات (یکبار برای همه)
-    bot_public_ip = await loop.run_in_executor(EXECUTOR, ServerMonitor.get_bot_public_ip)
-
-    # تبدیل ادمین آیدی به عدد برای اطمینان
-    try: admin_id_int = int(SUPER_ADMIN_ID)
-    except: admin_id_int = 0
-
-    # پردازش ۵ خط به ۵ خط
-    for i in range(0, len(lines), 5):
-        name = lines[i]
-        ip = lines[i + 1]
-        port_str = lines[i + 2]
-        username = lines[i + 3]
-        password = lines[i + 4]
-
-        # چک کردن لیمیت (فقط اگر کاربر ادمین نباشد)
-        if uid != admin_id_int and (current_count + success) >= limit:
-            report.append(f"⛔️ محدودیت پر شد! (سرور {name} نادیده گرفته شد)")
-            failed += 1
-            continue
-
-        if not port_str.isdigit():
-            report.append(f"⚠️ پورت نامعتبر برای {name}: `{port_str}`")
-            failed += 1
-            continue
-
-        port = int(port_str)
-
-        # تست اتصال
-        res = await loop.run_in_executor(
-            None, ServerMonitor.check_full_stats, ip, port, username, password
-        )
-
-        if res['status'] == 'Online':
-            try:
-                # ذخیره در دیتابیس
-                data = {
-                    'name': name, 'ip': ip, 'port': port,
-                    'username': username, 'password': sec.encrypt(password),
-                    'expiry_date': None
-                }
-                # ارسال شناسه ادمین برای دور زدن لیمیت در دیتابیس
-                db.add_server(uid, 0, data, admin_id_int)
-
-                # ✅ اجرای سیستم ضد بلاک (Anti-Block) - اصلاح شده
-                if bot_public_ip:
-                    # تعریف تابع همگام
-                    def run_whitelist():
-                        ServerMonitor.whitelist_bot_ip(ip, port, username, password, bot_public_ip)
-                    
-                    # تعریف یک رپر ناهمگام (Async Wrapper) برای create_task
-                    async def background_whitelist():
-                        await loop.run_in_executor(EXECUTOR, run_whitelist)
-                    
-                    # حالا می‌توانیم create_task کنیم چون یک Coroutine داریم
-                    asyncio.create_task(background_whitelist())
-
-                report.append(f"✅ **{name}**: افزوده و ایمن‌سازی شد.")
-
-                # 📦 نصب/فعال‌سازی ایجنت مانیتورینگ (برای روشن شدن وب‌سوکت)
-                try:
-                    try:
-                        await msg.edit_text(
-                            f"⏳ **({success + failed + 1}/{len(lines)//5})** در حال نصب ایجنت روی **{name}**...",
-                            parse_mode='Markdown'
-                        )
-                    except Exception:
-                        pass
-
-                    ok_agent, agent_msg = await loop.run_in_executor(
-                        EXECUTOR,
-                        ServerMonitor.install_agent_service,
-                        ip,
-                        port,
-                        username,
-                        password,
-                        int(data.get('ws_port') or AGENT_PORT),
-                    )
-                    if ok_agent:
-                        report.append(f"🟢 **{name}**: ایجنت نصب و فعال شد (WS:{AGENT_PORT}).")
-                    else:
-                        report.append(f"⚠️ **{name}**: سرور ذخیره شد، اما نصب ایجنت ناموفق بود: `{agent_msg}`")
-                except Exception as e:
-                    report.append(f"⚠️ **{name}**: خطای نصب ایجنت: `{e}`")
-
-                success += 1
-            except Exception as e:
-                err_txt = str(e)
-                if "duplicate key" in err_txt or "unique constraint" in err_txt:
-                    report.append(f"❌ خطای تکراری: نام **{name}** قبلاً ثبت شده است.")
-                elif "Server Limit Reached" in err_txt:
-                    report.append(f"⛔️ محدودیت تعداد سرور پر شده است ({name}).")
-                else:
-                    report.append(f"❌ خطا در ذخیره {name}: {err_txt}")
-                failed += 1
-        else:
-            report.append(f"🔴 عدم اتصال {name}: `{res.get('error', 'Unknown Error')}`")
-            failed += 1
-
-    final_txt = (
-            f"📊 **نتیجه عملیات:**\n"
-            f"✅ موفق: `{success}` | ❌ ناموفق: `{failed}`\n"
-            f"➖➖➖➖➖➖➖➖\n" +
-            "\n".join(report)
-    )
-
-    await msg.edit_text(final_txt, parse_mode='Markdown')
-    await asyncio.sleep(3)
-    await start(update, context)
+    entries=[]
+    try:
+        for n in range(0,len(lines),5):
+            name,host,port,user,password=lines[n:n+5]
+            if not name.strip() or not user.strip() or not password:
+                raise ValueError('نام، کاربر و رمز نباید خالی باشند.')
+            entries.append({'name':name.strip(),'ip':normalize_host(host),'port':ssh_port(port.strip()),
+                'username':user.strip(),'password':sec.encrypt(password),'expiry_date':None,'ws_port':int(AGENT_PORT)})
+    except ValueError as exc:
+        await update.message.reply_text('❌ ورودی نامعتبر: '+str(exc))
+        return GET_LINEAR_DATA
+    message=await update.message.reply_text(f'⏳ بررسی و نصب {len(entries)} سرور در پس‌زمینه شروع شد؛ پورت ایجنت {AGENT_PORT}.')
+    uid=update.effective_user.id
+    async def worker():
+        report=[]
+        for data in entries:
+            result=await run_sync(ServerMonitor.check_ssh_connection,data['ip'],data['port'],data['username'],sec.decrypt(data['password']))
+            if result.get('status')!='Online':
+                report.append(f'❌ {data["name"]}: {result.get("error")}')
+                if str(result.get('error','')).startswith('HOST_KEY_UNKNOWN'):
+                    report.append('برای تأیید مستقل اثرانگشت این سرور از افزودن مرحله‌به‌مرحله استفاده کنید.')
+                continue
+            sid=await run_sync(db.add_server,uid,0,data,SUPER_ADMIN_ID)
+            if not isinstance(sid,int) or sid<=0:
+                report.append(f'❌ {data["name"]}: ثبت انجام نشد؛ نام تکراری یا سقف حساب.')
+                continue
+            saved=await run_sync(db.get_server_for_user,sid,uid,SUPER_ADMIN_ID)
+            status=await context.bot.send_message(update.effective_chat.id,f'⏳ نصب ایجنت {data["name"]} روی {AGENT_PORT}')
+            await _install_saved_server(context,uid,dict(saved),status)
+            report.append(f'✅ {data["name"]}: سرور ثبت شد؛ نتیجهٔ ایجنت جدا ارسال شد.')
+        for start_at in range(0,len(report),12):
+            await context.bot.send_message(update.effective_chat.id,'\n'.join(report[start_at:start_at+12])[:3900])
+        await message.edit_text('✅ پردازش افزودن گروهی پایان یافت.')
+    spawn_background(context,worker(),name=f'bulk-add-{uid}')
     return ConversationHandler.END
 async def get_srv_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['srv'] = {'name': update.message.text}
@@ -204,7 +108,11 @@ async def get_srv_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def get_srv_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['srv']['ip'] = update.message.text
+    try:
+        context.user_data['srv']['ip'] = normalize_host(update.message.text)
+    except ValueError:
+        await update.message.reply_text('❌ آدرس IP یا نام میزبان معتبر وارد کنید؛ بدون http و پورت.')
+        return GET_IP
     await update.message.reply_text("🔌 **پورت SSH را وارد کنید:**", reply_markup=keyboard.get_cancel_markup(),
                                     parse_mode='Markdown')
     return GET_PORT
@@ -212,7 +120,7 @@ async def get_srv_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_srv_port(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        context.user_data['srv']['port'] = int(update.message.text)
+        context.user_data['srv']['port'] = ssh_port(update.message.text)
     except:
         await update.message.reply_text("❌ فقط عدد وارد کنید.")
         return GET_PORT
@@ -222,7 +130,7 @@ async def get_srv_port(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def get_srv_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['srv']['username'] = update.message.text
+    context.user_data['srv']['username'] = update.message.text.strip()
     await update.message.reply_text("🔑 **رمز عبور (Password) را وارد کنید:**", reply_markup=keyboard.get_cancel_markup(),
                                     parse_mode='Markdown')
     return GET_PASS
@@ -251,7 +159,7 @@ async def confirm_ws_port(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "ws_port_ok":
         context.user_data['srv']['ws_port'] = int(AGENT_PORT)
         await query.edit_message_text(
-            f"✅ پورت پیش‌فرض انتخاب شد: {int(AGENT_PORT)}\n\n📅 حالا تاریخ انقضا را وارد کنید (مثلاً 2026-01-01):"
+            f"✅ پورت پیش‌فرض انتخاب شد: {int(AGENT_PORT)}\n\n📅 حالا تعداد روز تا انقضا را وارد کنید (مثلاً 30؛ برای نامحدود 0):"
         )
         return GET_EXPIRY
 
@@ -294,118 +202,15 @@ async def get_group_keyboard(uid):
 
 
 async def select_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ذخیره نهایی سرور و اجرای وایت‌لیست"""
-    if update.callback_query.data == 'cancel_flow': return await cancel_handler_func(update, context)
-    
-    await safe_edit_message(update, "⚡️ **در حال تست اتصال و ایمن‌سازی سرور...**")
-    
-    data = context.user_data['srv']
-    loop = asyncio.get_running_loop()
-    
-    # تست اتصال
-    res = await loop.run_in_executor(EXECUTOR, ServerMonitor.check_full_stats, data['ip'], data['port'], data['username'], sec.decrypt(data['password']))
-    
-    if res['status'] == 'Online':
-        try:
-            # ذخیره در دیتابیس
-            # 👇 اصلاح مهم: ارسال SUPER_ADMIN_ID به عنوان آرگومان چهارم
-            add_result = db.add_server(update.effective_user.id, int(update.callback_query.data), data, SUPER_ADMIN_ID)
-            if not isinstance(add_result, int) or add_result <= 0:
-                await update.callback_query.message.reply_text('❌ ثبت سرور ناموفق بود؛ محدودیت، گروه نامعتبر یا نام تکراری.')
-                return ConversationHandler.END
-            
-            # ✅ اجرای سیستم ضد بلاک (Anti-Block)
-            try:
-                bot_ip = await loop.run_in_executor(EXECUTOR, ServerMonitor.get_bot_public_ip)
-                if bot_ip:
-                    # اجرا در پس‌زمینه
-                    def run_whitelist():
-                        ServerMonitor.whitelist_bot_ip(data['ip'], data['port'], data['username'], sec.decrypt(data['password']), bot_ip)
-                    
-                    async def _bg_whitelist():
-                        await loop.run_in_executor(EXECUTOR, run_whitelist)
-
-                    asyncio.create_task(_bg_whitelist())
-            except Exception as e:
-                logger.error(f"Whitelist Error on Add: {e}")
-
-            # ✅ پیام موفقیت + نصب و فعال‌سازی ایجنت با SSH (طبق منطق پروژه)
-            status_msg = await update.callback_query.message.reply_text(
-                "✅ **اتصال موفق! سرور ذخیره و وایت‌لیست شد.**\n\n"
-                "📦 **در حال نصب/فعال‌سازی ایجنت مانیتورینگ...**\n"
-                "(این مرحله وب‌سوکت را روی سرور روشن می‌کند)",
-                parse_mode='Markdown'
-            )
-
-            # نمایش پیشرفت گرافیکی (Spinner + Bar)
-            running = True
-
-            async def _progress_ui():
-                frames = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
-                step = 0
-                while running:
-                    step += 1
-                    fill = step % 11
-                    bar = "█" * fill + "░" * (10 - fill)
-                    try:
-                        await status_msg.edit_text(
-                            "✅ **اتصال موفق! سرور ذخیره و وایت‌لیست شد.**\n\n"
-                            f"{frames[step % len(frames)]} **نصب ایجنت در حال انجام است...**\n"
-                            f"`[{bar}]`",
-                            parse_mode='Markdown'
-                        )
-                    except Exception:
-                        pass
-                    await asyncio.sleep(1.5)
-
-            ui_task = asyncio.create_task(_progress_ui())
-            try:
-                ok_agent, agent_msg = await loop.run_in_executor(
-                    EXECUTOR,
-                    ServerMonitor.install_agent_service,
-                    data['ip'],
-                    data['port'],
-                    data['username'],
-                    sec.decrypt(data['password']),
-                    int(data.get('ws_port') or AGENT_PORT),
-                )
-            finally:
-                running = False
-                try:
-                    await ui_task
-                except Exception:
-                    pass
-
-            if ok_agent:
-                try:
-                    await status_msg.edit_text(
-                        "✅ **ایجنت با موفقیت نصب و فعال شد.**\n"
-                        f"🔌 پورت وب‌سوکت: `{int(data.get('ws_port') or AGENT_PORT)}`\n\n"
-                        "حالا می‌توانید از دکمه «وضعیت سرور» استفاده کنید.",
-                        parse_mode='Markdown'
-                    )
-                except Exception:
-                    pass
-            else:
-                # سرور ذخیره شده، اما ایجنت نصب نشده (لاگ و اطلاع)
-                logger.error(f"Agent install failed on {data['ip']}:{AGENT_PORT} -> {agent_msg}")
-                try:
-                    await status_msg.edit_text(
-                        "⚠️ **سرور ذخیره شد، اما نصب ایجنت با خطا مواجه شد.**\n\n"
-                        f"❌ خطا: `{agent_msg}`\n\n"
-                        "برای رفع مشکل، از منوی سرور گزینه «آپدیت/نصب ایجنت» را اجرا کنید.",
-                        parse_mode='Markdown'
-                    )
-                except Exception:
-                    pass
-
-        except Exception as e:
-            await update.callback_query.message.reply_text(f"❌ خطا در ذخیره: {e}")
-    else:
-        await update.callback_query.message.reply_text(f"❌ **عدم اتصال به سرور!**\n\n⚠️ خطا: `{res['error']}`", parse_mode='Markdown')
-        
-    await start(update, context)
-    return ConversationHandler.END
+    if update.callback_query.data == 'cancel_flow':
+        return await cancel_handler_func(update, context)
+    await update.callback_query.answer()
+    try:
+        context.user_data['srv_group_id'] = int(update.callback_query.data)
+    except ValueError:
+        await update.effective_message.reply_text('❌ پوشه نامعتبر است.')
+        return ConversationHandler.END
+    return await _complete_server_add(update, context)
 
 async def list_groups_for_servers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -420,12 +225,12 @@ async def list_groups_for_servers(update: Update, context: ContextTypes.DEFAULT_
     await safe_edit_message(update, "🗂 **پوشه مورد نظر را انتخاب کنید:**", reply_markup=reply_markup)
 
 
-async def show_servers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_servers(update: Update, context: ContextTypes.DEFAULT_TYPE, scope=None):
     try:
         await update.callback_query.answer()
     except:
         pass
-    uid, data = update.effective_user.id, update.callback_query.data
+    uid, data = update.effective_user.id, scope or update.callback_query.data
     # ذخیره اسکوپ نمایش برای عملیات‌های بعدی مثل حذف دسته‌جمعی
     context.user_data['last_server_list_scope'] = data
 
@@ -567,8 +372,7 @@ async def srv_multidel_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
         pass
 
     # بازگشت به لیست همان اسکوپ
-    update.callback_query.data = scope
-    await show_servers(update, context)
+    await show_servers(update, context, scope=scope)
 
 
 async def srv_multidel_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -577,8 +381,7 @@ async def srv_multidel_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception:
         pass
     scope = context.user_data.pop('multidel_scope', None) or context.user_data.get('last_server_list_scope', 'list_all')
-    update.callback_query.data = scope
-    await show_servers(update, context)
+    await show_servers(update, context, scope=scope)
 # ==============================================================================
 # 📊 MONITORING & SERVER ACTIONS
 # ==============================================================================
@@ -632,7 +435,7 @@ async def show_server_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if s['is_active']:
                         tasks.append(
                             StatsManager.check_full_stats(
-                                s['ip'], s['port'], s['username'], sec.decrypt(s['password'])
+                                s['ip'], s['port'], s['username'], sec.decrypt(s['password']), ws_port=s.get('ws_port')
                             )
                         )
                     else:
@@ -699,7 +502,7 @@ async def server_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, cust
 
 
     # 2. بارگذاری اطلاعات سرور + پیام اولیه
-    srv = db.get_server_by_id(sid)
+    srv = await run_sync(db.get_server_for_user, sid, update.effective_user.id, SUPER_ADMIN_ID)
     if not srv:
         await safe_edit_message(update, f"❌ سرور با ID={sid} پیدا نشد")
         return
@@ -710,7 +513,7 @@ async def server_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, cust
     async def heavy_process_task():
         async with GLOBAL_SEMAPHORE:
             try:
-                res = await ServerMonitor.check_full_stats_ws(srv['ip'], int(srv.get('ws_port') or AGENT_PORT), sec.decrypt(srv['password']))
+                res = await StatsManager.check_full_stats(srv['ip'],srv['port'],srv['username'],sec.decrypt(srv['password']),ws_port=srv.get('ws_port'))
                 
                 # ✅ اصلاح: محاسبه هوشمند آپتایم (اگر ایجنت قدیمی بود)
                 uptime = res.get('uptime_str')
@@ -720,7 +523,8 @@ async def server_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, cust
                 if not uptime:
                     uptime = "⚠️ نامعلوم (نیاز به آپدیت ایجنت)"
 
-                reply_markup = keyboard.server_detail_kb(sid, srv['ip'], True)
+                profile=await run_sync(db.get_user,update.effective_user.id)
+                reply_markup = keyboard.server_detail_kb(sid,srv['ip'],has_premium(profile,update.effective_user.id,SUPER_ADMIN_ID))
 
                 if res.get('status') == 'Online':
                     db.update_status(sid, "Online")
@@ -737,6 +541,7 @@ async def server_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, cust
                         f"📊 CPU: {cpu_emoji} `{cpu_val}%`\n"
                         f"💾 RAM: `{ram_val}%`\n"
                         f"🔌 Uptime: `{uptime}`\n"
+                        f"📡 Agent: {res.get('agent_status','Unknown')} | دریافت از {res.get('transport','?')}\n"
                     )
                 else:
                     err = str(res.get('error', 'Connect Fail'))
@@ -761,40 +566,19 @@ async def server_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, cust
 
 async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = update.callback_query.data
-    from server_callbacks import parse_server_action
-    parsed = parse_server_action(data)
-    if parsed is None:
-        try:
-            await update.callback_query.answer("❌ شناسه سرور نامعتبر", show_alert=True)
-        except Exception:
-            pass
+    try:
+        act, sid, argument = parse_server_action(data)
+    except ValueError:
+        await update.callback_query.answer('❌ عملیات نامعتبر است.',show_alert=True)
         return
-    act, sid = parsed
-    # Do not trust the button/handler boundary: enforce ownership in this operation
-    # before decrypting SSH credentials or dispatching any remote command.
-    actor_id = update.effective_user.id
-    if not await asyncio.to_thread(db.owns_resource, 'servers', sid, actor_id):
-        await update.callback_query.answer("⛔ این سرور متعلق به شما نیست.", show_alert=True)
-        return
-
-    if sid is None:
-        try:
-            await update.callback_query.answer("❌ شناسه سرور نامعتبر", show_alert=True)
-        except Exception:
-            pass
-        return
-
-    srv = db.get_server_by_id(sid)
-    if not srv:
-        try:
-            await update.callback_query.answer("❌ سرور یافت نشد!", show_alert=True)
-        except:
-            pass
-        return
-
     uid = update.effective_user.id
+    srv = await run_sync(db.get_server_for_user, sid, uid, SUPER_ADMIN_ID)
+    if not srv:
+        await update.callback_query.answer('⛔ سرور یافت نشد یا متعلق به شما نیست.',show_alert=True)
+        return
+    parts = data.split('_')
     user = db.get_user(uid)
-    is_premium = True if user['plan_type'] == 1 or uid == SUPER_ADMIN_ID else False
+    is_premium = has_premium(user, uid, SUPER_ADMIN_ID)
 
     LOCKED_FEATURES = ['installscript']
 
@@ -912,7 +696,7 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif act == 'checkhost':
         await update.callback_query.message.reply_text("🌍 **در حال دریافت گزارش Check-Host...**")
         # استعلام CheckHost از API خارجی است و نیازی به SSH ندارد
-        ok, data = await loop.run_in_executor(EXECUTOR, StatsManager.check_host_api, srv['ip'])
+        ok, data = await loop.run_in_executor(EXECUTOR, StatsManager.check_host_api, parts[3])
         report = StatsManager.format_check_host_results(data) if ok else f"❌ خطا: {data}"
         await update.callback_query.message.reply_text(report, parse_mode='Markdown')
 
@@ -1007,17 +791,20 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-    elif act == 'installscript':
-        await update.callback_query.answer("🔄 در حال اتصال و آپدیت...", cache_time=1)
-        wait_msg = await update.callback_query.message.reply_text("⏳ **در حال آپدیت فایل مانیتورینگ روی سرور مقصد...**\n(این کار باعث نمایش دقیق آپتایم و ترافیک می‌شود)")
-        
-        # نصب مجدد ایجنت جدید روی سرور مقصد
-        ok, msg = await loop.run_in_executor(EXECUTOR, ServerMonitor.install_agent_service, srv['ip'], srv['port'], srv['username'], real_pass, int(srv.get('ws_port') or AGENT_PORT))
-        
-        if ok:
-            await wait_msg.edit_text("✅ **ایجنت با موفقیت آپدیت شد.**\nاکنون دکمه «وضعیت سرور» را بزنید تا اطلاعات دقیق نمایش داده شود.")
-        else:
-            await wait_msg.edit_text(f"❌ خطا در آپدیت:\n{msg}")
+    elif act in ('installscript', 'installagent'):
+        await update.callback_query.answer('نصب/تعمیر ایجنت در پس‌زمینه آغاز شد.')
+        message = await update.effective_message.reply_text('⏳ بررسی SSH، نصب ایجنت و آزمون WSS آغاز شد.')
+        spawn_background(context, _install_saved_server(context, uid, dict(srv), message), name=f'agent-{sid}')
+    elif act == 'agentlog':
+        await update.callback_query.answer()
+        async def show_log():
+            ok, text = await run_sync(ServerMonitor._ssh_exec_sync,srv['ip'],srv['port'],srv['username'],real_pass,
+                                      'journalctl -u sonar-agent -n 50 --no-pager --output=short',30)
+            from logging_config import redact
+            text = redact(str(text))[-3200:]
+            await context.bot.send_message(update.effective_chat.id,('📜 لاگ ایجنت:\n' if ok else '❌ دریافت لاگ ناموفق:\n')+text)
+        spawn_background(context,show_log(),name=f'agent-log-{sid}')
+
 async def set_config_cron_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ذخیره تنظیمات زمان‌بندی کانفیگ"""
     query = update.callback_query
@@ -1081,7 +868,7 @@ async def ask_cpu_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def save_cpu_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         val = int(update.message.text)
-        if 1 <= val <= 100:
+        if 0 <= val <= 100:
             db.set_setting(update.effective_user.id, 'cpu_threshold', val)
             await update.message.reply_text(f"✅ ذخیره شد: {val}%")
             await resource_settings_menu(update, context)
@@ -1100,7 +887,7 @@ async def ask_ram_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def save_ram_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         val = int(update.message.text)
-        if 1 <= val <= 100:
+        if 0 <= val <= 100:
             db.set_setting(update.effective_user.id, 'ram_threshold', val)
             await update.message.reply_text(f"✅ ذخیره شد: {val}%")
             await resource_settings_menu(update, context)
@@ -1119,7 +906,7 @@ async def ask_disk_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def save_disk_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         val = int(update.message.text)
-        if 1 <= val <= 100:
+        if 0 <= val <= 100:
             db.set_setting(update.effective_user.id, 'disk_threshold', val)
             await update.message.reply_text(f"✅ ذخیره شد: {val}%")
             await resource_settings_menu(update, context)
@@ -1139,7 +926,7 @@ async def set_custom_interval_action(update: Update, context: ContextTypes.DEFAU
     try:
         minutes = int(update.message.text)
         if 10 <= minutes <= 1440:
-            db.set_setting(update.effective_user.id, 'report_interval', minutes * 60)
+            db.set_setting(update.effective_user.id, 'report_interval', minutes)
             await update.message.reply_text(f"✅ تنظیم شد: هر {minutes} دقیقه.")
             await settings_cron_menu(update, context)
             return ConversationHandler.END
@@ -1240,7 +1027,10 @@ async def edit_expiry_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     sid = query.data.split('_')[2]
     context.user_data['edit_expiry_sid'] = sid
-    srv = db.get_server_by_id(sid)
+    srv = await run_sync(db.get_server_for_user, sid, update.effective_user.id, SUPER_ADMIN_ID)
+    if not srv:
+        await update.effective_message.reply_text('⛔ سرور متعلق به شما نیست.')
+        return ConversationHandler.END
     txt = (
         f"📅 **تغییر زمان انقضای سرور: {srv['name']}**\n\n"
         f"🔢 لطفاً **تعداد روزهای باقی‌مانده** را به عدد وارد کنید.\n"
@@ -1261,7 +1051,11 @@ async def edit_expiry_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             new_date = None
             msg = "✅ سرور با موفقیت **نامحدود (Lifetime)** شد."
-        db.update_server_expiry(sid, new_date)
+        srv = await run_sync(db.get_server_for_user,sid,update.effective_user.id,SUPER_ADMIN_ID)
+        if not srv:
+            await update.message.reply_text('⛔ سرور متعلق به شما نیست.')
+            return ConversationHandler.END
+        await run_sync(db.update_server_expiry,sid,new_date)
         await update.message.reply_text(msg)
         await server_detail(update, context, custom_sid=sid)
         return ConversationHandler.END
@@ -1278,7 +1072,10 @@ async def ask_terminal_command(update: Update, context: ContextTypes.DEFAULT_TYP
         pass
 
     sid = query.data.split('_')[2]
-    srv = db.get_server_by_id(sid)
+    srv = await run_sync(db.get_server_for_user, sid, update.effective_user.id, SUPER_ADMIN_ID)
+    if not srv or not has_premium(await run_sync(db.get_user,update.effective_user.id),update.effective_user.id,SUPER_ADMIN_ID):
+        await update.effective_message.reply_text('⛔ سرور یا مجوز ترمینال در دسترس نیست.')
+        return ConversationHandler.END
     context.user_data['term_sid'] = sid
 
     kb = [[InlineKeyboardButton("🔙 خروج و بازگشت به پنل", callback_data='exit_terminal')]]
@@ -1301,12 +1098,15 @@ async def run_terminal_action(update: Update, context: ContextTypes.DEFAULT_TYPE
         return await close_terminal_session(update, context)
 
     sid = context.user_data.get('term_sid')
-    srv = db.get_server_by_id(sid) if sid else None
+    srv = await run_sync(db.get_server_for_user, sid, update.effective_user.id, SUPER_ADMIN_ID) if sid else None
     if not srv or (update.effective_user.id != SUPER_ADMIN_ID and srv['owner_id'] != update.effective_user.id):
         await update.message.reply_text('⛔ سرور متعلق به حساب شما نیست.')
         return ConversationHandler.END
 
-    wait_msg = await update.message.reply_text(f"⚙️ `{cmd}` ...")
+    if not has_premium(await run_sync(db.get_user,update.effective_user.id),update.effective_user.id,SUPER_ADMIN_ID):
+        await update.message.reply_text('⛔ ترمینال برای پلن فعلی فعال نیست.')
+        return ConversationHandler.END
+    wait_msg = await update.message.reply_text('⏳ اجرای دستور...')
 
     real_pass = sec.decrypt(srv['password'])
     ok, output = await ServerMonitor.run_remote_command(srv['ip'], srv['port'], srv['username'], real_pass, cmd)
@@ -1317,7 +1117,7 @@ async def run_terminal_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     status = "✅" if ok else "❌"
 
     terminal_view = (
-        f"<code>root@{srv['ip']}:~# {cmd}</code>\n"
+        f"<code>{html.escape(srv['username'])}@{html.escape(srv['ip'])}:~# {html.escape(cmd)}</code>\n"
         f"{status}\n"
         f"<pre language='bash'>{safe_output}</pre>"
     )
@@ -1351,12 +1151,12 @@ async def get_custom_ws_port(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return GET_CUSTOM_WS_PORT
 
         port = int(text)
-        if port < 1 or port > 65535:
-            await update.message.reply_text("❌ پورت نامعتبر است. عددی بین 1 تا 65535 ارسال کنید.")
+        if port < 1024 or port > 65535:
+            await update.message.reply_text("❌ پورت نامعتبر است. عددی بین 1024 تا 65535 ارسال کنید.")
             return GET_CUSTOM_WS_PORT
 
         context.user_data['srv']['ws_port'] = port
-        await update.message.reply_text("📅 حالا تاریخ انقضا را وارد کنید (مثلاً 2026-01-01):")
+        await update.message.reply_text("📅 حالا تعداد روز تا انقضا را وارد کنید (مثلاً 30؛ برای نامحدود 0):")
         return GET_EXPIRY
     except Exception as e:
         logger.error("get_custom_ws_port failed: %s", e, exc_info=True)
@@ -1365,3 +1165,85 @@ async def get_custom_ws_port(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 
+
+
+async def _complete_server_add(update, context):
+    uid=update.effective_user.id
+    data=dict(context.user_data.get('srv') or {})
+    if not all(data.get(k) for k in ('name','ip','port','username','password')):
+        await update.effective_message.reply_text('❌ اطلاعات افزودن سرور کامل نیست؛ دوباره شروع کنید.')
+        return ConversationHandler.END
+    data['ws_port']=valid_agent_port(data.get('ws_port') or AGENT_PORT)
+    status=await update.effective_message.reply_text('⏳ در حال بررسی اتصال SSH...')
+    result=await run_sync(ServerMonitor.check_ssh_connection,data['ip'],data['port'],data['username'],sec.decrypt(data['password']))
+    if result.get('status')!='Online':
+        error=str(result.get('error','SSH_CONNECTION_FAILED'))
+        if error.startswith('HOST_KEY_UNKNOWN'):
+            try:
+                candidate=await run_sync(scan_host_key,data['ip'],data['port'])
+            except Exception as exc:
+                from ssh_support import describe_ssh_error
+                await status.edit_text(describe_ssh_error(exc))
+                return ConversationHandler.END
+            context.user_data['ssh_candidate']=candidate
+            await status.edit_text('🔐 کلید SSH سرور هنوز تأیید نشده است.\n'
+                f'میزبان: {data["ip"]}:{data["port"]}\nاثر انگشت پیشنهادی: {candidate["fingerprint"]}\n\n'
+                'از کنسول سرور یا پشتیبانی ارائه‌دهنده، اثرانگشت را مستقل بررسی کنید. '
+                'اثر انگشت SHA256 تأییدشده را اینجا بفرستید؛ برای لغو /cancel بزنید.')
+            return CONFIRM_SSH_HOST
+        await status.edit_text('❌ اتصال SSH برقرار نشد.\n'+error+'\nپورت SSH و پورت ایجنت 8080 دو تنظیم جدا هستند.')
+        return ConversationHandler.END
+    sid=await run_sync(db.add_server,uid,int(context.user_data.get('srv_group_id') or 0),data,SUPER_ADMIN_ID)
+    if not isinstance(sid,int) or sid<=0:
+        await status.edit_text('❌ ثبت ناموفق بود: سقف حساب، نام تکراری یا پوشهٔ نامعتبر را بررسی کنید.')
+        return ConversationHandler.END
+    saved=await run_sync(db.get_server_for_user,sid,uid,SUPER_ADMIN_ID)
+    saved=dict(saved)
+    saved['_activate_monitor_node']=bool(data.get('_activate_monitor_node'))
+    for key in ('srv','srv_group_id','ssh_candidate'):
+        context.user_data.pop(key,None)
+    await status.edit_text(f'✅ اتصال SSH تأیید و سرور ثبت شد.\n⏳ نصب ایجنت روی پورت {data["ws_port"]} در پس‌زمینه ادامه دارد.')
+    spawn_background(context,_install_saved_server(context,uid,saved,status),name=f'agent-add-{sid}')
+    return ConversationHandler.END
+
+
+async def confirm_ssh_host_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    candidate=context.user_data.get('ssh_candidate')
+    data=context.user_data.get('srv') or {}
+    if not candidate:
+        await update.effective_message.reply_text('❌ درخواست تأیید کلید منقضی شده؛ افزودن را دوباره شروع کنید.')
+        return ConversationHandler.END
+    expected=(update.message.text or '').strip()
+    if not expected.isascii() or not __import__('hmac').compare_digest(expected,candidate['fingerprint']):
+        await update.message.reply_text('❌ اثرانگشت مطابقت ندارد؛ کلید ثبت نشد. مقدار مستقلاً تأییدشده را بفرستید یا /cancel بزنید.')
+        return CONFIRM_SSH_HOST
+    try:
+        from ssh_support import authenticate_candidate
+        await run_sync(authenticate_candidate,candidate,expected,data['username'],sec.decrypt(data['password']))
+        await run_sync(trust_host_key,candidate,expected)
+    except Exception as exc:
+        from ssh_support import describe_ssh_error
+        await update.message.reply_text('❌ تأیید یا ورود SSH ناموفق بود؛ کلید ثبت نشد.\n'+describe_ssh_error(exc))
+        return ConversationHandler.END
+    context.user_data.pop('ssh_candidate',None)
+    return await _complete_server_add(update,context)
+
+
+async def _install_saved_server(context, uid, server, message):
+    try:
+        current=await run_sync(db.get_server_for_user,server['id'],uid,SUPER_ADMIN_ID)
+        if not current:
+            await message.edit_text('⛔ سرور حذف شده یا دسترسی تغییر کرده است.')
+            return
+        port=valid_agent_port(server.get('ws_port') or AGENT_PORT)
+        ok,detail=await run_sync(ServerMonitor.install_agent_service,server['ip'],server['port'],server['username'],sec.decrypt(server['password']),port)
+        if ok and server.get('_activate_monitor_node') and uid==SUPER_ADMIN_ID:
+            await run_sync(db.activate_monitor_node,server['id'],uid)
+        await run_sync(db.update_server_error,server['id'],'' if ok else str(detail))
+        await message.edit_text(('✅ نصب و اتصال ایجنت تأیید شد.\n' if ok else '⚠️ سرور ثبت شده، اما ایجنت آماده نشد.\n')+str(detail)[:2200],
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🖥 جزئیات سرور',callback_data=f'detail_{server["id"]}')]]))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.error('Agent job failed server=%s type=%s',server.get('id'),type(exc).__name__)
+        await message.edit_text('❌ نصب ایجنت با خطای داخلی متوقف شد؛ از جزئیات سرور دوباره نصب/رفع ایجنت را اجرا کنید.')

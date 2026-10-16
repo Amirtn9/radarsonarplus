@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = (ROOT / 'install.sh').read_text(encoding='utf-8')
@@ -52,6 +53,9 @@ def test_full_install_and_help_recovery():
 def test_python_venv_umask_077_permission_fix_proven():
     if os.geteuid() != 0 or not Path('/usr/sbin/runuser').exists():
         return
+    capability=subprocess.run(['runuser','-u','nobody','--','true'],capture_output=True)
+    if capability.returncode != 0:
+        pytest.skip('Container cannot change supplementary groups for runuser')
     with tempfile.TemporaryDirectory(prefix='sonar-venv-perms-',dir='/tmp') as tmp:
         subprocess.run([sys.executable, '-m', 'venv', '--without-pip', tmp + '/venv'], check=True)
         # tempfile and a 077-created venv deny a non-root service user traversal.

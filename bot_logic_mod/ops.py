@@ -4,6 +4,7 @@ Section: ops
 """
 
 from bot_logic_mod.base import *  # noqa
+from ssh_support import normalize_host, ssh_port
 
 # 🌍 GLOBAL OPERATIONS (NEW FEATURES)
 # ==============================================================================
@@ -500,13 +501,17 @@ async def get_iran_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return GET_IRAN_IP
 
 async def get_iran_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['iran_ip'] = update.message.text
+    try:
+        context.user_data['iran_ip'] = normalize_host(update.message.text)
+    except ValueError:
+        await update.message.reply_text('❌ آدرس IP یا نام میزبان معتبر وارد کنید.')
+        return GET_IRAN_IP
     await update.message.reply_text("🔌 **پورت اتصال SSH را وارد کنید (پیش‌فرض 22):**", reply_markup=keyboard.get_cancel_markup())
     return GET_IRAN_PORT
 
 async def get_iran_port(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        port = int(update.message.text)
+        port = ssh_port(update.message.text)
         context.user_data['iran_port'] = port
         await update.message.reply_text("👤 **نام کاربری (Username) سرور ایران:**\n(معمولاً root)", reply_markup=keyboard.get_cancel_markup())
         return GET_IRAN_USER
@@ -520,7 +525,7 @@ async def get_iran_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return GET_IRAN_PASS
 
 async def get_iran_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Use the same vetted TLS agent installer as the main administration path."""
+    """Share SSH fingerprint enrollment and background installation with the main wizard."""
     password = update.message.text
     name = str(context.user_data.get('iran_name') or '').strip()
     ip = str(context.user_data.get('iran_ip') or '').strip()
@@ -532,44 +537,18 @@ async def get_iran_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != SUPER_ADMIN_ID:
         await update.message.reply_text('⛔ فقط مالک ربات مجاز است.')
         return ConversationHandler.END
-    message = await update.message.reply_text('🦇 نصب امن ایجنت و TLS آغاز شد...')
-    agent_port = int(os.environ.get('SONAR_DEFAULT_AGENT_PORT', '8080'))
+    agent_port = int(AGENT_PORT)
     if not 1024 <= agent_port <= 65535:
-        await message.edit_text('❌ پورت ایجنت نامعتبر است.')
+        await update.message.reply_text('❌ پورت ایجنت نامعتبر است.')
         return ConversationHandler.END
-    real_name = '🇮🇷 ' + name
-    created = False
-    try:
-        encrypted_password = sec.encrypt(password)
-        with db.get_connection() as (conn, cur):
-            cur.execute("""SELECT id FROM servers WHERE owner_id=%s AND name=%s""",
-                        (SUPER_ADMIN_ID, real_name))
-            row = cur.fetchone()
-            if row:
-                raise ValueError('این نام سرور قبلاً ثبت شده است؛ از پنل مدیریت سرور تعمیر کنید.')
-            cur.execute("""INSERT INTO servers (owner_id,name,ip,port,username,password,
-                       is_monitor_node,is_active,location_type,created_at,ws_port)
-                       VALUES (%s,%s,%s,%s,%s,%s,0,1,'ir',NOW(),%s)""",
-                       (SUPER_ADMIN_ID, real_name, ip, port, user, encrypted_password, agent_port))
-            created = True
-            conn.commit()
-        loop = asyncio.get_running_loop()
-        success, detail = await loop.run_in_executor(
-            EXECUTOR, lambda: ServerMonitor.install_agent_service(ip,port,user,password,agent_port))
-        if not success:
-            await message.edit_text('❌ نصب ایجنت ناموفق بود. سرور ثبت شد تا از پنل تعمیر شود.\n' + str(detail)[:900])
-            return ConversationHandler.END
-        with db.get_connection() as (conn,cur):
-            cur.execute('UPDATE servers SET is_monitor_node=0 WHERE owner_id=%s',(SUPER_ADMIN_ID,))
-            cur.execute('UPDATE servers SET is_monitor_node=1 WHERE owner_id=%s AND name=%s',
-                        (SUPER_ADMIN_ID,real_name))
-            conn.commit()
-        await message.edit_text('✅ ایجنت با TLS اختصاصی نصب شد.\n' + str(detail)[:600])
-        return ConversationHandler.END
-    except Exception as exc:
-        logging.getLogger(__name__).exception('Legacy agent enrollment failed')
-        await message.edit_text('❌ نصب ناموفق: ' + str(exc)[:500])
-        return ConversationHandler.END
+    context.user_data['srv'] = {'name': '🇮🇷 ' + name, 'ip': normalize_host(ip),
+        'port': ssh_port(port), 'username': user, 'password': sec.encrypt(password),
+        'ws_port': agent_port, 'expiry_date': None, 'location_type': 'ir', '_activate_monitor_node': True}
+    context.user_data['srv_group_id'] = 0
+    for key in ('iran_name', 'iran_ip', 'iran_port', 'iran_user'):
+        context.user_data.pop(key, None)
+    from bot_logic_mod.servers import _complete_server_add
+    return await _complete_server_add(update, context)
 
 
 async def delete_monitor_node(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -591,15 +570,13 @@ async def delete_monitor_node(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     loop = asyncio.get_running_loop()
     try:
-        # تلاش برای وصل شدن و پاک کردن فایل‌ها
-        await loop.run_in_executor(
-            None, ServerMonitor.run_remote_command, 
-            monitor['ip'], monitor['port'], monitor['username'], sec.decrypt(monitor['password']),
-            cleanup_cmd, 20
-        )
-        server_cleaned = True
-    except:
-        server_cleaned = False # شاید سرور خاموشه، ولی از دیتابیس پاک میکنیم
+        server_cleaned,cleanup_detail = await run_sync(ServerMonitor._ssh_exec_sync,
+            monitor['ip'],monitor['port'],monitor['username'],sec.decrypt(monitor['password']),cleanup_cmd,30)
+    except Exception:
+        server_cleaned=False
+    if not server_cleaned:
+        await msg.edit_text('❌ پاکسازی سرویس مقصد تأیید نشد؛ رکورد نود حفظ شد تا دوباره تلاش کنید.')
+        return
 
     # حذف از دیتابیس (یا فقط برداشتن فلگ مانیتور)
     db.delete_server(monitor['id'], SUPER_ADMIN_ID)
@@ -607,7 +584,7 @@ async def delete_monitor_node(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = "✅ **ارتباط قطع شد.**\n"
     text += "🔹 سرور از لیست ربات حذف شد.\n"
     if server_cleaned:
-        text += "🔹 فایل‌های مانیتورینگ و لاگ‌ها از سرور ایران پاک شدند."
+        text += "🔹 سرویس ایجنت روی سرور ایران متوقف و از systemd حذف شد."
     else:
         text += "⚠️ نکته: نتوانستیم به سرور وصل شویم تا فایل‌ها را پاک کنیم (احتمالاً سرور خاموش است)."
 
@@ -628,5 +605,5 @@ async def update_monitor_node(update: Update, context: ContextTypes.DEFAULT_TYPE
     loop = asyncio.get_running_loop()
     success, detail = await loop.run_in_executor(EXECUTOR, lambda: ServerMonitor.install_agent_service(
         monitor['ip'], int(monitor['port']), monitor['username'],
-        sec.decrypt(monitor['password']), int(monitor.get('ws_port') or 8080)))
+        sec.decrypt(monitor['password']), int(monitor.get('ws_port') or AGENT_PORT)))
     await message.edit_text(('✅ ' if success else '❌ ') + str(detail)[:950])

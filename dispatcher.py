@@ -14,6 +14,7 @@ from telegram.ext import (
 )
 
 from bot_logic_mod import servers
+from runtime import background_callback
 from secure_handlers import SecureCallbackQueryHandler, SecureMessageHandler, SecureCommandHandler
 CallbackQueryHandler = SecureCallbackQueryHandler
 MessageHandler = SecureMessageHandler
@@ -39,6 +40,7 @@ def register_all_handlers(app:  Application):
         allow_reentry=True,
         entry_points=[
             CommandHandler('start', bot_logic.start),
+            CallbackQueryHandler(admin_panel.admin_agent_install_run, pattern='^admin_agent_install_all$'),
             # --- Admin Panel ---
             CallbackQueryHandler(admin_panel.add_new_user_start, pattern='^add_new_admin$'),
             CallbackQueryHandler(admin_panel.admin_user_actions, pattern='^admin_u_limit_'),
@@ -47,7 +49,6 @@ def register_all_handlers(app:  Application):
             CallbackQueryHandler(bot_logic.admin_backup_restore_start, pattern='^admin_backup_restore_start$'),
             CallbackQueryHandler(admin_panel.admin_broadcast_start, pattern='^admin_broadcast_start$'),
             CallbackQueryHandler(admin_panel.admin_user_servers_report, pattern='^admin_u_servers_'),
-            CallbackQueryHandler(admin_panel.admin_agent_install_run, pattern=r'^admin_agent_install_all$'),
             CallbackQueryHandler(admin_panel.admin_search_servers_by_uid_start, pattern='^admin_search_servers_by_uid_start$'),
             CallbackQueryHandler(bot_logic.admin_server_detail_action, pattern='^admin_detail_'),
             CallbackQueryHandler(admin_panel.admin_full_report_global_action, pattern='^admin_full_report_global$'),
@@ -101,7 +102,7 @@ def register_all_handlers(app:  Application):
             
             # --- Tunnel List ---
             CallbackQueryHandler(bot_logic.tunnel_list_menu, pattern='^tunnel_list_menu$'),
-            CallbackQueryHandler(bot_logic.test_single_config, pattern='^test_conf_'),
+            CallbackQueryHandler(background_callback(bot_logic.test_single_config), pattern='^test_conf_'),
             CallbackQueryHandler(bot_logic.view_config_action, pattern='^view_conf_'),
             CallbackQueryHandler(bot_logic.delete_config_action, pattern='^del_conf_'),
             
@@ -146,10 +147,7 @@ def register_all_handlers(app:  Application):
             ADMIN_RESTORE_DB: [MessageHandler(filters.Document.ALL, bot_logic.admin_backup_restore_handler)],
             GET_BROADCAST_MSG: [MessageHandler(filters.ALL & ~filters.COMMAND, admin_panel.admin_broadcast_send)],
             ADMIN_GET_UID_FOR_REPORT: [MessageHandler(filters.TEXT, admin_panel.admin_report_by_uid_handler)],
-            ADMIN_AGENT_PORT_INPUT: [
-                MessageHandler(filters.Regex(r'^/cancel$'), admin_panel.admin_agent_cancel),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_panel.admin_agent_port_input),
-            ],
+            ADMIN_AGENT_PORT_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_panel.admin_agent_port_input)],
             
             ADD_PAY_NET: [MessageHandler(text_filter, bot_logic.get_pay_network)],
             ADD_PAY_ADDR: [MessageHandler(text_filter, bot_logic.get_pay_address)],
@@ -163,6 +161,7 @@ def register_all_handlers(app:  Application):
             GET_PASS: [MessageHandler(text_filter, bot_logic.get_srv_pass)],
             CONFIRM_WS_PORT: [CallbackQueryHandler(bot_logic.confirm_ws_port, pattern='^ws_port_(ok|no)$')],
             GET_CUSTOM_WS_PORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, servers.get_custom_ws_port)],
+            CONFIRM_SSH_HOST: [MessageHandler(text_filter, bot_logic.confirm_ssh_host_input)],
             GET_EXPIRY: [MessageHandler(text_filter, bot_logic.get_srv_expiry)],
             SELECT_GROUP: [CallbackQueryHandler(bot_logic.select_group)],
 
@@ -241,7 +240,7 @@ def register_all_handlers(app:  Application):
         '^admin_agent_dashboard$': admin_panel.admin_agent_dashboard,
         '^admin_agent_logs$': admin_panel.admin_agent_logs_menu,
         '^admin_agent_install_menu$': admin_panel.admin_agent_install_menu,
-        '^admin_agent_install_[0-9]+$': admin_panel.admin_agent_install_run,
+        '^admin_agent_install_': admin_panel.admin_agent_install_run,
         '^admin_agent_log_': admin_panel.admin_agent_log_view,
         '^admin_agent_reconnect_all$': admin_panel.admin_agent_reconnect_all,
         '^admin_users_page_': admin_panel.admin_users_list,
@@ -258,7 +257,7 @@ def register_all_handlers(app:  Application):
         '^list_groups_for_servers$': bot_logic.list_groups_for_servers,
         '^(listsrv_|list_all)': bot_logic.show_servers,
         '^detail_': bot_logic.server_detail,
-        '^act_': bot_logic.server_actions,
+        '^act_': background_callback(bot_logic.server_actions),
         '^manage_servers_list$': bot_logic.manage_servers_list,
         '^toggle_active_': bot_logic.toggle_server_active_action,
         '^show_server_stats$': bot_logic.show_server_stats,
@@ -267,7 +266,7 @@ def register_all_handlers(app:  Application):
         '^mass_update_test_all$': bot_logic.mass_update_test_start,
         '^list_mode_': bot_logic.show_tunnels_by_mode,
         '^update_all_tunnels$': bot_logic.update_all_configs_status,
-        '^test_conf_': bot_logic.test_single_config,
+        '^test_conf_': background_callback(bot_logic.test_single_config),
         '^view_conf_': bot_logic.view_config_action,
         '^del_conf_': bot_logic.delete_config_action,
         '^manage_sub_': bot_logic.manage_single_sub_menu,
@@ -280,8 +279,8 @@ def register_all_handlers(app:  Application):
         '^get_sub_links_': bot_logic.get_sub_links_action,
         
         '^monitor_settings_panel$': bot_logic.monitor_settings_panel,
-        '^delete_monitor_node$': bot_logic.delete_monitor_node,
-        '^update_monitor_node$': bot_logic.update_monitor_node,
+        '^delete_monitor_node$': background_callback(bot_logic.delete_monitor_node),
+        '^update_monitor_node$': background_callback(bot_logic.update_monitor_node),
         
         '^wallet_menu$': bot_logic.wallet_menu,
         '^referral_menu$': bot_logic.referral_menu,

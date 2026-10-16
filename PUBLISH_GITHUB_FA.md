@@ -6,7 +6,7 @@
 
 1. از مخزن موجودتان بکاپ بگیرید؛ این ZIP یک Snapshot از پروژه اصلاح‌شده است و
    باید قبل از جایگزین‌کردن فایل‌ها با تغییرات هم‌زمان در GitHub تطبیق داده شود.
-2. ZIP را روی سیستم خود Extract کنید. **محتویات داخل ZIP** (به‌خصوص فایل
+2. ZIP را روی سیستم خود Extract کنید. **محتویات داخل پوشهٔ Sonar_Radar_Pro_5.3.0** (به‌خصوص فایل
    `install.sh`) را به **ریشه مخزن** روی شاخه `main` منتقل کنید.
 3. فایل‌های خصوصی از قبیل `.env`، `secret.key`، `sonar_config.json` و بکاپ‌ها
    نباید آپلود شوند.
@@ -24,7 +24,7 @@ python3 scripts/verify_manifest.py
 bash install.sh --check
 git status
 git add -A
-git commit -m "Unify GitHub bootstrap and full-stack installer 5.2.3"
+git commit -m "Fix SSH enrollment, WSS ports and agent deployment in 5.3.0"
 git push origin main
 ```
 

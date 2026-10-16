@@ -100,7 +100,7 @@ class WebSocketPool:
         max_size: Optional[int] = 4194304,
         acquire_timeout: float = 30.0,
     ) -> None:
-        self.max_per_key = int(max_per_key)
+        self.max_per_key = max(1, int(max_per_key))
         self.open_timeout = float(open_timeout)
         self.close_timeout = float(close_timeout)
         self.ping_interval = float(ping_interval)
@@ -150,15 +150,14 @@ class WebSocketPool:
                     await conn.ws.send(json.dumps(payload))
                     raw = await asyncio.wait_for(conn.ws.recv(), timeout=timeout)
                     try:
-                        return json.loads(raw)
+                        result = json.loads(raw)
+                        return result if isinstance(result, dict) else {"error": "invalid_response_type"}
                     except Exception:
                         return {"error": "invalid_json", "raw": raw}
             except asyncio.CancelledError:
-                # An in-flight response must never be delivered to the next request.
-                # Shield disposal so cancellation cannot interrupt socket cleanup.
                 if conn is not None:
-                    doomed, conn = conn, None
-                    await asyncio.shield(self._dispose(doomed))
+                    await asyncio.shield(self._dispose(conn))
+                    conn = None
                 raise
             except asyncio.TimeoutError:
                 last_err = "timeout"
@@ -274,9 +273,12 @@ class WebSocketPool:
             try:
                 return await asyncio.wait_for(self._connect(key), timeout=self.acquire_timeout)
             except BaseException:
-                # Also rollback on CancelledError (not a subclass of Exception).
+                # Cancellation must release reserved connection capacity too.
                 async with self._global_lock:
                     self._counts[key] = max(0, self._counts.get(key, 1) - 1)
+                    waiting = self._queues.get(key)
+                    if waiting is not None:
+                        waiting.put_nowait(None)
                 raise
 
         # 3) Pool is full -> wait for a connection to be released
@@ -291,8 +293,6 @@ class WebSocketPool:
 
     def _release(self, conn: _Conn) -> None:
         # 🔧 نسخه ۴.۲: هرگز یک کانکشن بسته را به استخر برنگردان.
-        if conn.disposed:
-            return
         if not conn.is_open:
             asyncio.create_task(self._dispose(conn))
             return
@@ -308,7 +308,7 @@ class WebSocketPool:
             asyncio.create_task(self._dispose(conn))
 
     async def _dispose(self, conn: _Conn) -> None:
-        """Close at most once and return one reservation to the pool."""
+        """Close and decrement count."""
         if conn.disposed:
             return
         conn.disposed = True
@@ -319,6 +319,9 @@ class WebSocketPool:
             pass
         async with self._global_lock:
             self._counts[conn.key] = max(0, self._counts.get(conn.key, 1) - 1)
+            queue = self._queues.get(conn.key)
+            if queue is not None:
+                queue.put_nowait(None)  # Wake a waiter when failed capacity becomes available.
 
     async def _connect(self, key: Key) -> _Conn:
         if websockets is None:
@@ -345,7 +348,7 @@ class WebSocketPool:
         # Send token once per connection.
         try:
             await ws.send(str(token))
-        except Exception:
+        except BaseException:
             try:
                 await ws.close()
             except Exception:

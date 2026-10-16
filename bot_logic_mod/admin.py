@@ -109,26 +109,44 @@ async def admin_key_restore_start(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def admin_key_restore_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if await _admin_denied(update): return ConversationHandler.END
+    if await _admin_denied(update):return ConversationHandler.END
+    doc=update.message.document
+    if doc.file_size and doc.file_size>4096:
+        await update.message.reply_text('❌ فایل کلید بیش از حد بزرگ است.')
+        return ConversationHandler.END
     import core
-    f = await update.message.document.get_file()
+    f=await doc.get_file()
     with tempfile.TemporaryDirectory(prefix='sonar-key-') as temp:
-        tmp = Path(temp) / 'key'
+        tmp=Path(temp)/'key'
         await f.download_to_drive(str(tmp))
-        key = tmp.read_bytes().strip()
-        try:
-            cipher = Fernet(key)
+        key=tmp.read_bytes().strip()
+        try:cipher=Fernet(key)
         except Exception:
-            await update.message.reply_text('❌ فایل کلید نامعتبر است؛ کلید فعلی تغییر نکرد.')
+            await update.message.reply_text('❌ کلید معتبر نیست؛ کلید فعلی تغییر نکرد.')
             return ConversationHandler.END
-        dest = Path(KEY_FILE)
-        swap = dest.with_suffix('.key.new')
-        swap.write_bytes(key + b'\n')
-        swap.chmod(0o600)
-        swap.replace(dest)
-        core.sec.key = key
-        core.sec.cipher = cipher
-    await update.message.reply_text('✅ کلید معتبر جایگزین شد. سرویس را ری‌استارت کنید.')
+        def validate_and_replace():
+            # Check actual ciphertext before changing the key used by ongoing handlers.
+            rows=db.execute("""SELECT password value FROM servers WHERE password LIKE 'gAAAAA%%'
+                UNION ALL SELECT agent_token value FROM agent_nodes WHERE agent_token LIKE 'gAAAAA%%'""",fetch='all')
+            for row in rows:
+                cipher.decrypt(row['value'].encode())
+            dest=Path(KEY_FILE)
+            if dest.is_symlink():raise PermissionError('Invalid key path')
+            fd,name=tempfile.mkstemp(prefix='.secret-key-',dir=dest.parent)
+            try:
+                with os.fdopen(fd,'wb') as stream:
+                    stream.write(key+b'\n');stream.flush();os.fsync(stream.fileno())
+                os.chmod(name,0o600)
+                os.replace(name,dest)
+            finally:
+                if os.path.exists(name):os.unlink(name)
+        try:await run_sync(validate_and_replace)
+        except Exception:
+            await update.message.reply_text('❌ کلید با دادهٔ رمز‌شدهٔ دیتابیس سازگار نیست یا ذخیره ناموفق بود؛ کلید فعلی حفظ شد.')
+            return ConversationHandler.END
+        core.sec.key=key
+        core.sec.cipher=cipher
+    await update.message.reply_text('✅ کلید سازگار، به‌صورت اتمیک بازیابی شد؛ سرویس وب را برای بارگذاری مجدد تنظیمات ری‌استارت کنید.')
     return ConversationHandler.END
 
 async def admin_payment_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):

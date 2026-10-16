@@ -6,7 +6,6 @@ import os
 import logging
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
-import logging
 
 logger = logging.getLogger('ws_client')  # ✅ خودکار به سیستم متصل می‌شه
 
@@ -20,7 +19,7 @@ try:
 except Exception:
     pass
 # Import settings
-from settings import DB_CONFIG, SUBSCRIPTION_PLANS, SUPER_ADMIN_ID
+from settings import DB_CONFIG, SUBSCRIPTION_PLANS, SUPER_ADMIN_ID, AGENT_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +122,7 @@ class Database:
     def init_db(self):
         """Initialize database schema"""
         with self.get_connection() as (conn, cur):
+            cur.execute("SELECT pg_advisory_xact_lock(535300)")
             # Users
             cur.execute('''CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY, 
@@ -179,6 +179,25 @@ class Database:
             except Exception as e:
                 logger.error(f"مایگریشن ستون‌های سرور ناموفق بود / server columns migration failed: {e}", exc_info=True)
             
+            # One managed physical agent per SSH endpoint; server rows may share it.
+            cur.execute("""CREATE TABLE IF NOT EXISTS agent_nodes (
+                id SERIAL PRIMARY KEY, ip TEXT NOT NULL, ssh_port INTEGER NOT NULL,
+                ws_port INTEGER NOT NULL, agent_token TEXT NOT NULL,
+                agent_cert_pem TEXT NOT NULL DEFAULT '', UNIQUE(ip,ssh_port))""")
+            cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS agent_id INTEGER")
+            cur.execute("UPDATE servers SET ws_port=%s WHERE ws_port IS NULL OR ws_port=0", (AGENT_PORT,))
+            cur.execute("""INSERT INTO agent_nodes(ip,ssh_port,ws_port,agent_token,agent_cert_pem)
+                SELECT DISTINCT ON (ip,port) ip,port,ws_port,agent_token,COALESCE(agent_cert_pem,'')
+                FROM servers WHERE agent_token IS NOT NULL AND agent_token<>''
+                ORDER BY ip,port,id ON CONFLICT(ip,ssh_port) DO NOTHING""")
+            cur.execute("""UPDATE servers s SET agent_id=a.id,ws_port=a.ws_port
+                FROM agent_nodes a WHERE s.ip=a.ip AND s.port=a.ssh_port""")
+            cur.execute("CREATE INDEX IF NOT EXISTS agent_nodes_wss_idx ON agent_nodes(ip,ws_port)")
+
+            for column, definition in (
+                ('last_cpu','REAL'),('last_ram','REAL'),('last_disk','REAL'),
+                ('last_checked_at','TIMESTAMPTZ'),('last_agent_status',"TEXT DEFAULT 'Unknown'")):
+                cur.execute(f'ALTER TABLE servers ADD COLUMN IF NOT EXISTS {column} {definition}')
             # Settings
             cur.execute('''CREATE TABLE IF NOT EXISTS settings (
                 owner_id BIGINT, 
@@ -270,7 +289,7 @@ class Database:
             conn.commit()
 
     def get_tehran_datetime(self):
-        return datetime.now(timezone.utc) + timedelta(hours=3, minutes=30)
+        return datetime.now(__import__('zoneinfo').ZoneInfo('Asia/Tehran'))
 
     # ==========================================================================
     # 📌 CRITICAL METHODS
@@ -309,7 +328,7 @@ class Database:
 
     def get_near_expiry_services(self):
         """Get services expiring in 3 days"""
-        target = (datetime.now() + timedelta(days=3)).strftime('%Y-%m-%d')
+        target = (self.get_tehran_datetime().replace(tzinfo=None) + timedelta(days=3)).strftime('%Y-%m-%d')
         with self.get_connection() as (conn, cur):
             cur.execute("SELECT * FROM servers WHERE expiry_date LIKE %s AND is_active = 1", (f"{target}%",))
             return cur.fetchall()
@@ -356,10 +375,10 @@ class Database:
                         current_exp_str = exist['expiry_date']
                         if current_exp_str:
                             current_exp = datetime.strptime(current_exp_str, '%Y-%m-%d %H:%M:%S')
-                            if current_exp < datetime.now(): 
-                                current_exp = datetime.now()
+                            if current_exp < self.get_tehran_datetime().replace(tzinfo=None): 
+                                current_exp = self.get_tehran_datetime().replace(tzinfo=None)
                         else:
-                            current_exp = datetime.now()
+                            current_exp = self.get_tehran_datetime().replace(tzinfo=None)
                             
                         new_exp = (current_exp + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
                         cur.execute('UPDATE users SET expiry_date = %s WHERE user_id = %s', (new_exp, user_id))
@@ -461,6 +480,11 @@ class Database:
             cur.execute("SELECT * FROM servers WHERE id=%s", (sid,))
             return cur.fetchone()
 
+    def get_server_for_user(self, sid, actor, admin_id=0):
+        if int(actor)==int(admin_id) and int(admin_id)>0:
+            return self.get_server_by_id(sid)
+        return self.execute('SELECT * FROM servers WHERE id=%s AND owner_id=%s', (int(sid),int(actor)),fetch='one')
+
     def add_server(self, owner_id, group_id, data, super_admin_id=0):
         from core import sec
         
@@ -476,7 +500,7 @@ class Database:
             if current >= user['server_limit']: 
                 return -1
         
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        now = self.get_tehran_datetime().strftime('%Y-%m-%d %H:%M:%S')
         loc = data.get('location_type', 'ext')
         
         password = data['password']
@@ -490,7 +514,7 @@ class Database:
                     (owner_id, g_id, data['name'], data['ip'], data['port'], data['username'], password, data. get('expiry_date'), loc, now)
                 )
                 server_id = cur.fetchone()['id']
-                ws_port = data.get('ws_port')
+                ws_port = int(data.get('ws_port') or AGENT_PORT)
                 if ws_port is not None:
                     cur.execute('UPDATE servers SET ws_port=%s WHERE id=%s', (int(ws_port), server_id))
                 conn.commit()
@@ -502,25 +526,17 @@ class Database:
     def delete_server(self, s_id, owner_id):
         self.execute('DELETE FROM servers WHERE id = %s AND owner_id = %s', (s_id, owner_id))
 
+    def activate_monitor_node(self, sid, owner):
+        with self.get_connection() as (conn, cur):
+            cur.execute('SELECT pg_advisory_xact_lock(535301)')
+            cur.execute('SELECT id FROM servers WHERE id=%s AND owner_id=%s FOR UPDATE', (sid, owner))
+            if not cur.fetchone():
+                raise PermissionError('Monitor server no longer belongs to owner')
+            cur.execute('UPDATE servers SET is_monitor_node=CASE WHEN id=%s THEN 1 ELSE 0 END WHERE owner_id=%s', (sid, owner))
+            conn.commit()
+
     def update_status(self, s_id, status):
         self.execute('UPDATE servers SET last_status = %s WHERE id = %s', (status, s_id))
-
-
-    def record_monitor_result(self, server_id, owner_id, status, cpu=None, ram=None, error=''):
-        """Persist monitor state and bounded historical CPU/RAM for an owned server."""
-        with self.get_connection() as (conn, cur):
-            cur.execute("""UPDATE servers SET last_status=%s,last_error=%s
-                           WHERE id=%s AND owner_id=%s RETURNING id""",
-                        (str(status)[:40], str(error)[:600], int(server_id), int(owner_id)))
-            if not cur.fetchone():
-                conn.rollback()
-                return False
-            if cpu is not None and ram is not None:
-                cur.execute("INSERT INTO server_stats(server_id,cpu,ram) VALUES(%s,%s,%s)",
-                            (int(server_id), float(str(cpu).strip().rstrip('%')),
-                             float(str(ram).strip().rstrip('%'))))
-            conn.commit()
-            return True
 
     def update_server_error(self, s_id, error_text:  str = ""):
         try:
@@ -546,62 +562,59 @@ class Database:
     def update_server_expiry(self, s_id, new_date):
         self.execute('UPDATE servers SET expiry_date = %s WHERE id = %s', (new_date, s_id))
 
-    def get_or_create_agent_token(self, ip, ssh_port=None):
-        """Persist a random, dedicated agent secret, encrypted at rest."""
+    def get_or_create_agent_token(self, ip, ssh_port=None, ws_port=None):
         import secrets
         from core import sec
+        from access_policy import valid_agent_port
+        ssh_port, ws_port = int(ssh_port or 22), valid_agent_port(ws_port or AGENT_PORT)
         with self.get_connection() as (conn, cur):
-            if ssh_port is None:
-                cur.execute("SELECT id, agent_token FROM servers WHERE ip=%s ORDER BY id LIMIT 1 FOR UPDATE", (ip,))
-            else:
-                cur.execute("SELECT id, agent_token FROM servers WHERE ip=%s AND port=%s ORDER BY id LIMIT 1 FOR UPDATE", (ip, ssh_port))
-            row = cur.fetchone()
-            if not row:
-                raise LookupError("Server must be saved before installing the agent")
-            token = sec.decrypt(row['agent_token'] or '') if row['agent_token'] else ''
+            cur.execute('SELECT id FROM servers WHERE ip=%s AND port=%s ORDER BY id LIMIT 1 FOR UPDATE', (str(ip),ssh_port))
+            if not cur.fetchone():
+                raise LookupError('Server must be saved before installing the agent')
+            cur.execute("""INSERT INTO agent_nodes(ip,ssh_port,ws_port,agent_token)
+                VALUES(%s,%s,%s,%s) ON CONFLICT(ip,ssh_port) DO NOTHING""",
+                (str(ip),ssh_port,ws_port,sec.encrypt(secrets.token_urlsafe(48))))
+            cur.execute('SELECT id,agent_token FROM agent_nodes WHERE ip=%s AND ssh_port=%s FOR UPDATE', (str(ip),ssh_port))
+            row=cur.fetchone()
+            token=sec.decrypt(row['agent_token'])
             if not token:
-                token = secrets.token_urlsafe(48)
-                cur.execute("UPDATE servers SET agent_token=%s WHERE id=%s", (sec.encrypt(token), row['id']))
-                conn.commit()
+                raise ValueError('AGENT_KEY_DECRYPT_FAILED: restore the correct secret.key before reinstalling')
+            cur.execute('UPDATE servers SET agent_id=%s WHERE ip=%s AND port=%s', (row['id'],str(ip),ssh_port))
+            conn.commit()
             return token
 
     def get_agent_token(self, ip, ws_port=None):
-        """Never use an SSH password as a websocket credential."""
-        from core import sec
-        with self.get_connection() as (conn, cur):
-            if ws_port:
-                cur.execute("""SELECT agent_token FROM servers
-                        WHERE ip=%s AND agent_token IS NOT NULL AND ws_port IN (%s,0)
-                        ORDER BY (ws_port=%s) DESC,id LIMIT 1""",(ip,int(ws_port),int(ws_port)))
-                row=cur.fetchone()
-            else:
-                cur.execute("SELECT agent_token FROM servers WHERE ip=%s AND agent_token IS NOT NULL ORDER BY id LIMIT 1",(ip,))
-                row=cur.fetchone()
-        return sec.decrypt(row['agent_token']) if row else ''
+        return self.get_agent_transport(ip,ws_port or AGENT_PORT)[0]
 
-    def store_agent_certificate(self, ip, ssh_port, certificate):
-        """Persist public pinned certificate for the same SSH-enrolled agent."""
-        if not (certificate.startswith('-----BEGIN CERTIFICATE-----') and
-                '-----END CERTIFICATE-----' in certificate and len(certificate) < 12000):
+    def store_agent_certificate(self, ip, ssh_port, certificate, ws_port=None):
+        from cryptography import x509
+        x509.load_pem_x509_certificate(certificate.encode())
+        if len(certificate)>12000:
             raise ValueError('Invalid TLS certificate')
-        with self.get_connection() as (conn, cur):
-            cur.execute('UPDATE servers SET agent_cert_pem=%s WHERE ip=%s AND port=%s',
-                        (certificate, str(ip), int(ssh_port)))
-            if cur.rowcount < 1:
-                raise LookupError('No matching server to pin TLS certificate')
+        with self.get_connection() as (conn,cur):
+            cur.execute("""UPDATE agent_nodes SET agent_cert_pem=%s,ws_port=COALESCE(%s,ws_port)
+                WHERE ip=%s AND ssh_port=%s RETURNING id,ws_port""", (certificate,ws_port,str(ip),int(ssh_port)))
+            row=cur.fetchone()
+            if not row:
+                raise LookupError('Agent must be registered before certificate enrollment')
+            cur.execute("""UPDATE servers SET agent_id=%s,ws_port=%s,agent_cert_pem=%s,
+                agent_token=(SELECT agent_token FROM agent_nodes WHERE id=%s)
+                WHERE ip=%s AND port=%s""", (row['id'],row['ws_port'],certificate,row['id'],str(ip),int(ssh_port)))
             conn.commit()
 
     def get_agent_transport(self, ip, ws_port):
-        """Return enrolled credential and corresponding TLS certificate as one row."""
         from core import sec
-        with self.get_connection() as (conn, cur):
-            cur.execute("""SELECT agent_token, agent_cert_pem FROM servers
-                WHERE ip=%s AND ws_port=%s AND agent_token IS NOT NULL
-                ORDER BY id DESC LIMIT 1""", (str(ip), int(ws_port)))
-            row = cur.fetchone()
-        if not row:
+        rows=self.execute("""SELECT agent_token,agent_cert_pem FROM agent_nodes
+            WHERE ip=%s AND ws_port=%s AND agent_cert_pem<>''""", (str(ip),int(ws_port or AGENT_PORT)),fetch='all')
+        if not rows:
             return '', ''
-        return sec.decrypt(row['agent_token'] or ''), row['agent_cert_pem'] or ''
+        if len(rows)!=1:
+            raise LookupError('AMBIGUOUS_AGENT: use a distinct WSS port for each SSH endpoint')
+        row=rows[0]
+        token=sec.decrypt(row['agent_token'])
+        if not token:
+            raise ValueError('AGENT_KEY_DECRYPT_FAILED')
+        return token,row['agent_cert_pem']
 
     def owns_resource(self, table, resource_id, owner_id):
         if table not in ('servers', 'tunnel_configs', 'groups', 'channels'):
@@ -610,20 +623,14 @@ class Database:
             f"SELECT 1 AS allowed FROM {table} WHERE id=%s AND owner_id=%s",
             (int(resource_id), int(owner_id)), fetch='one'))
 
-    def update_server_ws_port(self, server_id: int, ws_port: int, owner_id: int) -> bool:
-        """Update websocket port for a server (used for agent install/repair)."""
-        try:
-            if not 1 <= int(ws_port) <= 65535 or int(owner_id) <= 0:
-                return False
-            with self.get_connection() as (conn, cur):
-                cur.execute("UPDATE servers SET ws_port=%s WHERE id=%s AND owner_id=%s",
-                            (int(ws_port), int(server_id), int(owner_id)))
-                changed = cur.rowcount
-                conn.commit()
-                return changed == 1
-        except Exception as e:
-            logger.error("update_server_ws_port failed: %s", e, exc_info=True)
-            return False
+    def update_server_ws_port(self, server_id, ws_port, owner_id):
+        from access_policy import valid_agent_port
+        ws_port=valid_agent_port(ws_port)
+        with self.get_connection() as (conn,cur):
+            cur.execute('UPDATE servers SET ws_port=%s WHERE id=%s AND owner_id=%s', (ws_port,int(server_id),int(owner_id)))
+            changed=cur.rowcount
+            conn.commit()
+            return changed==1
 
     def toggle_server_active(self, s_id, current_state):
         new_state = 0 if current_state else 1
@@ -649,15 +656,26 @@ class Database:
             cur.execute('INSERT INTO server_stats (server_id, cpu, ram) VALUES (%s, %s, %s)', (server_id, cpu, ram))
             conn.commit()
 
+    def persist_server_observation(self, server, stats):
+        online=stats.get('status')=='Online'
+        with self.get_connection() as (conn,cur):
+            cur.execute("""UPDATE servers SET last_status=%s,last_error=%s,last_cpu=%s,last_ram=%s,
+                last_disk=%s,last_agent_status=%s,last_checked_at=NOW()
+                WHERE id=%s AND owner_id=%s RETURNING id""",
+                ('Online' if online else 'Offline',str(stats.get('error') or stats.get('agent_error') or '')[:1000],
+                 stats.get('cpu') if online else None,stats.get('ram') if online else None,
+                 stats.get('disk') if online else None,stats.get('agent_status','Offline'),server['id'],server['owner_id']))
+            if cur.fetchone() and online:
+                cur.execute('INSERT INTO server_stats(server_id,cpu,ram) VALUES(%s,%s,%s)',
+                    (server['id'],stats.get('cpu',0),stats.get('ram',0)))
+            cur.execute("DELETE FROM server_stats WHERE created_at<NOW()-INTERVAL '1 day'")
+            conn.commit()
+
     def get_server_stats(self, server_id):
-        with self.get_connection() as (conn, cur):
-            cur.execute('''
-                SELECT cpu, ram, to_char(created_at + INTERVAL '3 hours 30 minutes', 'HH24:MI') as time_str 
-                FROM server_stats 
-                WHERE server_id = %s 
-                ORDER BY created_at ASC
-            ''', (server_id,))
-            return cur. fetchall()
+        return self.execute("""SELECT cpu,ram,
+            to_char(created_at+INTERVAL '3 hours 30 minutes','HH24:MI') time_str
+            FROM server_stats WHERE server_id=%s AND created_at>=NOW()-INTERVAL '1 day'
+            ORDER BY created_at ASC""",(int(server_id),),fetch='all')
 
     def add_group(self, owner_id, name):
         try:
@@ -755,12 +773,12 @@ class Database:
                     current_exp_str = user['expiry_date']
                     if current_exp_str: 
                         current_exp = datetime.strptime(current_exp_str, '%Y-%m-%d %H:%M:%S')
-                        if current_exp < datetime.now(): 
-                            current_exp = datetime.now()
+                        if current_exp < self.get_tehran_datetime().replace(tzinfo=None): 
+                            current_exp = self.get_tehran_datetime().replace(tzinfo=None)
                     else:
-                        current_exp = datetime.now()
+                        current_exp = self.get_tehran_datetime().replace(tzinfo=None)
                 except:
-                    current_exp = datetime.now()
+                    current_exp = self.get_tehran_datetime().replace(tzinfo=None)
                 
                 new_exp = (current_exp + timedelta(days=plan['days'])).strftime('%Y-%m-%d %H:%M:%S')
                 p_type_code = 1 if pay['plan_type'] == 'bronze' else 2 if pay['plan_type'] == 'silver' else 3
@@ -785,14 +803,14 @@ class Database:
         new_limit = user['server_limit'] + 1
         try:
             current_exp = datetime.strptime(user['expiry_date'], '%Y-%m-%d %H:%M:%S')
-            if current_exp < datetime.now(): 
-                current_exp = datetime.now()
+            if current_exp < self.get_tehran_datetime().replace(tzinfo=None): 
+                current_exp = self.get_tehran_datetime().replace(tzinfo=None)
             new_exp = (current_exp + timedelta(days=10)).strftime('%Y-%m-%d %H:%M:%S')
         except:
-            new_exp = (datetime.now() + timedelta(days=10)).strftime('%Y-%m-%d %H:%M:%S')
+            new_exp = (self.get_tehran_datetime().replace(tzinfo=None) + timedelta(days=10)).strftime('%Y-%m-%d %H:%M:%S')
 
-        bonus_expiry = (datetime.now() + timedelta(days=10)).strftime('%Y-%m-%d %H:%M:%S')
-        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        bonus_expiry = (self.get_tehran_datetime().replace(tzinfo=None) + timedelta(days=10)).strftime('%Y-%m-%d %H:%M:%S')
+        now_str = self.get_tehran_datetime().strftime('%Y-%m-%d %H:%M:%S')
 
         with self.get_connection() as (conn, cur):
             cur.execute('''

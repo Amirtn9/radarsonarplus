@@ -123,32 +123,12 @@ class TunnelLogic:
                         (sub_id, uid))
             if not cur.fetchone():
                 return False
-            # Preserve child primary keys for unchanged links and therefore retain
-            # favorites, tags, metric history and incident references.
-            unique = {row[3]: row for row in rows}
-            if len(unique) > 20000:
-                raise ValueError('Too many subscription entries')
-            cur.execute("""SELECT id,link FROM tunnel_configs
-                           WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'
-                           FOR UPDATE""", (uid, sub_id))
-            existing = {item['link']: item['id'] for item in cur.fetchall()}
-            for link, row in unique.items():
-                if link in existing:
-                    cur.execute("""UPDATE tunnel_configs SET name=%s,quality_score=%s,
-                        last_status=%s,last_ping=%s,last_jitter=%s,last_speed_down=%s,
-                        last_speed_up=%s WHERE id=%s AND owner_id=%s AND parent_sub_id=%s""",
-                        (row[4], row[6], row[7], row[8], row[9], row[10], row[11],
-                         existing[link], uid, sub_id))
-                else:
-                    cur.execute("""INSERT INTO tunnel_configs
-                        (owner_id,parent_sub_id,type,link,name,added_at,quality_score,
-                         last_status,last_ping,last_jitter,last_speed_down,last_speed_up)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", row)
-            obsolete = [rid for link, rid in existing.items() if link not in unique]
-            if obsolete:
-                cur.execute("""DELETE FROM tunnel_configs WHERE owner_id=%s
-                    AND parent_sub_id=%s AND type='sub_item' AND id=ANY(%s)""",
-                    (uid, sub_id, obsolete))
+            cur.execute("DELETE FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'",
+                        (uid, sub_id))
+            execute_values(cur, """INSERT INTO tunnel_configs
+                   (owner_id, parent_sub_id, type, link, name, added_at, quality_score,
+                    last_status, last_ping, last_jitter, last_speed_down, last_speed_up)
+                   VALUES %s ON CONFLICT DO NOTHING""", rows)
             conn.commit()
             return True
 
@@ -183,10 +163,12 @@ class TunnelLogic:
                    SELECT owner_id,id,'default',FALSE FROM tunnel_configs WHERE id=ANY(%s)""",(list(fail_ids),))
             conn.commit()
 
-    def _get_active_monitor(self):
-        with self.db.get_connection() as (conn, cur):
-            cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1")
-            return cur.fetchone()
+    def _get_active_monitor(self, uid=None):
+        from settings import SUPER_ADMIN_ID
+        owner=int(uid or SUPER_ADMIN_ID)
+        return self.db.execute("""SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1
+            AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1""",
+            (owner,SUPER_ADMIN_ID,owner),fetch='one')
 
     def _register_sub_source(self, uid, sub_link, sub_name):
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -228,16 +210,12 @@ class TunnelLogic:
         now_dt = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         rows, report_lines = [], []
 
-        # Keep membership consistent with fetched subscription links even when
-        # individual tests fail. A probe failure does NOT mean the source removed
-        # the link, so it must not cause a child's stable ID to disappear.
-        for i, res in enumerate(results):
-            if isinstance(res, BaseException) or not res:
-                item, data = links[i], {}
-            else:
-                item, data = res
-                if not isinstance(data, dict):
-                    data = {}
+        for res in results:
+            if isinstance(res, Exception) or not res:
+                continue
+            item, data = res
+            if not isinstance(data, dict):
+                continue
 
             status = data.get('status', 'Fail')
             c_name = data.get('extracted_name') or item.get('name') or 'Unknown'
@@ -270,12 +248,12 @@ class TunnelLogic:
 
         return report_lines
 
-    async def process_singles_async(self, singles, monitor: dict, uid=None):
+    async def process_singles_async(self, singles, monitor: dict, uid=None, size=0.5):
         """پردازش لیست کانفیگ‌های تکی (موازی + ذخیره دسته‌ای)."""
         async def _one(cfg):
             async with self._user_sem(uid or cfg.get('owner_id')):
                 async with self.global_sem:
-                    ok, data = await self._test_via_ws(monitor, cfg['link'], size=0.5, timeout=45)
+                    ok, data = await self._test_via_ws(monitor,cfg['link'],size=float(size),timeout=60)
                 return cfg, (data if ok else None)
 
         results = await asyncio.gather(*[_one(c) for c in singles], return_exceptions=True)

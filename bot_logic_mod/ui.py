@@ -30,8 +30,15 @@ async def safe_edit_message(update: Update, text, reply_markup=None, parse_mode=
     except BadRequest as e:
         # اگر ارور این بود که "Message is not modified"، نادیده بگیر
         if "Message is not modified" in str(e):
-            return None
-        logger.error(f"Edit Error: {e}")
+            return update.callback_query.message if update.callback_query else None
+        logger.error("Message edit failed: %s",type(e).__name__)
+        try:
+            if update.callback_query:
+                return await update.callback_query.edit_message_text(text=text,reply_markup=reply_markup,parse_mode=None)
+            if update.message:
+                return await update.message.reply_text(text,reply_markup=reply_markup,parse_mode=None)
+        except Exception:
+            pass
     except Exception as e:
         logger.error(f"General Edit Error: {e}")
     return None
@@ -50,29 +57,19 @@ async def cancel_handler_func(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ارسال لاگ خطا به ادمین در تلگرام"""
-    logger.error("Exception while handling an update:", exc_info=context.error)
-    
-    # ساخت متن کامل خطا
-    tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
-    tb_string = "".join(tb_list)
-    
-    # پیام خطا برای ارسال به ادمین
-    message = (
-        f"🚨 **CRITICAL ERROR** 🚨\n\n"
-        f"Update: <pre>{html.escape(str(update))}</pre>\n\n"
-        f"❌ Error:\n<pre>{html.escape(tb_string[-3500:])}</pre>"
-    )
-    
-    # چاپ در کنسول برای اطمینان
-    print(tb_string)
-
-    # ارسال به تلگرام ادمین
-    try:
-        if SUPER_ADMIN_ID:
-            await context.bot.send_message(chat_id=SUPER_ADMIN_ID, text=message, parse_mode='HTML')
-    except Exception as e:
-        logger.error(f"Failed to send error log to admin: {e}")
+    from logging_config import redact
+    error=context.error
+    # No update/message text, callback payload, command, credentials or locals are serialized.
+    frames=traceback.extract_tb(error.__traceback__) if error and error.__traceback__ else []
+    location=' → '.join(f'{os.path.basename(f.filename)}:{f.lineno}:{f.name}' for f in frames[-8:])
+    uid=getattr(getattr(update,'effective_user',None),'id',None)
+    summary=f'Error type={type(error).__name__} user={uid} at={location}'
+    logger.error('%s',redact(summary))
+    if SUPER_ADMIN_ID:
+        try:
+            await context.bot.send_message(SUPER_ADMIN_ID,'🚨 خطای داخلی\n'+redact(summary)[:1800])
+        except Exception:
+            logger.error('Could not send sanitized error summary')
 async def run_background_ssh_task(context: ContextTypes.DEFAULT_TYPE, chat_id, func, *args):
     # بررسی می‌کنیم آیا ظرفیت خالی داریم یا نه
     if GLOBAL_SEMAPHORE.locked():

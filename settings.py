@@ -2,7 +2,7 @@ import os
 import logging
 import json
 
-PROJECT_VERSION = "5.2.3"
+PROJECT_VERSION = "5.3.0"
 
 # ==============================================================================
 # 📂 FILE PATHS CONFIGURATION
@@ -14,7 +14,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # مثل بکاپ‌گیری (خروجی pg_dump) نگه داشته شده است.
 DB_NAME = "sonar_ultra_pro.db"
 CONFIG_FILE = os.path.join(BASE_DIR, "sonar_config.json")
-KEY_FILE = os.path.join(BASE_DIR, "secret.key")
+STATE_DIR = os.environ.get("SONAR_STATE_DIR", os.path.join(BASE_DIR, "runtime"))
+KEY_FILE = os.path.join(STATE_DIR, "secret.key")
+# Manual upgrades keep the legacy key until the installer migrates runtime state.
+_legacy_key = os.path.join(BASE_DIR, "secret.key")
+if not os.getenv("SONAR_STATE_DIR") and not os.path.exists(KEY_FILE) and os.path.isfile(_legacy_key):
+    KEY_FILE = _legacy_key
+KNOWN_HOSTS_FILE = os.path.join(STATE_DIR, ".ssh", "known_hosts")
 AGENT_FILE_PATH = os.path.join(BASE_DIR, "monitor_agent.py")
 
 # ==============================================================================
@@ -25,7 +31,9 @@ DB_CONFIG = {
     'user': os.getenv('SONAR_DB_USER', 'sonar_user'),
     'password': os.environ.get('SONAR_DB_PASSWORD', ''),
     'host': os.getenv('SONAR_DB_HOST', 'localhost'),
-    'port': os.getenv('SONAR_DB_PORT', '5432')
+    'port': os.getenv('SONAR_DB_PORT', '5432'),
+    'connect_timeout': 5,
+    'options': '-c timezone=UTC'
 }
 
 # ==============================================================================

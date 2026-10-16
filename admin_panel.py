@@ -38,7 +38,8 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 # 🔧 نسخه ۴.۲: استخر مشترک پروژه (قبلاً یک استخر ۱۰ تایی جدا بود)
-from runtime import SHARED_EXECUTOR
+from runtime import SHARED_EXECUTOR, run_sync, spawn_background
+from access_policy import valid_agent_port
 EXECUTOR = SHARED_EXECUTOR
 
 logger.debug("📦 admin_panel.py module loaded")
@@ -1006,212 +1007,58 @@ async def admin_agent_install_menu(update: Update, context: ContextTypes.DEFAULT
 
 
 async def admin_agent_install_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """اجرای نصب/رفع ایجنت برای یک سرور."""
-    query = update.callback_query
+    if not SUPER_ADMIN_ID or update.effective_user.id!=SUPER_ADMIN_ID:
+        return ConversationHandler.END
+    await update.callback_query.answer()
+    if update.callback_query.data=='admin_agent_install_all':
+        servers=await run_sync(db.get_all_servers)
+        context.user_data['agent_install_targets']=[int(s['id']) for s in servers]
+        await update.effective_message.reply_text(f'🔌 پورت ایجنت برای نصب گروهی را وارد کنید؛ پیش‌فرض {AGENT_PORT}، بازهٔ 1024 تا 65535. /cancel برای لغو.')
+        return ADMIN_AGENT_PORT_INPUT
     try:
-        await query.answer()
-        parts = (query.data or '').split('_')
-        # Bulk install/repair on ALL servers (asks for a single WS port and applies it everywhere)
-        if parts and parts[-1] == "all":
-            servers = db.get_all_servers()
-            targets = [s.get("id") for s in servers if s.get("id") is not None]
-            context.user_data["agent_install_targets"] = targets
-            await safe_edit_message(
-                update,
-                "🔧 لطفاً پورت WebSocket ایجنت را ارسال کنید (مثلاً 8181).\n\nاین پورت روی *همه سرورها* تنظیم و سپس ایجنت نصب/تعمیر می‌شود.",
-            )
-            return ADMIN_AGENT_PORT_INPUT
-
-        sid = int(parts[-1])
-
-        srv = db.get_server_by_id(sid)
-        if not srv:
-            await safe_edit_message(update, "❌ سرور پیدا نشد.")
-            return
-
-        ip = srv.get('ip')
-        ssh_port = int(srv.get('port') or 22)
-        username = srv.get('username') or 'root'
-        password = sec.decrypt(srv['password']) if srv.get('password') else ''
-        chosen_ws_port = int(srv.get('ws_port') or AGENT_PORT)
-
-        msg = await safe_edit_message(
-            update,
-            f"⏳ در حال آماده‌سازی نصب ایجنت...\n\n🌐 **IP:** `{ip}`\n🔌 **SSH Port:** `{ssh_port}`\n📡 **Agent Port:** `{chosen_ws_port}`",
-        )
-
-        loop = asyncio.get_running_loop()
-
-        # مرحله 1: نصب/آپدیت ایجنت (SSH)
-        await safe_edit_message(
-            update,
-            f"⏳ **مرحله 1/2:** نصب/رفع ایجنت و پیش‌نیازها...\n\nاین عملیات با SSH انجام می‌شود و ممکن است چند دقیقه طول بکشد.",
-            message_id=msg.message_id,
-        )
-
-        ok, out = await loop.run_in_executor(
-            EXECUTOR,
-            ServerMonitor.install_agent_service,
-            ip,
-            ssh_port,
-            username,
-            password,
-            chosen_ws_port,
-        )
-
-        if not ok:
-            await safe_edit_message(
-                update,
-                "❌ **نصب/رفع ایجنت شکست خورد!**\n\n" + (out or "(بدون خروجی)"),
-                message_id=msg.message_id,
-            )
-            logger.warning(f"❌ Agent install failed for server {sid}: {out}")
-            return
-
-        # مرحله 2: تست اتصال WebSocket
-        await safe_edit_message(
-            update,
-            "⏳ **مرحله 2/2:** تست اتصال WebSocket...",
-            message_id=msg.message_id,
-        )
-
-        ws_ok = False
-        stats_or_err = None
-        try:
-            # 🔧 رفع باگ نسخه ۴.۰: اینجا از متغیر تعریف‌نشده «ws_port» استفاده می‌شد
-            # (فقط توی مسیر نصب دسته‌جمعی «همه سرورها» تعریف می‌شد، نه اینجا)
-            # نتیجه‌اش NameError بود و تست اتصال تک‌سروری همیشه شکست می‌خورد.
-            stats_or_err = await ServerMonitor.check_full_stats_ws(ip, chosen_ws_port, password)
-            ws_ok = bool(isinstance(stats_or_err, dict) and not stats_or_err.get("error"))
-        except Exception as e1:
-            # اگر در برخی محیط‌ها sync باشد یا حلقه مشکل داشته باشد، در Thread تست می‌کنیم
-            try:
-                stats_or_err = await loop.run_in_executor(
-                    EXECUTOR,
-                    lambda: asyncio.run(ServerMonitor.check_full_stats_ws(ip, chosen_ws_port, password)),
-                )
-                ws_ok = bool(isinstance(stats_or_err, dict) and not stats_or_err.get("error"))
-            except Exception as e2:
-                ws_ok = False
-                stats_or_err = str(e2) if str(e2) else str(e1)
-
-        if not ws_ok:
-            await safe_edit_message(
-                update,
-                "⚠️ **ایجنت نصب شد اما تست WebSocket ناموفق بود.**\n\n" + str(stats_or_err),
-                message_id=msg.message_id,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔁 تلاش مجدد", callback_data=f"admin_agent_install_{sid}")],
-                    [InlineKeyboardButton("🔙 بازگشت", callback_data='admin_agent_dashboard')],
-                ]),
-            )
-            logger.warning(f"⚠️ Agent installed but WS test failed for server {sid}: {stats_or_err}")
-            return
-
-        await safe_edit_message(
-            update,
-            "✅ **ایجنت با موفقیت نصب/آپدیت شد و اتصال WebSocket برقرار است.**\n\n" +
-            f"🌐 `{ip}:{chosen_ws_port}`\n" +
-            "می‌توانید از داشبورد ایجنت وضعیت آنلاین/آفلاین را بررسی کنید.",
-            message_id=msg.message_id,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📡 داشبورد ایجنت", callback_data='admin_agent_dashboard')],
-                [InlineKeyboardButton("📜 مشاهده لاگ اتصال/پروتکل", callback_data='admin_agent_logs')],
-            ]),
-        )
-
-        logger.info(f"✅ Agent install+test succeeded for server {sid}")
-
-    except Exception as e:
-        logger.error(f"❌ Error in admin_agent_install_run: {e}", exc_info=True)
-        await safe_edit_message(update, f"❌ خطا: {e}")
+        sid=int(update.callback_query.data.rsplit('_',1)[1])
+    except (ValueError,IndexError):
+        return ConversationHandler.END
+    srv=await run_sync(db.get_server_by_id,sid)
+    if not srv:
+        await update.effective_message.reply_text('❌ سرور یافت نشد.')
+        return ConversationHandler.END
+    msg=await update.effective_message.reply_text('⏳ نصب/تعمیر و آزمون اتصال واقعی ایجنت در پس‌زمینه آغاز شد.')
+    spawn_background(context,_admin_install_many([dict(srv)],None,msg),name=f'admin-agent-{sid}')
+    return ConversationHandler.END
 
 
 async def admin_agent_port_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receives WS port from admin and runs bulk install/repair for stored targets."""
+    if not SUPER_ADMIN_ID or update.effective_user.id!=SUPER_ADMIN_ID:
+        return ConversationHandler.END
     try:
-        if update.effective_user.id != SUPER_ADMIN_ID:
-            return ConversationHandler.END
-
-        text = (update.message.text or "").strip()
-        if text in ('/cancel','cancel','لغو'):
-            return await admin_agent_cancel(update, context)
-        if not text.isdigit():
-            await update.message.reply_text("❌ لطفاً فقط عدد پورت را ارسال کنید (مثلاً 8181).", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('❌ لغو', callback_data='cancel_flow')]]))
-            return ADMIN_AGENT_PORT_INPUT
-
-        ws_port = int(text)
-        if ws_port < 1024 or ws_port > 65535:
-            await update.message.reply_text("❌ پورت نامعتبر است. عددی بین 1 تا 65535 ارسال کنید.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('❌ لغو', callback_data='cancel_flow')]]))
-            return ADMIN_AGENT_PORT_INPUT
-
-        targets = context.user_data.get("agent_install_targets") or []
-        if not targets:
-            await update.message.reply_text("⚠️ لیست سرورها برای نصب/تعمیر پیدا نشد.")
-            return ConversationHandler.END
-
-        msg = await update.message.reply_text(
-            f"🛠 شروع نصب/تعمیر ایجنت روی {len(targets)} سرور...\nپورت انتخابی: {ws_port}"
-        )
-
-        ok_count = 0
-        fail_count = 0
-        failures = []
-
-        loop = asyncio.get_running_loop()
-
-        for n, sid in enumerate(targets, start=1):
-            srv = db.get_server_by_id(int(sid))
-            if not srv:
-                fail_count += 1
-                failures.append((sid, "SERVER_NOT_FOUND"))
-                continue
-
-            ip = srv.get("ip")
-            ssh_port = int(srv.get("port") or 22)
-            user = srv.get("username") or "root"
-            password = sec.decrypt(srv.get("password", ""))  # encrypted in DB
-
-            await safe_edit_message(
-                update,
-                f"⏳ [{n}/{len(targets)}] در حال نصب/تعمیر روی: {srv.get('name', ip)} ({ip})\n"
-                f"SSH: {ssh_port} | WS: {ws_port}",
-                message_id=msg.message_id,
-                chat_id=msg.chat_id,
-            )
-
-            def _do_install():
-                return ServerMonitor.install_agent_service(ip, ssh_port, user, password, int(ws_port))
-
-            ok, out = await loop.run_in_executor(EXECUTOR, _do_install)  # 🔧 v4.2
-            if ok:
-                if db.update_server_ws_port(int(sid), int(ws_port), int(srv['owner_id'])):
-                    ok_count += 1
-                else:
-                    fail_count += 1
-                    failures.append((sid, 'Agent installed; failed to save matching WSS port'))
-            else:
-                fail_count += 1
-                failures.append((srv.get('name', sid), out))
-
-        summary = f"✅ انجام شد. موفق: {ok_count} | ناموفق: {fail_count}"
-        if failures:
-            tail = "\n".join([f"- {name}: {err}" for name, err in failures[:12]])
-            summary += "\n\n❌ خطاها (نمونه):\n" + tail
-
-        await safe_edit_message(update, summary, message_id=msg.message_id, chat_id=msg.chat_id)
-
-        # cleanup
-        context.user_data.pop("agent_install_targets", None)
+        port=valid_agent_port((update.message.text or '').strip())
+    except ValueError:
+        await update.message.reply_text('❌ پورت باید عددی بین 1024 تا 65535 باشد؛ /cancel برای لغو.')
+        return ADMIN_AGENT_PORT_INPUT
+    ids=context.user_data.pop('agent_install_targets',[])
+    if not ids:
+        await update.message.reply_text('❌ درخواست نصب گروهی منقضی شده است.')
         return ConversationHandler.END
-
-    except Exception as e:
-        logger.error("admin_agent_port_input failed: %s", e, exc_info=True)
-        await update.message.reply_text("❌ نصب دسته‌جمعی ناموفق بود. لاگ سرور را بررسی کنید.")
-        return ConversationHandler.END
-
-
-async def admin_agent_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.pop('agent_install_targets', None)
-    await update.effective_message.reply_text('عملیات نصب ایجنت لغو شد.')
+    rows=await run_sync(lambda:[dict(s) for sid in ids if (s:=db.get_server_by_id(sid))])
+    msg=await update.message.reply_text(f'⏳ نصب/تعمیر {len(rows)} سرور روی پورت {port} در پس‌زمینه آغاز شد.')
+    spawn_background(context,_admin_install_many(rows,port,msg),name='admin-agent-bulk')
     return ConversationHandler.END
+
+
+async def _admin_install_many(servers, selected_port, message):
+    count=0
+    failures=[]
+    for index,srv in enumerate(servers,1):
+        current=await run_sync(db.get_server_by_id,srv['id'])
+        if not current:
+            failures.append(f'{srv["id"]}: سرور حذف شده است.');continue
+        port=valid_agent_port(selected_port or current.get('ws_port') or AGENT_PORT)
+        await message.edit_text(f'⏳ {index}/{len(servers)} | {current["name"]} | SSH:{current["port"]} | WSS:{port}')
+        ok,detail=await run_sync(ServerMonitor.install_agent_service,current['ip'],current['port'],current['username'],sec.decrypt(current['password']),port)
+        await run_sync(db.update_server_error,current['id'],'' if ok else detail)
+        if ok:count+=1
+        else:failures.append(f'{current["name"]}: {str(detail)[:500]}')
+    text=f'✅ موفق: {count}/{len(servers)}'
+    if failures:text+='\n\n'+ '\n'.join(failures)
+    await message.edit_text(text[:3900],reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('📡 وضعیت ایجنت‌ها',callback_data='admin_agent_dashboard')]]))

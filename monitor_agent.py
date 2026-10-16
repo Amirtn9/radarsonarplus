@@ -43,11 +43,12 @@ except ImportError:
 # ⚙️ SYSTEM CONFIGURATION
 # ==============================================================================
 USER_HOME = os.path.expanduser("~")
-WORK_DIR = os.path.join(USER_HOME, "xray_workspace")
+WORK_DIR = os.environ.get("SONAR_AGENT_WORK_DIR", os.path.join(USER_HOME, "xray_workspace"))
 XRAY_BIN = os.path.join(WORK_DIR, "xray")
 LOG_FILE = os.path.join(USER_HOME, "agent_debug.log")
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 TEST_URL = "http://www.google.com/generate_204"
+RUNTIME_LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_runtime.lock.json")
 
 if not os.path.exists(WORK_DIR):
     try: os.makedirs(WORK_DIR, mode=0o755)
@@ -174,12 +175,15 @@ def extract_name_from_link(link):
 def parse_subscription_links(text_data, limit=0):
     """Parse subscription text and return list of {'name','link'}."""
     results = []
+    seen = set()
     if not text_data:
         return results
     lines = [ln.strip() for ln in text_data.replace("\r", "\n").split("\n") if ln.strip()]
     for ln in lines:
         if not (ln.startswith(("vmess://", "vless://", "trojan://", "ss://")) or ln.startswith("{")):
             continue
+        if ln in seen: continue
+        seen.add(ln)
         name = extract_name_from_link(ln) or f"Item_{len(results)+1}"
         results.append({"name": name, "link": ln})
         if limit and len(results) >= limit:
@@ -190,55 +194,84 @@ def parse_subscription_links(text_data, limit=0):
 # 📦 XRAY MANAGER
 # ==============================================================================
 def install_xray():
-    """Install a version-pinned Xray executable only after SHA-256 verification.
-
-    SONAR_XRAY_URL and SONAR_XRAY_SHA256 must come from trusted deployment settings.
-    An existing managed binary remains untouched. No implicit 'latest' download.
-    """
+    """Install the checked-in, SHA256-pinned release and required geodata atomically."""
     import hashlib
-    if os.path.isfile(XRAY_BIN) and os.access(XRAY_BIN, os.X_OK):
-        return True
+    import platform
+    from pathlib import Path
+    import tempfile
     url = os.getenv('SONAR_XRAY_URL', '')
     expected = os.getenv('SONAR_XRAY_SHA256', '').lower()
+    version = 'custom-pinned'
+    if not url and not expected:
+        try:
+            lock = json.loads(Path(RUNTIME_LOCK_FILE).read_text())
+            arch = {'amd64':'x86_64', 'arm64':'aarch64'}.get(platform.machine().lower(), platform.machine().lower())
+            release = lock['assets'][arch]
+            url, expected, version = release['url'], release['sha256'], lock['version']
+        except (OSError, ValueError, KeyError):
+            logger.error('Xray runtime lock missing or architecture unsupported')
+            return False
     if not url or not re.fullmatch(r'[a-f0-9]{64}', expected):
-        logger.warning('Xray auto-download disabled: pin SONAR_XRAY_URL and SONAR_XRAY_SHA256')
+        logger.warning('Xray installation requires a pinned URL and SHA-256')
         return False
     parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme != 'https' or parsed.hostname not in ('github.com', 'objects.githubusercontent.com'):
-        logger.error('Refusing untrusted Xray download origin')
+    if parsed.scheme != 'https' or parsed.hostname not in ('github.com', 'objects.githubusercontent.com') or '/latest/' in url:
+        logger.error('Refusing unpinned/untrusted Xray origin')
         return False
-    archive_path = os.path.join(WORK_DIR, 'xray.zip')
+    def digest(path):
+        with open(path,'rb') as stream:
+            value=hashlib.sha256()
+            for block in iter(lambda:stream.read(1024*1024),b''): value.update(block)
+            return value.hexdigest()
+    os.makedirs(WORK_DIR, mode=0o750, exist_ok=True)
+    metadata = Path(WORK_DIR) / 'runtime-installed.json'
     try:
-        result = subprocess.run(
-            ["curl", "--fail", "--location", "--show-error", "--silent", "--retry", "2",
-             '--connect-timeout', '15', '--max-time', '120', '--output', archive_path, url],
-            timeout=140, capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            raise RuntimeError('Download failed')
-        digest = hashlib.sha256()
-        with open(archive_path, 'rb') as file:
-            for block in iter(lambda: file.read(1024 * 1024), b''):
-                digest.update(block)
-        if not hmac.compare_digest(digest.hexdigest(), expected):
-            raise ValueError('Xray SHA-256 mismatch')
-        with zipfile.ZipFile(archive_path) as archive:
-            member = next((x for x in archive.infolist() if x.filename == 'xray' and not x.is_dir()), None)
-            if member is None or not (1024 * 1024 <= member.file_size <= 150 * 1024 * 1024):
-                raise ValueError('Invalid Xray archive')
-            with archive.open(member) as src, open(XRAY_BIN + '.tmp', 'wb') as dst:
-                shutil.copyfileobj(src, dst)
-        os.chmod(XRAY_BIN + '.tmp', 0o755)
-        os.replace(XRAY_BIN + '.tmp', XRAY_BIN)
-        logger.info('Verified pinned Xray installed')
+        saved=json.loads(metadata.read_text())
+        if saved['archive_sha256']==expected and all(
+            digest(Path(WORK_DIR)/name)==saved['files'][name]
+            for name in ('xray','geoip.dat','geosite.dat')
+        ) and os.access(XRAY_BIN, os.X_OK):
+            return True
+    except (OSError,ValueError,KeyError):
+        pass
+    try:
+        with tempfile.TemporaryDirectory(prefix='.xray-install-',dir=WORK_DIR) as temp:
+            archive_path = str(Path(temp)/'runtime.zip')
+            result = subprocess.run(
+                ['curl','--fail','--location','--show-error','--silent','--retry','2',
+                 '--proto','=https','--proto-redir','=https','--connect-timeout','15',
+                 '--max-time','180','--output',archive_path,url],
+                timeout=200,capture_output=True,text=True,check=False)
+            if result.returncode != 0:
+                raise RuntimeError('Pinned runtime download failed')
+            if not hmac.compare_digest(digest(archive_path),expected):
+                raise ValueError('Xray SHA-256 mismatch')
+            files={}
+            with zipfile.ZipFile(archive_path) as archive:
+                for name in ('xray','geoip.dat','geosite.dat'):
+                    member=archive.getinfo(name)
+                    if member.is_dir() or not 1024<=member.file_size<=150*1024*1024:
+                        raise ValueError('Invalid Xray archive member')
+                    target=Path(temp)/name
+                    with archive.open(member) as source,target.open('wb') as dest:
+                        shutil.copyfileobj(source,dest)
+                    os.chmod(target,0o755 if name=='xray' else 0o644)
+                    files[name]=digest(target)
+            # Validate the actual core before making a staged release live.
+            result=subprocess.run([str(Path(temp)/'xray'),'version'],capture_output=True,text=True,timeout=10)
+            if result.returncode!=0:
+                raise RuntimeError('Xray architecture/executable check failed')
+            for name in files:
+                os.replace(Path(temp)/name,Path(WORK_DIR)/name)
+            staged=Path(temp)/'runtime-installed.json'
+            staged.write_text(json.dumps({'version':version,'archive_sha256':expected,'files':files}))
+            os.chmod(staged,0o600)
+            os.replace(staged,metadata)
+        logger.info('Pinned Xray and geodata installed: %s',version)
         return True
-    except Exception as exc:
-        logger.error('Xray installation rejected: %s', type(exc).__name__)
-        try: os.unlink(XRAY_BIN + '.tmp')
-        except FileNotFoundError: pass
+    except (OSError,ValueError,KeyError,RuntimeError,subprocess.SubprocessError,zipfile.BadZipFile) as exc:
+        logger.error('Xray provisioning failed: %s',type(exc).__name__)
         return False
-    finally:
-        try: os.unlink(archive_path)
-        except FileNotFoundError: pass
 
 
 # ==============================================================================
@@ -457,6 +490,8 @@ def _lowprio_shell(cmd: str) -> str:
 
 def test_config_logic(outbound, dl_size_mb=0.5):
     """لاجیک اصلی تست کانفیگ (Ping + optional Download Speed)."""
+    if not os.path.isfile(XRAY_BIN) or not os.path.isfile(os.path.join(WORK_DIR,'geoip.dat')):
+        return {"status":"Fail","msg":"XRAY_NOT_READY: install the pinned runtime and geodata","ping":0,"jitter":0,"down":None,"up":None}
     local_port = get_free_port()
     conf_file = os.path.join(WORK_DIR, f"config_{local_port}.json")
     full_conf = {
@@ -473,7 +508,7 @@ def test_config_logic(outbound, dl_size_mb=0.5):
 
         proc = subprocess.Popen(_lowprio_prefix() + [XRAY_BIN, "-c", conf_file], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if not check_port_open(local_port):
-            return {"status": "Fail", "msg": "Core Start Fail", "ping": 0, "jitter": 0, "down": 0, "up": 0, "score": 0}
+            return {"status": "Fail", "msg": "Core Start Fail", "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
 
         prox = f"socks5://127.0.0.1:{local_port}"
         pings = []
@@ -492,24 +527,24 @@ def test_config_logic(outbound, dl_size_mb=0.5):
                 pass
 
         if not pings:
-            return {"status": "Fail", "msg": "Timeout", "ping": 0, "jitter": 0, "down": 0, "up": 0, "score": 0}
+            return {"status": "Fail", "msg": "Timeout", "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
 
         avg_ping = int(sum(pings) / len(pings))
         jitter = int(max(pings) - min(pings)) if len(pings) >= 2 else 0
 
         # Download Speed Test (Optional)
-        dl_spd = 0
+        dl_spd = None
         if dl_size_mb and dl_size_mb > 0.5:
             try:
                 url = f"https://speed.cloudflare.com/__down?bytes={int(dl_size_mb * 1024 * 1024)}"
-                cmd = _lowprio_prefix() + ["curl", "--proxy", prox, "--silent", "--show-error",
+                cmd = _lowprio_prefix() + ["curl", "--proxy", prox, "--fail", "--silent", "--show-error",
                                             "--write-out", "%{speed_download}", "--output", "/dev/null",
                                             "--max-time", "12", url]
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=False)
                 if res.returncode == 0:
-                    dl_spd = round(float(res.stdout) / 1024 / 1024, 2)
+                    dl_spd = round(float(res.stdout) * 8 / 1_000_000, 2)
             except Exception:
-                dl_spd = 0
+                dl_spd = None
 
         # Simple score
         score = 10
@@ -524,10 +559,10 @@ def test_config_logic(outbound, dl_size_mb=0.5):
         elif avg_ping > 150:
             score = 9
 
-        return {"status": "OK", "ping": avg_ping, "jitter": jitter, "down": dl_spd, "up": 0, "score": score}
+        return {"status": "OK", "ping": avg_ping, "jitter": jitter, "down": dl_spd, "up": None, "speed_unit": "Mbps", "score": score}
 
     except Exception as e:
-        return {"status": "Fail", "msg": str(e), "ping": 0, "jitter": 0, "down": 0, "up": 0, "score": 0}
+        return {"status": "Fail", "msg": str(e), "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
 
     finally:
         try:
@@ -585,31 +620,17 @@ Stability improvements in this version:
 
 async def get_stats():
     if psutil is None:
-        return {"status": "Offline", "error": "psutil not installed"}
-
-    cpu = psutil.cpu_percent(interval=0.5)
-    ram = psutil.virtual_memory().percent
-    net = psutil.net_io_counters()
-
-    # Disk usage
-    try:
-        disk = psutil.disk_usage('/').percent
-    except Exception:
-        disk = 0
-
-    # محاسبه آپتایم
-    uptime_sec = int(time.time() - psutil.boot_time())
-    uptime_str = str(timedelta(seconds=uptime_sec))  # ساعت:دقیقه:ثانیه
-
-    return {
-        "status": "Online",
-        "cpu": cpu,
-        "ram": ram,
-        "disk": disk,
-        "traffic_gb": round((net.bytes_sent + net.bytes_recv) / (1024**3), 2),
-        "uptime_sec": uptime_sec,
-        "uptime_str": uptime_str
-    }
+        return {'error':'psutil is not installed'}
+    def snapshot():
+        cpu=psutil.cpu_percent(interval=0.1)
+        uptime=int(time.time()-psutil.boot_time())
+        net=psutil.net_io_counters()
+        return {'status':'Online','cpu':cpu,'ram':psutil.virtual_memory().percent,
+            'disk':psutil.disk_usage('/').percent,
+            'traffic_gb':round((net.bytes_sent+net.bytes_recv)/(1024**3),2),
+            'uptime_sec':uptime,'uptime_str':str(timedelta(seconds=uptime)),
+            'capabilities':{'xray_ready':os.path.isfile(XRAY_BIN) and os.path.isfile(os.path.join(WORK_DIR,'geoip.dat'))}}
+    return await asyncio.get_running_loop().run_in_executor(_get_test_executor(),snapshot)
 
 
 AGENT_TOKEN = os.environ.get("SONAR_AGENT_TOKEN", "")  # Required in server mode.
@@ -673,6 +694,9 @@ Protocol:
                     pass
                 continue
 
+            if not isinstance(data,dict):
+                await websocket.send(json.dumps({'error':'invalid_request_type'}))
+                continue
             action = data.get('action')
             
             if action == 'get_stats':
@@ -782,7 +806,11 @@ async def start_server(port):
 # ==============================================================================
 
 if __name__ == "__main__":
-    install_xray()  # Fail closed: without a pinned checksum this does not download Xray.
+    if '--install-runtime' in sys.argv:
+        raise SystemExit(0 if install_xray() else 1)
+    # Provision during installation; at service start verify existing pinned assets.
+    if not install_xray():
+        logger.error('Xray is unavailable; get_stats will report xray_ready=false')
 
     # CLI args (backward compatible):
     #   python3 monitor_agent.py 8080
