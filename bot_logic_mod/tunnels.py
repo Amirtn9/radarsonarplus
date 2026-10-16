@@ -110,11 +110,11 @@ async def perform_fast_scan(context, uid, mode):
                             ping = res.get('ping', 0)
                             score = res.get('score', 0)
                             cur.execute(
-                                "UPDATE tunnel_configs SET last_status='OK', last_ping=%s, quality_score=%s WHERE id=%s",
-                                (ping, score, cid)
+                                "UPDATE tunnel_configs SET last_status='OK', last_ping=%s, quality_score=%s WHERE id=%s AND owner_id=%s",
+                                (ping, score, cid, uid)
                             )
                         else:
-                            cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s", (cid,))
+                            cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
             except:
                 pass # اگر خطا داد، وضعیت قبلی بماند یا Fail شود
         conn.commit()
@@ -215,7 +215,7 @@ async def manage_single_sub_menu(update: Update, context: ContextTypes.DEFAULT_T
         if not sub:
             await query.answer("❌ اشتراک یافت نشد.", show_alert=True)
             return
-        cur.execute("SELECT id, name, last_status, last_ping FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (update.effective_user.id, sub_id))
+        cur.execute("SELECT id, name, last_status, last_ping FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (sub_id, update.effective_user.id))
         items = cur.fetchall()
 
     # ✅ ایمن‌سازی نام برای HTML
@@ -277,13 +277,13 @@ async def get_sub_links_action(update: Update, context: ContextTypes.DEFAULT_TYP
     sub_id = int(query.data.split('_')[3])
     
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (update.effective_user.id, sub_id))
+        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, update.effective_user.id))
         sub = cur.fetchone()
         if not sub:
             await query.answer("❌ اشتراک یافت نشد.", show_alert=True)
             return
             
-        cur.execute("SELECT link, name FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (update.effective_user.id, sub_id))
+        cur.execute("SELECT link, name FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (sub_id, update.effective_user.id))
         items = cur.fetchall()
         
     if not items:
@@ -321,7 +321,7 @@ async def delete_full_subscription(update: Update, context: ContextTypes.DEFAULT
     
     # 1. حذف از دیتابیس
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (update.effective_user.id, sub_id))
+        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, update.effective_user.id))
         sub = cur.fetchone()
         if sub:
             # حذف سورس
@@ -329,9 +329,9 @@ async def delete_full_subscription(update: Update, context: ContextTypes.DEFAULT
             cur.execute("DELETE FROM tunnel_configs WHERE id=%s AND owner_id=%s", (sub_id, uid))
             conn.commit()
             
-    # 2. نمایش پیام موفقیت (داخل try برای جلوگیری از کرش)
+    # 2. Report actual result, never announce a deletion denied by ownership.
     try:
-        await query.answer("✅ اشتراک حذف شد.", show_alert=True)
+        await query.answer("✅ اشتراک حذف شد." if sub else "❌ اشتراک پیدا نشد یا اجازه حذف ندارید.", show_alert=True)
     except: pass
     
     # 3. رفرش لیست ساب‌ها (نکته مهم: استفاده از custom_data به جای تغییر query.data)
@@ -386,13 +386,13 @@ async def background_update_all(context, uid, configs, monitor):
                     res = json.loads(output.strip())
                     if res.get("status") == "OK":
                         cur.execute(
-                            "UPDATE tunnel_configs SET last_status='OK', last_ping=%s, last_jitter=%s, quality_score=%s WHERE id=%s",
-                            (res.get('ping',0), res.get('jitter',0), 10, cid)
+                            "UPDATE tunnel_configs SET last_status='OK', last_ping=%s, last_jitter=%s, quality_score=%s WHERE id=%s AND owner_id=%s",
+                            (res.get('ping',0), res.get('jitter',0), 10, cid, uid)
                         )
                     else:
-                        cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s", (cid,))
+                        cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
                 except:
-                    cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s", (cid,))
+                    cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
             conn.commit()
 
     # پیام اتمام
@@ -648,7 +648,7 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # 1. دریافت اطلاعات کانفیگ و سرور مانیتورینگ
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT * FROM tunnel_configs WHERE id=%s", (cid,))
+        cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s", (cid,update.effective_user.id))
         cfg = cur.fetchone()
         cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
         monitor_node = cur.fetchone()
@@ -675,7 +675,7 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # 4. آماده‌سازی اتصال به ایجنت (🔧 نسخه ۴.۲: وب‌سوکت به جای SSH)
     ip = monitor_node['ip']
     ws_port = int(monitor_node.get('ws_port') or AGENT_PORT)
-    token = sec.decrypt(monitor_node['password'])
+    token = None  # WSS transport obtains its own pinned agent token
 
     loop = asyncio.get_running_loop()
     try:
@@ -705,8 +705,8 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
             def _save_ok():
                 with db.get_connection() as (conn, cur):
                     cur.execute(
-                        "UPDATE tunnel_configs SET last_status='OK', last_ping=%s, last_jitter=%s, last_speed_up=%s, last_speed_down=%s, quality_score=%s WHERE id=%s",
-                        (ping, jitter, up, down, score, cid)
+                        "UPDATE tunnel_configs SET last_status='OK', last_ping=%s, last_jitter=%s, last_speed_up=%s, last_speed_down=%s, quality_score=%s WHERE id=%s AND owner_id=%s",
+                        (ping, jitter, up, down, score, cid, uid)
                     )
                     conn.commit()
             await run_sync(_save_ok)
@@ -725,7 +725,7 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # ثبت خطا در دیتابیس (🔧 v4.2: خارج از event loop)
             def _save_fail():
                 with db.get_connection() as (conn, cur):
-                    cur.execute("UPDATE tunnel_configs SET last_status='Fail', quality_score=0 WHERE id=%s", (cid,))
+                    cur.execute("UPDATE tunnel_configs SET last_status='Fail', quality_score=0 WHERE id=%s AND owner_id=%s", (cid, uid))
                     conn.commit()
             await run_sync(_save_fail)
             
@@ -751,7 +751,7 @@ async def view_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
     cid = int(query.data.split('_')[2])
     
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT * FROM tunnel_configs WHERE id=%s", (cid,))
+        cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s", (cid,update.effective_user.id))
         cfg = cur.fetchone()
         
     if not cfg:
@@ -941,7 +941,7 @@ async def show_config_details(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT * FROM tunnel_configs WHERE id=%s", (cid,))
+        cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s", (cid,update.effective_user.id))
         cfg = cur.fetchone()
         
     if not cfg:
@@ -956,7 +956,7 @@ async def show_config_details(update: Update, context: ContextTypes.DEFAULT_TYPE
         if " | " in cfg['name']:
             sub_name = cfg['name'].split(" | ")[0]
             with db.get_connection() as (conn, cur):
-                cur.execute("SELECT id FROM tunnel_configs WHERE name=%s AND type='sub_source'", (sub_name,))
+                cur.execute("SELECT id FROM tunnel_configs WHERE name=%s AND type='sub_source' AND owner_id=%s", (sub_name,update.effective_user.id))
                 parent = cur.fetchone()
                 if parent:
                     parent_id = parent['id']
@@ -984,7 +984,7 @@ async def copy_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
     cid = int(query.data.split('_')[2])
     
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT link FROM tunnel_configs WHERE id=%s", (cid,))
+        cur.execute("SELECT link FROM tunnel_configs WHERE id=%s AND owner_id=%s", (cid,update.effective_user.id))
         cfg = cur.fetchone()
         
     if cfg:
@@ -995,30 +995,31 @@ async def copy_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def qr_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ایجاد و نمایش QR Code کانفیگ"""
-    query = update.callback_query
-    cid = int(query.data.split('_')[2])
-    
-    with db.get_connection() as (conn, cur):
-        cur.execute("SELECT link, name FROM tunnel_configs WHERE id=%s", (cid,))
-        cfg = cur.fetchone()
-
+    """Create QR locally. Never disclose credentials to an external QR service."""
+    from io import BytesIO
+    import qrcode
+    query=update.callback_query
+    uid=int(update.effective_user.id)
+    try:cid=int(query.data.split('_')[2])
+    except (IndexError,ValueError):
+        await query.answer('شناسه کانفیگ نامعتبر است',show_alert=True);return
+    with db.get_connection() as (conn,cur):
+        cur.execute('SELECT link, name FROM tunnel_configs WHERE id=%s AND owner_id=%s', (cid,uid))
+        cfg=cur.fetchone()
     if not cfg:
-        await query.answer("❌ کانفیگ پیدا نشد.", show_alert=True)
+        await query.answer('کانفیگ یافت نشد یا اجازه دسترسی ندارید',show_alert=True)
         return
-
-    await query.answer("🔄 در حال ایجاد QR Code...")
+    await query.answer('در حال ساخت QR امن')
+    def make_qr():
+        img=qrcode.make(cfg['link'])
+        out=BytesIO();img.save(out,format='PNG');out.seek(0);out.name='sonar-config.png'
+        return out
     try:
-        encoded_link = urllib.parse.quote(cfg['link'])
-        qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={encoded_link}"
-        
-        await query.message.reply_photo(
-            photo=qr_url, 
-            caption=f"🔲 **QR Code:**\n`{cfg['name']}`",
-            parse_mode='Markdown'
-        )
-    except Exception as e:
-        await query.message.reply_text(f"❌ امکان ارسال عکس وجود ندارد.\nلینک:\n`{cfg['link']}`", parse_mode='Markdown')
+        output=await __import__('asyncio').to_thread(make_qr)
+        await query.message.reply_photo(photo=output,caption='🔲 QR اختصاصی کانفیگ')
+    except Exception:
+        logger.exception('Local QR generation failed')
+        await query.message.reply_text('❌ ساخت QR ناموفق بود؛ لطفاً مجدداً تلاش کنید.')
 
 async def manual_update_sub_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Schedule an async subscription update without blocking the Telegram event loop."""
@@ -1028,7 +1029,7 @@ async def manual_update_sub_action(update: Update, context: ContextTypes.DEFAULT
     with db.get_connection() as (conn, cur):
         cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, uid))
         sub = cur.fetchone()
-        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 ORDER BY id LIMIT 1")
+        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
         monitor = cur.fetchone()
     if not sub or not monitor:
         await query.answer("❌ اشتراک یا نود مانیتورینگ یافت نشد.", show_alert=True)
@@ -1298,7 +1299,7 @@ async def run_quick_ping_check(context, uid, configs, monitor):
     """
     ip = monitor['ip']
     ws_port = int(monitor.get('ws_port') or AGENT_PORT)
-    token = sec.decrypt(monitor['password'])
+    token = None  # WSS transport obtains its own pinned agent token
     loop = asyncio.get_running_loop()
 
     # پردازش دسته‌ای (۱۰ تایی برای سرعت بیشتر)
@@ -1320,13 +1321,13 @@ async def run_quick_ping_check(context, uid, configs, monitor):
                         elif ping > 200: new_score = 8
                         
                         cur.execute(
-                            "UPDATE tunnel_configs SET last_status='OK', last_ping=%s, last_jitter=%s, quality_score=%s WHERE id=%s",
-                            (ping, jitter, new_score, cid)
+                            "UPDATE tunnel_configs SET last_status='OK', last_ping=%s, last_jitter=%s, quality_score=%s WHERE id=%s AND owner_id=%s",
+                            (ping, jitter, new_score, cid, uid)
                         )
                     else:
-                        cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s", (cid,))
+                        cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
                 except:
-                    cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s", (cid,))
+                    cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
             conn.commit()
 
     async def _probe(cfg):

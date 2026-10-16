@@ -1,0 +1,16 @@
+{
+  "schema": "sonar-diagnostic-v6",
+  "sample_only": true,
+  "time_utc": "2026-10-16T00:00:00+00:00",
+  "project_version": "6.0.0-rc.1",
+  "token_configured": true,
+  "config_exists": true,
+  "web_local_tcp": "listening",
+  "services": {
+    "sonar-bot": "LoadState=loaded\nActiveState=active\nExecMainStatus=0",
+    "sonar-web": "LoadState=loaded\nActiveState=active\nExecMainStatus=0"
+  },
+  "example_error": "SSH_DNS_FAILED: Host address could not be resolved",
+  "secrets": "[REDACTED]",
+  "notice": "EXAMPLE ONLY. This file is not a report from a real VPS. Manually inspect ZIP contents before sharing."
+}

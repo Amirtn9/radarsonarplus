@@ -448,7 +448,26 @@ def test_monitoring_options_match_agent_limits():
 def test_deployment_commits_actual_port_only_after_wss_and_runtime_health(monkeypatch, tmp_path, healthy):
     import agent_deploy
     import ws_client
+    import ssh_support
     calls, commits, firewall = [], [], []
+    # Deployment uploads the agent via SFTP over a verified SSH connection.
+    # Simulate the remote file system instead of contacting localhost:22.
+    class RemoteWriter:
+        def __enter__(self):return self
+        def __exit__(self, *_):return False
+        def write(self, payload):assert isinstance(payload, bytes)
+        def flush(self):pass
+    class FakeSFTP:
+        def normalize(self, path):return '/tmp'
+        def mkdir(self, path, mode=0o700):pass
+        def open(self, name, mode):return RemoteWriter()
+        def remove(self, name):pass
+        def rmdir(self, path):pass
+        def close(self):pass
+    class FakeSSH:
+        def open_sftp(self):return FakeSFTP()
+        def close(self):pass
+    monkeypatch.setattr(ssh_support,'connect_ssh',lambda *args:FakeSSH())
     monkeypatch.setattr(agent_deploy, 'privileged_script', lambda command: command)
     monkeypatch.setattr(agent_deploy.asyncio, 'sleep', AsyncMock())
     async def request(self, ip, port, token, payload, **kwargs):

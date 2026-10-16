@@ -388,7 +388,7 @@ class ServerMonitor:
 
     @staticmethod
     async def clean_disk_space(ip, port, user, password):
-        cmd = "apt-get autoremove -y && apt-get clean && journalctl --vacuum-time=1d && rm -rf /tmp/*"
+        cmd = "apt-get autoremove -y && apt-get clean && journalctl --vacuum-time=7d"
         return await ServerMonitor.run_remote_command(ip, port, user, password, cmd, timeout=60)
 
     @staticmethod

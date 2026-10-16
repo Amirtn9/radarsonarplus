@@ -93,8 +93,8 @@ def register_all_handlers(app:  Application):
             # --- Iran Node ---
             CallbackQueryHandler(bot_logic.monitor_settings_panel, pattern='^monitor_settings_panel$'),
             CallbackQueryHandler(bot_logic.set_iran_monitor_start, pattern='^set_iran_monitor_server$'),
-            CallbackQueryHandler(bot_logic.delete_monitor_node, pattern='^delete_monitor_node$'),
-            CallbackQueryHandler(bot_logic.update_monitor_node, pattern='^update_monitor_node$'),
+            CallbackQueryHandler(background_callback(bot_logic.delete_monitor_node), pattern='^delete_monitor_node$'),
+            CallbackQueryHandler(background_callback(bot_logic.update_monitor_node), pattern='^update_monitor_node$'),
 
             # --- Tunnel Configs ---
             CallbackQueryHandler(bot_logic.add_config_start, pattern='^add_tunnel_config$'),

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sonar Radar Pro 6.0.0 | resilient GitHub deployment manager
+# Sonar Radar Pro 6.0.0-rc.1 | resilient GitHub deployment manager
 # Supported: Ubuntu/Debian with systemd. Never execute remotely piped scripts as root.
 set -Eeuo pipefail
 umask 077
@@ -62,6 +62,14 @@ if [[ ! -f "$SOURCE_DIR/bot.py" || ! -f "$SOURCE_DIR/pro_portal.py" || ! -f "$SO
       "$GITHUB_URL" "$_sonar_bootstrap_dir/source"; then
     printf 'Cannot clone GitHub repository. Ensure the project exists, is public, and main is published.\n' >&2
     exit 1
+  fi
+  # Optional supply-chain pin. For trusted releases, set this to the audited commit.
+  if [[ -n "${SONAR_RELEASE_COMMIT:-}" ]]; then
+    [[ "$SONAR_RELEASE_COMMIT" =~ ^[a-fA-F0-9]{40}$ ]] || { echo 'Invalid SONAR_RELEASE_COMMIT (40 hexadecimal digits required)' >&2;exit 1; }
+    actual_commit="$(git -C "$_sonar_bootstrap_dir/source" rev-parse HEAD)"
+    [[ "$actual_commit" == "$SONAR_RELEASE_COMMIT" ]] || { echo 'Fetched repository commit does not match approved release' >&2;exit 1; }
+  else
+    printf 'NOTICE: GitHub main is unpinned. For verified release specify SONAR_RELEASE_COMMIT.\n' >&2
   fi
   if [[ ! -f "$_sonar_bootstrap_dir/source/bot.py" || ! -f "$_sonar_bootstrap_dir/source/install.sh" || ! -f "$_sonar_bootstrap_dir/source/pro_portal.py" ]]; then
     printf 'Repository does not contain the complete Sonar Radar source.\n' >&2
@@ -138,6 +146,16 @@ existing_components() {
   if (( found == 0 ));then ok 'No previous Sonar installation detected';fi
   return "$found"
 }
+verify_restore_rehearsal() {
+  # Real recovery test, not just pg_restore --list. No production DB touched.
+  # Postgres owns this temporary DB, automatically removed on completion.
+  local dump="$1" scratch="sonar_restore_check_$$" rc=0
+  [[ -s "$dump" && ! -L "$dump" ]] || die 'Restore rehearsal requires an existing regular dump.'
+  runuser -u postgres -- createdb --template=template0 "$scratch" >> "$INSTALL_LOG" 2>&1 || die 'Could not create isolated restore rehearsal database.'
+  runuser -u postgres -- pg_restore --exit-on-error --no-owner --no-acl -d "$scratch" "$dump" >> "$INSTALL_LOG" 2>&1 || rc=$?
+  runuser -u postgres -- dropdb --if-exists "$scratch" >> "$INSTALL_LOG" 2>&1 || die 'Cannot remove temporary restore rehearsal database; remove manually.'
+  (( rc == 0 )) || die 'Restore rehearsal FAILED. Backup cannot be marked verified.'
+}
 archive_existing_components() {
   # Archive all of the project-owned configuration before a destructive reset.
   local dest db_present=''
@@ -155,7 +173,8 @@ archive_existing_components() {
   fi
   if [[ "$db_present" == 1 ]];then
     runuser -u postgres -- pg_dump -Fc --no-owner --no-acl -d "$DB_NAME" > "$dest/database.dump" || die 'Database archive failed. Refusing reset.'
-    [[ -s "$dest/database.dump" ]] && pg_restore --list "$dest/database.dump" >/dev/null || die 'Backup verification failed. Refusing reset.'
+    [[ -s "$dest/database.dump" ]] && pg_restore --list "$dest/database.dump" >/dev/null || die 'Backup archive validation failed. Refusing reset.'
+    verify_restore_rehearsal "$dest/database.dump"
   fi
   if [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]]; then
     tar -C /var/lib -czf "$dest/runtime.tar.gz" sonar-radar || die 'Runtime archive failed. Refusing reset.'
@@ -268,7 +287,7 @@ set_env() {
     [[ "$val" =~ ^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$ ]] || die 'Invalid log level'
   fi
   if [[ "$key" == SONAR_MINIAPP_SESSION_MAX_AGE ]];then
-    [[ "$val" =~ ^[0-9]{2,6}$ ]] && (( 10#$val <= 86400 )) || die 'Session age must be <= 86400s'
+    [[ "$val" =~ ^[0-9]{2,4}$ ]] && (( 10#$val >= 60 && 10#$val <= 600 )) || die 'Session age must be 60..600s'
   fi
   mkdir -p /etc
   [[ ! -L "$ENV_FILE" ]] || die 'Refusing symlinked environment file'
@@ -461,7 +480,8 @@ make_backup() {
   [[ "$db_present" == 1 ]] || die 'Sonar database is missing; cannot create a verified database backup.'
   runuser -u postgres -- pg_dump -Fc -d "$DB_NAME" > "${file}.dump" || { rm -f "${file}.dump"; die 'pg_dump failed, refusing to proceed.'; }
   [[ -s "${file}.dump" ]] || die 'Database backup empty!'
-  pg_restore --list "${file}.dump" >/dev/null || die 'Database dump verification failed.'
+  pg_restore --list "${file}.dump" >/dev/null || die 'Database dump validation failed.'
+  verify_restore_rehearsal "${file}.dump"
 
   chmod 0600 "${file}"*; printf '%s\n' "$file"
 }
@@ -973,7 +993,7 @@ menu() {
     clear 2>/dev/null || true
     printf '\n%b  ╭────────────────────────────────────────────────────────╮%b\n' "$C_BLUE" "$C_RESET"
     printf '%b  │%b    /\  /\        SONAR  /  RADAR                  %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
-    printf '%b  │%b   ( \__/ )       PRO 6.0.0 · Control Center      %b│%b\n' "$C_BLUE" "$C_DIM" "$C_BLUE" "$C_RESET"
+    printf '%b  │%b   ( \__/ )       PRO 6.0.0-rc.1 Control      %b│%b\n' "$C_BLUE" "$C_DIM" "$C_BLUE" "$C_RESET"
     printf '%b  ╰────────────────────────────────────────────────────────╯%b\n' "$C_BLUE" "$C_RESET"
     printf '  ─────── DEPLOY ────────────────────────────────────────\n  01  Install Full Stack (Bot + DB + Mini App)\n  02  Update application safely\n  03  Install / repair Mini App panel\n  04  Configure domain + HTTPS\n  05  Settings & credentials\n  06  Service management\n  07  Professional logs (live/filter/JSON)\n  08  Create verified backup\n  09  Restore database from .dump\n  10  Diagnostics / health\n  11  Preflight source check\n  12  Uninstall (archive only)\n  13  Repair installed services\n  14  Clean reset + reinstall (includes Sonar database)\n  00  Exit\n\n'
     local choice s a d e p
@@ -1018,7 +1038,7 @@ case "${1:-}" in
   --logs) require_root;shift;bash "$SOURCE_DIR/scripts/logs.sh" "${1:-bot}" "${@:2}";;
   --uninstall) uninstall_app;;
   --help|-h) cat <<'USAGE'
-Sonar Radar Pro 6.0.0 | Deployment Manager
+Sonar Radar Pro 6.0.0-rc.1 | Deployment Manager
   sudo bash install.sh                 Interactive Apple-inspired terminal UI
   sudo bash install.sh --check         Offline source and OS checks
   sudo bash install.sh --install       Fresh FULL installation: Bot + DB + Mini App

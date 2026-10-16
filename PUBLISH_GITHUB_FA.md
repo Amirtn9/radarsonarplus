@@ -1,59 +1,26 @@
-# انتشار Sonar Radar Pro روی GitHub
+# انتشار V6 RC1 در مخزن GitHub
 
-مخزن اصلی: <https://github.com/Amirtn9/radarsonarplus> · شاخه `main`
+مخزن هدف: https://github.com/Amirtn9/radarsonarplus
 
-## گام‌های انتشار
+این بسته به‌صورت محلی تولید شده است؛ **هیچ فایلی خودکار روی GitHub آپلود نشده است.** ابتدا تست‌ها، لاگ‌ها و فایل‌های حساس را بررسی کنید.
 
-1. از مخزن موجودتان بکاپ بگیرید؛ این ZIP یک Snapshot از پروژه اصلاح‌شده است و
-   باید قبل از جایگزین‌کردن فایل‌ها با تغییرات هم‌زمان در GitHub تطبیق داده شود.
-2. ZIP را روی سیستم خود Extract کنید. **محتویات داخل پوشهٔ Sonar_Radar_Pro_5.3.0** (به‌خصوص فایل
-   `install.sh`) را به **ریشه مخزن** روی شاخه `main` منتقل کنید.
-3. فایل‌های خصوصی از قبیل `.env`، `secret.key`، `sonar_config.json` و بکاپ‌ها
-   نباید آپلود شوند.
-4. در مخزن مطمئن شوید مسیر زیر بدون خطای 404 باز می‌شود:
-   <https://raw.githubusercontent.com/Amirtn9/radarsonarplus/main/install.sh>
-5. اگر workflow بخش Actions اجرا شد، نتیجهٔ تست‌ها را بررسی کنید.
-
-## انتشار با Git CLI (در پوشه‌ای که ZIP را Extract کرده‌اید)
+از داخل پوشه سورس:
 
 ```bash
-git clone https://github.com/Amirtn9/radarsonarplus.git radarsonarplus-publish
-# محتویات ZIP را با ابزار فایل خود به radarsonarplus-publish منتقل کنید.
-cd radarsonarplus-publish
 python3 scripts/verify_manifest.py
 bash install.sh --check
-git status
+python3 -m pytest -q tests
+```
+
+سپس روی سیستم توسعه با `git`، در مخزن متعلق به خودتان یک branch جدید بسازید:
+
+```bash
+git checkout -b release/v6-rc1
 git add -A
-git commit -m "Fix SSH enrollment, WSS ports and agent deployment in 5.3.0"
-git push origin main
+git status --short
+git diff --cached --check
+git commit -m "Sonar Radar Pro 6.0.0-rc.1: data-safe subscription sync and diagnostics"
+git push -u origin release/v6-rc1
 ```
 
-از `git push --force` استفاده نکنید. اگر نسخهٔ GitHub بعد از ساخت بسته تغییر کرده، تغییرات
-را با دقت ادغام کنید.
-
-## نصب پس از انتشار (Ubuntu/Debian + systemd)
-
-```bash
-wget https://raw.githubusercontent.com/Amirtn9/radarsonarplus/main/install.sh
-chmod +x install.sh
-sudo ./install.sh
-```
-
-در منو **01** نصب کامل Bot + PostgreSQL + Mini App را اجرا می‌کند. گواهی عمومی HTTPS
-باید با تنظیم DNS دامنه و گزینه **04** دریافت شود.
-
-## ارتقا با جدیدترین نسخه GitHub
-
-```bash
-wget -O install.sh https://raw.githubusercontent.com/Amirtn9/radarsonarplus/main/install.sh
-chmod +x install.sh
-sudo ./install.sh --update
-sudo ./install.sh --doctor
-```
-
-## مشاهده لاگ
-
-```bash
-sudo bash /opt/radar-sonar/install.sh --logs all --follow
-sudo bash /opt/radar-sonar/install.sh --doctor
-```
+پس از بازبینی Pull Request و تست CI، انتشار را انجام دهید. **بدون قبولی تست‌های انتهابه‌انتها نسخه را Stable ننامید.** `MANIFEST_SHA256.txt` امضای امنیتی نیست. برای نصب از GitHub باید کد RC1 را واقعاً به مخزن منتقل کنید؛ بازکردن URL به‌تنهایی محتوای این ZIP را منتشر نمی‌کند.

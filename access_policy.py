@@ -48,11 +48,11 @@ def valid_subscription_url(value):
         parsed = urlsplit(value)
         valid = (parsed.scheme == 'https' and parsed.hostname and
                  not parsed.username and not parsed.password and
-                 parsed.port in (None, 443) and not any(c.isspace() for c in value))
+                 (parsed.port is None or parsed.port in (443, 8443, 2096, 2053, 2083, 2087)) and not any(c.isspace() for c in value))
     except ValueError:
         valid = False
     if not valid or len(value) > 8192:
-        raise ValueError('لینک اشتراک باید HTTPS با پورت 443 و بدون نام کاربری یا رمز باشد.')
+        raise ValueError('لینک اشتراک باید HTTPS با پورت 443، 8443، 2096، 2053، 2083 یا 2087 و بدون نام کاربری یا رمز باشد.')
     return value
 
 

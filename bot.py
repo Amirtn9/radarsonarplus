@@ -41,7 +41,7 @@ def main():
         print("⛔️ Error: Token not set.")
         return
 
-    print("🚀 SONAR RADAR PRO v6.0.0 RUNNING...")
+    print('🚀 SONAR RADAR PRO ' + open(os.path.join(BASE_DIR,'VERSION')).read().strip() + ' RUNNING...')
     
     # 🔧 نسخه ۴.۲: pool_timeout و سقف صریح آپدیت‌های همزمان اضافه شد تا وقتی
     # چند کاربر همزمان کار سنگین می‌کنند، ارسال پیام‌ها پشت هم گیر نکند.
@@ -111,7 +111,7 @@ def main():
     app.run_polling(
     drop_pending_updates=True, 
     close_loop=False,
-    allowed_updates=None  # بند کردن آپدیت‌های اضافی
+    allowed_updates=None  # Telegram default update types; nothing excluded here
 )
 if __name__ == '__main__':
     main()

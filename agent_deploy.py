@@ -7,6 +7,7 @@ from pathlib import Path
 import shlex
 import threading
 import time
+import secrets
 
 from access_policy import valid_agent_port
 from ssh_support import normalize_host, ssh_port
@@ -33,7 +34,7 @@ def deploy_agent(monitor, db, ip, port, user, password, ws_port):
         return _deploy(monitor, db, ip, port, user, password, ws_port)
     except Exception as exc:
         # Commands and secrets must not appear in installer exceptions.
-        return False, f'AGENT_INSTALL_FAILED: {type(exc).__name__}: {str(exc)[:500]}'
+        return False, f'AGENT_INSTALL_FAILED: {type(exc).__name__}'
     finally:
         lock.release()
 
@@ -50,20 +51,48 @@ def _deploy(monitor, db, ip, port, user, password, ws_port):
     ok, out = run('id -u', 25)
     if not ok:
         return False, out
-    upload = (
-        'install -d -m 0755 /opt/sonar-agent\n'
-        "cat > /opt/sonar-agent/monitor_agent.py <<'SONAR_AGENT_PY'\n" + script + '\nSONAR_AGENT_PY\n'
-        "cat > /opt/sonar-agent/agent_runtime.lock.json <<'SONAR_RUNTIME_JSON'\n" + json.dumps(runtime_lock) + '\nSONAR_RUNTIME_JSON\n'
-        'chown -R root:root /opt/sonar-agent\nchmod 0755 /opt/sonar-agent\n'
-        'chmod 0644 /opt/sonar-agent/monitor_agent.py /opt/sonar-agent/agent_runtime.lock.json\n'
-    )
-    ok, out = run(upload)
-    if not ok:
-        return False, 'AGENT_UPLOAD_FAILED: ' + out[-700:]
+    # Upload as small SFTP chunks using an independently verified SSH host key.
+    # Never embed the entire agent source in a single bash -c argument.
+    from ssh_support import connect_ssh
+    ssh=None
+    sftp=None
+    remote_dir=None
+    try:
+        ssh=connect_ssh(ip,port,user,password)
+        sftp=ssh.open_sftp()
+        remote_dir=sftp.normalize('.')+'/.'+'sonar-upload-'+secrets.token_hex(8)
+        sftp.mkdir(remote_dir,mode=0o700)
+        for name,payload in (
+            ('monitor_agent.py',script.encode('utf-8')),
+            ('agent_runtime.lock.json',json.dumps(runtime_lock).encode('utf-8'))):
+            with sftp.open(remote_dir+'/'+name,'wb') as target:
+                target.write(payload)
+                target.flush()
+        destination=shlex.quote(remote_dir)
+        upload=(f'install -d -m 0755 /opt/sonar-agent\n'
+                f'install -m 0644 {destination}/monitor_agent.py /opt/sonar-agent/monitor_agent.py\n'
+                f'install -m 0644 {destination}/agent_runtime.lock.json /opt/sonar-agent/agent_runtime.lock.json\n'
+                'chown -R root:root /opt/sonar-agent\n')
+        ok,out=run(upload,timeout=90)
+        if not ok:return False,'AGENT_UPLOAD_INSTALL_FAILED: '+str(out)[-400:]
+    except Exception as exc:
+        return False,'AGENT_SFTP_FAILED: '+type(exc).__name__
+    finally:
+        if ssh:
+            try:
+                if remote_dir:
+                    for name in ('monitor_agent.py','agent_runtime.lock.json'):
+                        try:sftp.remove(remote_dir+'/'+name)
+                        except OSError:pass
+                    sftp.rmdir(remote_dir)
+                if sftp is not None:
+                    sftp.close()
+            except (OSError, AttributeError):pass
+            ssh.close()
     setup = '''apt-get update -y
 apt-get install -y python3 python3-venv ca-certificates curl openssl iproute2
 test -x /opt/sonar-agent-venv/bin/python || python3 -m venv /opt/sonar-agent-venv
-/opt/sonar-agent-venv/bin/python -m pip install --disable-pip-version-check 'websockets==13.1' 'psutil==6.1.1' 'PyYAML>=6.0,<7'
+/opt/sonar-agent-venv/bin/python -m pip install --disable-pip-version-check 'websockets==13.1' 'psutil==6.1.1' 'PyYAML==6.0.2'
 chmod -R a+rX /opt/sonar-agent-venv
 id -u sonar-agent >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/sonar-agent --shell /usr/sbin/nologin sonar-agent
 install -d -m 0750 -o sonar-agent -g sonar-agent /var/lib/sonar-agent

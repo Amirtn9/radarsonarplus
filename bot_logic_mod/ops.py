@@ -553,6 +553,11 @@ async def get_iran_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def delete_monitor_node(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """حذف فایل‌ها از سرور ایران و قطع ارتباط"""
+    if not update.effective_user or int(update.effective_user.id) != int(SUPER_ADMIN_ID):
+        if update.callback_query:
+            await update.callback_query.answer('فقط مدیر اصلی اجازه اجرای این عملیات را دارد',show_alert=True)
+        return
+
     query = update.callback_query
     await query.answer("🗑 در حال حذف فایل‌ها و قطع ارتباط...", show_alert=True)
     msg = await query.message.reply_text("⏳ **در حال پاکسازی سرور ایران...**")
@@ -593,6 +598,11 @@ async def delete_monitor_node(update: Update, context: ContextTypes.DEFAULT_TYPE
     await monitor_settings_panel(update, context)
 async def update_monitor_node(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Re-enroll legacy monitor through the secure managed TLS installer."""
+    if not update.effective_user or int(update.effective_user.id) != int(SUPER_ADMIN_ID):
+        if update.callback_query:
+            await update.callback_query.answer('فقط مدیر اصلی اجازه اجرای این عملیات را دارد',show_alert=True)
+        return
+
     query = update.callback_query
     await query.answer()
     with db.get_connection() as (conn, cur):

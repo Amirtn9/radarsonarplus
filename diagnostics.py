@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,27 +24,53 @@ MAX_LINES = 500
 MAX_BUNDLE = 3_500_000
 SERVICES = ('sonar-bot', 'sonar-web')
 # Redact on each bounded line so accidentally logged secrets are not forwarded.
-TOKEN = re.compile(r'\b\d{7,12}:[A-Za-z0-9_-]{30,}\b')
-ASSIGNMENT = re.compile(r'(?i)\b(password|passwd|token|secret|authorization|api[_-]?key|private[_-]?key|session|cookie|db[_-]?password|bot[_-]?token)\b\s*([:=]\s*|["\']\s*:\s*["\'])([^\s,;"\']+)')
-BEARER = re.compile(r'(?i)\b(?:Bearer|Basic|tma)\s+[A-Za-z0-9_./+=%-]{12,}')
+TOKEN = re.compile(r'\b[0-9]{7,12}:[A-Za-z0-9_-]{30,}\b')
+# Hide entire credential-containing lines, including ENV_VAR and JSON syntax.
+SENSITIVE_KEY = re.compile(
+    r'(?i)(?:^|[\s,{"\'])(?:[A-Za-z0-9]+[_-])*'
+    r'(?:password|passwd|passphrase|token|secret|authorization|credential|'
+    r'api[_-]?key|private[_-]?key|cookie|session|client[_-]?secret|'
+    r'ssh[_-]?key)(?:[_-][A-Za-z0-9]+)*\s*["\']?\s*[:=]')
+BEARER = re.compile(r'(?i)\b(?:Bearer|Basic|tma)\s+[^\s\\"\']+')
 URI = re.compile(r'(?i)\b(?:vless|vmess|trojan|ss|hysteria2|tuic)://[^\s<>"\']+')
-URL_SECRET = re.compile(r'(?i)([?&](?:token|key|password|secret|auth|access_token)=)[^\s&#]+')
-PEM = re.compile(r'-----BEGIN [\w ]*PRIVATE KEY-----.*', re.I)
-HTTP_URL = re.compile(r'''(?i)\b(?:https?|postgres(?:ql)?|redis)://[^\s<>\"']+''')
-IPV4 = re.compile(r'(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])')
+HTTP_URL = re.compile(r"""(?i)\b(?:https?|postgres(?:ql)?|redis)://[^\s<>"']+""")
+IPV4 = re.compile(r'(?<![\w.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![\w.])')
+HOSTNAME = re.compile(r'(?i)\b(?:[a-z0-9-]+\.)+(?:com|net|org|ir|dev|info|io|co|online|app|site|xyz|me|ru|uk|de|fr|jp|cn|us)\b')
+USER_ID = re.compile(r'(?i)\b(?:owner_id|user_id|chat_id|telegram_id|uid|peer_id)\s*[:=]\s*[0-9]+')
+PRIVATE_BLOCK = re.compile(r'-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----',re.I|re.S)
+IPV6_CANDIDATE = re.compile(r'(?<![0-9A-Za-z_])(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.%]*(?![0-9A-Za-z_])')
+
+
+def _redact_ipv6(match):
+    import ipaddress
+    candidate=match.group().rstrip(':,.;]')
+    try:
+        ipaddress.IPv6Address(candidate)
+        return '[REDACTED_IPV6]' + match.group()[len(candidate):]
+    except ValueError:
+        return match.group()
 
 
 def sanitize(text: str, *, hide_ips: bool = True) -> str:
-    value = str(text).replace('\x00', '')
-    value = TOKEN.sub('[REDACTED_BOT_TOKEN]', value)
-    value = BEARER.sub('[REDACTED_AUTH]', value)
-    value = URI.sub('[REDACTED_CONFIG_LINK]', value)
-    value = HTTP_URL.sub('[REDACTED_URL]', value)
-    value = URL_SECRET.sub(r'\1[REDACTED]', value)
-    value = ASSIGNMENT.sub(lambda m: m.group(1) + m.group(2) + '[REDACTED]', value)
-    value = PEM.sub('[REDACTED_PRIVATE_KEY]', value)
+    value=str(text).replace('\x00','')
+    value=PRIVATE_BLOCK.sub('[REDACTED_PRIVATE_KEY]',value)
+    # Secret values can be printed with unanticipated syntax; drop the line.
+    safe=[]
+    for line in value.splitlines():
+        if SENSITIVE_KEY.search(line):
+            safe.append('[REDACTED_SENSITIVE_LINE]')
+        else:
+            safe.append(line)
+    value='\n'.join(safe)
+    value=TOKEN.sub('[REDACTED_BOT_TOKEN]',value)
+    value=BEARER.sub('[REDACTED_AUTH]',value)
+    value=URI.sub('[REDACTED_CONFIG_LINK]',value)
+    value=HTTP_URL.sub('[REDACTED_URL]',value)
+    value=USER_ID.sub('[REDACTED_USER_ID]',value)
     if hide_ips:
-        value = IPV4.sub(lambda m: '[IP-' + hashlib.sha256(m.group().encode()).hexdigest()[:8] + ']', value)
+        value=IPV4.sub('[REDACTED_IPV4]',value)
+        value=IPV6_CANDIDATE.sub(_redact_ipv6,value)
+        value=HOSTNAME.sub('[REDACTED_DOMAIN]',value)
     return value
 
 
@@ -144,7 +169,7 @@ def safe_agent_rows(rows):
             try: row=dict(row)
             except (TypeError,ValueError):continue
         safe.append({field:sanitize(str(row.get(field,'')))[:1200]
-                     for field in ('id','last_status','agent_last_seen','agent_last_log','last_error')})
+                     for field in ('last_status','agent_last_seen','agent_last_log','last_error')})
     return safe
 
 

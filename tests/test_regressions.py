@@ -60,7 +60,7 @@ def _load_isolated_tunnel(monkeypatch):
     fake_module('keyboard')
     fake_module('database', Database=lambda: object())
     fake_module('core', extract_safe_json=None, sec=types.SimpleNamespace(decrypt=lambda x:x), ServerMonitor=object)
-    async def direct_call(fn,*args): return fn(*args)
+    async def direct_call(fn,*args,**kwargs): return fn(*args,**kwargs)
     fake_module('runtime', run_sync=direct_call)
     fake_module('settings', AGENT_PORT=8181)
     spec = importlib.util.spec_from_file_location('sonar_isolated_test_tunnel', ROOT/'tunnel_logic.py')
@@ -84,7 +84,7 @@ def test_successful_subscription_swap_has_parent_and_owner(monkeypatch):
     mod = _load_isolated_tunnel(monkeypatch)
     t = mod.TunnelLogic()
     saved=[]
-    t._bulk_save_sub_items=lambda uid, parent, rows:(saved.append((uid,parent,rows)) or True)
+    t._bulk_save_sub_items=lambda uid, parent, rows, **kw:(saved.append((uid,parent,rows)) or {'added':len(rows),'removed':0,'kept':0})
     t._save_sub_info=lambda *args:None
     async def fetch(*args):return True, [{'name':'one', 'link':'vless://example'}], {'total':1}
     async def tested(*args, **kwargs):return True, {'status':'OK','ping':22,'score':8}
@@ -95,13 +95,13 @@ def test_successful_subscription_swap_has_parent_and_owner(monkeypatch):
     report=asyncio.run(run())
     assert len(saved)==1 and saved[0][0:2]==(13,71)
     assert saved[0][2][0][0:3]==(13,71,'sub_item')
-    assert len(report)==1
+    assert len(report)>=2
 
 
 def test_fair_semaphore_never_reserves_global_slots_while_waiting_for_user(monkeypatch):
     mod=_load_isolated_tunnel(monkeypatch)
     t=mod.TunnelLogic()
-    t._bulk_save_sub_items=lambda *args:True
+    t._bulk_save_sub_items=lambda *args,**kwargs:{'added':0,'removed':0,'kept':len(args[2])}
     events=[]
     active={1:0,2:0}
     async def fetch(*args):

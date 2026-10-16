@@ -1,15 +1,13 @@
-# Sonar Radar security boundaries — 5.3.0
+# Sonar Radar Pro V6 Security Notes
 
-- **SSH enrollment:** Reject unknown/changed host keys. A candidate fingerprint must be verified independently. The Telegram wizard also requires password authentication against that exact key before storing it. Installer CLI and Telegram enrollment share the private, locked trust store.
-- **Server operations:** One strict action grammar and repeated ownership checks precede remote operations. Premium capability checks use the same policy in UI and execution. Administrative callbacks remain restricted to the configured super-admin.
-- **Agent:** Per-physical-node encrypted token and a TLS certificate enrolled over verified SSH. Clients require WSS and certificate/hostname verification; non-loopback cleartext listeners are rejected. WebSocket remote-shell execution is disabled. Maintenance uses owned SSH records.
-- **Installation privilege:** Agent deployment requires root or passwordless sudo; the persistent service runs as sonar-agent. Success requires an exact listener and an authenticated WSS stats/runtime probe from the bot.
-- **Network isolation:** Allow the selected agent TCP port (default 8080) from the bot's public IP in UFW and provider security groups. The helper handles active UFW; provider firewalls and other firewall systems require separate configuration.
-- **SSRF:** Subscription fetches require standard-port HTTPS without credentials. The agent validates all DNS answers, rejects non-global IPs and redirects, and connects to a validated pinned address with TLS hostname verification. UI structural checks do not replace this network boundary.
-- **Xray supply chain:** agent_runtime.lock.json fixes official release URLs and SHA-256 by architecture. No floating latest downloads. Archives must match their hash and contain bounded binary/geodata members; the binary must execute its version command. Custom pins require both URL and SHA-256 and are preserved on repair.
-- **Limits:** WebSocket messages are capped at 4 MiB, subscription downloads at 2 MiB, parsed subscription links at 600, test size at 10 MiB, and concurrent tests are bounded on both bot and agent. Cancelled in-flight connections are closed rather than reused with stale responses.
-- **Mini App:** Every request verifies signed Telegram initData and owner/team access. Default session lifetime is 24 hours and is configurable; initData remains a bearer credential until expiry. The API binds to loopback behind HTTPS/nginx.
-- **State and credentials:** Managed state lives in /var/lib/sonar-radar, writable by the bot service. Encryption key and trust store are private; source remains root-owned. Existing keys are preserved during upgrade, and incompatible key restoration is rejected. Back up DB, config and key together. A fully compromised bot host can decrypt its stored credentials.
-- **Logging:** Error summaries contain exception type and source locations without raw Telegram updates or exception text. Journals include best-effort redaction; keep logs private and review them before sharing.
-- **Backup/reset:** PostgreSQL health, inventory, nonempty dump and restore-list verification gate backup success. A clean reset additionally requires exact typed acknowledgement and an archived backup; cancellation and backup failure stop deletion.
-- **Validation scope:** See QA_5.3_FA.md. Local integration tests do not establish live Telegram, provider firewall or Ubuntu/systemd behavior. Periodic access review remains appropriate for production deployments.
+**Release status:** `6.0.0-rc.1`. This is not a completed security audit or production safety certification.
+
+- **SSH**: host keys must be verified out of band. Never replace `RejectPolicy` with an automatically trusting policy. An operational account with minimum required sudo privilege is recommended.
+- **WSS**: require a TLS certificate pinned to the target, and independent agent authentication token. Avoid storing secrets in HTTP-accessible files.
+- **Subscriptions**: DNS-public-address allowlist, pinned HTTPS connection, redirect rejection, bounded read (2 MiB), supported-port allowlist. Supported ports: 443, 8443, 2096, 2053, 2083, 2087. Keep this list restrictive.
+- **Web Mini App**: validate signed initData; default maximum age 300 seconds and hard cap 600 seconds. Web API only on loopback behind HTTPS proxy. User ownership must be checked inside every mutation.
+- **Support bundles**: sanitization is best-effort. Always review bundle before sharing. Never forward `secret.key`, private SSH keys, `.env`, tokens, or unredacted database dumps.
+- **Supply chain**: the manifest is a file integrity check, not a cryptographic signature of origin. GitHub installs should use a verified commit SHA; `main` without a pin is mutable.
+- **Backups**: `--backup` performs PostgreSQL restore rehearsal into a disposable database. Encryption key, env and DB dump must remain together for genuine recovery.
+
+Security concerns should be reported privately to the repository maintainer rather than disclosed with exploit details or secrets in public issues.

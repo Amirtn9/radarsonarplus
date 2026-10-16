@@ -9,6 +9,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from functools import lru_cache
 from fastapi import FastAPI, Depends, HTTPException, Header, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
@@ -26,17 +27,21 @@ app.mount('/static',StaticFiles(directory=BASE/'pro_web'/'static'),name='static'
 store=ProStore()
 
 
+@lru_cache(maxsize=1)
 def get_bot_token():
     value=os.environ.get('SONAR_BOT_TOKEN','')
     if value:return value
     # Supports existing project config without publishing the token to the browser.
-    with open(BASE/'sonar_config.json',encoding='utf-8') as f:return json.load(f).get('bot_token','')
+    try:
+        with open(BASE/'sonar_config.json',encoding='utf-8') as f:return json.load(f).get('bot_token','')
+    except (OSError,ValueError,TypeError):
+        return ''
 
 
 async def actor(authorization:str=Header(default='')):
     if not authorization.startswith('tma '):raise HTTPException(status_code=401,detail='Telegram authentication required')
     try:uid=verify_init_data(authorization[4:], get_bot_token(),
-                                  max_age=int(os.getenv('SONAR_MINIAPP_SESSION_MAX_AGE', '86400')))
+                                  max_age=min(600,max(60,int(os.getenv('SONAR_MINIAPP_SESSION_MAX_AGE', '300')))))
     except (PermissionError,ValueError,KeyError):raise HTTPException(status_code=401,detail='Invalid or expired Telegram authorization')
     try:
         allowed,_=await asyncio.to_thread(store.db.check_access,uid)
@@ -67,7 +72,25 @@ async def headers(request:Request,call_next):
 async def index():return FileResponse(BASE/'pro_web'/'index.html')
 
 @app.get('/healthz')
-async def health():return {'ok':True}
+async def health():return {'ok':True,'version':(BASE/'VERSION').read_text().strip()}
+
+
+@app.get('/readyz')
+async def readiness():
+    # Readiness is distinct from liveness: execute a real bounded DB query.
+    def check():
+        with store.db.get_connection() as (_connection,cursor):
+            cursor.execute('SELECT 1 AS ok')
+            row=cursor.fetchone()
+            return bool(row and (row['ok'] if isinstance(row,dict) else row[0])==1)
+    try:
+        success=bool(get_bot_token()) and await asyncio.wait_for(asyncio.to_thread(check),timeout=5)
+    except Exception:
+        log.warning('Readiness database check failed')
+        success=False
+    return JSONResponse({'ready':success,'db':'ok' if success else 'unavailable'},
+                        status_code=200 if success else 503)
+
 
 @app.get('/api/summary')
 async def summary(uid:int=Depends(actor),owner:int|None=None):return await guarded(store.summary,uid,owner)
@@ -128,7 +151,7 @@ async def set_preferences(body:PreferencesUpdate,uid:int=Depends(actor)):
 
 @app.get('/api/me')
 async def me(uid:int=Depends(actor)):
-    return {'id':uid,'admin': bool(SUPER_ADMIN_ID and uid==SUPER_ADMIN_ID),'version':'6.0.0'}
+    return {'id':uid,'admin': bool(SUPER_ADMIN_ID and uid==SUPER_ADMIN_ID),'version':(BASE/'VERSION').read_text().strip()}
 
 @app.get('/api/rules')
 async def rules(uid:int=Depends(actor),owner:int|None=None):

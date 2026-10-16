@@ -98,13 +98,16 @@ class TunnelLogic:
             timeout=timeout,
         )
 
-        if isinstance(res, dict) and not res.get("error"):
-            links = res.get("links") or []
-            if links:
-                return True, links, res.get("sub_info")
-
-        # فال‌بک: اگر ایجنت قدیمی بود و fetch_sub نداشت، از حالت CLI استفاده کن
-        return await self._fetch_sub_links_cli(monitor, sub_link, timeout=timeout)
+        if not isinstance(res, dict):
+            return False, 'AGENT_INVALID_RESPONSE: پاسخ ایجنت معتبر نیست', None
+        if res.get('error'):
+            return False, 'SUB_FETCH_' + str(res['error'])[:120], None
+        if 'links' not in res or not isinstance(res['links'], list):
+            return False, 'AGENT_FETCH_UNSUPPORTED: نسخه ایجنت دریافت ساب را پشتیبانی نمی‌کند', None
+        links = res['links']
+        if not links:
+            return False, 'SUB_EMPTY_OR_INVALID: اشتراک خالی یا فاقد کانفیگ قابل‌خواندن است؛ داده قبلی حفظ شد', None
+        return True, links, res.get('sub_info') or {}
 
     async def _fetch_sub_links_cli(self, monitor, sub_link, timeout=120):
         """Legacy WebSocket shell fallback was intentionally removed for security."""
@@ -113,10 +116,17 @@ class TunnelLogic:
     # ==================================================================
     # 💾 DATABASE (همه خارج از event loop)
     # ==================================================================
-    def _bulk_save_sub_items(self, uid, sub_id, rows):
-        # Preserve stable item IDs and history for unchanged subscription links.
+    def _bulk_save_sub_items(self, uid, sub_id, rows, *, allow_delete=False):
+        """Synchronize by SOURCE membership, never by test results.
+
+        A Failed/Unknown probe is still a member. Destructive pruning is only
+        permitted for a fully received, valid, non-truncated subscription.
+        The caller must never set allow_delete for untrusted partial fetches.
+        """
         if not rows:
             return False
+        # Be defensive: duplicate URL rows must not make UPDATE nondeterministic.
+        rows = list({row[3]: row for row in rows}.values())
         with self.db.get_connection() as (conn, cur):
             cur.execute("SELECT id FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source' FOR UPDATE",
                         (sub_id, uid))
@@ -129,23 +139,30 @@ class TunnelLogic:
             common = [r for r in rows if r[3] in previous]
             fresh = [r for r in rows if r[3] not in previous]
             for r in common:
-                cur.execute('''UPDATE tunnel_configs SET name=%s, quality_score=%s,
-                               last_status=%s, last_ping=%s, last_jitter=%s,
-                               last_speed_down=%s, last_speed_up=%s
-                               WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item' AND link=%s''',
-                            (r[4],r[6],r[7],r[8],r[9],r[10],r[11],uid,sub_id,r[3]))
+                # Unknown means no test, not a measured regression. Keep the
+                # previous metrics and score; record Unknown as current status.
+                if r[7] == 'Unknown':
+                    cur.execute("""UPDATE tunnel_configs SET name=%s, last_status='Unknown'
+                                   WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item' AND link=%s""",
+                                (r[4],uid,sub_id,r[3]))
+                else:
+                    cur.execute("""UPDATE tunnel_configs SET name=%s, quality_score=%s,
+                                   last_status=%s, last_ping=%s, last_jitter=%s,
+                                   last_speed_down=%s, last_speed_up=%s
+                                   WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item' AND link=%s""",
+                                (r[4],r[6],r[7],r[8],r[9],r[10],r[11],uid,sub_id,r[3]))
             if fresh:
-                execute_values(cur, '''INSERT INTO tunnel_configs
+                execute_values(cur, """INSERT INTO tunnel_configs
                       (owner_id,parent_sub_id,type,link,name,added_at,quality_score,
                        last_status,last_ping,last_jitter,last_speed_down,last_speed_up)
-                      VALUES %s ON CONFLICT DO NOTHING''', fresh)
-            stale=previous-incoming
+                      VALUES %s ON CONFLICT DO NOTHING""", fresh)
+            stale = previous - incoming if allow_delete else set()
             if stale:
-                cur.execute('''DELETE FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s
-                               AND type='sub_item' AND link = ANY(%s)''', (uid,sub_id,list(stale)))
+                cur.execute("""DELETE FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s
+                               AND type='sub_item' AND link = ANY(%s)""", (uid,sub_id,list(stale)))
             conn.commit()
-            logger.info('Subscription sync owner=%s sub=%s kept=%s added=%s removed=%s',
-                        uid,sub_id,len(common),len(fresh),len(stale))
+            logger.info('Subscription sync owner=%s sub=%s kept=%s added=%s removed=%s delete_enabled=%s',
+                        uid,sub_id,len(common),len(fresh),len(stale),allow_delete)
             return {'kept':len(common), 'added':len(fresh),'removed':len(stale)}
 
     def _save_sub_info(self, sub_id, sub_info):
@@ -214,51 +231,54 @@ class TunnelLogic:
         if not links:
             return ["❌ اشتراک خالی دریافت شد؛ کانفیگ‌های قبلی حفظ شدند."]
 
-        # تست موازی با رعایت صف عادلانه
+        # Membership comes exclusively from the fetched subscription, before tests.
+        # At the cap (600), we cannot prove the list wasn't truncated: no deletions.
+        if (not isinstance(links, list) or any(not isinstance(item,dict) or
+             not isinstance(item.get('link'),str) or not
+             item['link'].startswith(('vmess://','vless://','trojan://','ss://'))
+             for item in links)):
+            return ['❌ SUB_MALFORMED: ساختار پاسخ ایجنت معتبر نیست؛ داده قبلی حفظ شد.']
+        unique = {item['link']: item for item in links}
+        if not unique:
+            return ['❌ سابسکریپشن معتبر خالی بود؛ داده‌های قبلی محفوظ است.']
+        authoritative = bool(sub_info.get('complete') is True and len(unique) < 600) if isinstance(sub_info,dict) else False
         async def _one(item):
-            async with self._user_sem(uid):
-                async with self.global_sem:
-                    ok_t, data = await self._test_via_ws(monitor, item['link'], size=0.5, timeout=45)
-                return item, (data if ok_t else None)
+            try:
+                async with self._user_sem(uid):
+                    async with self.global_sem:
+                        ok_t, data = await self._test_via_ws(monitor, item['link'], size=0.5, timeout=45)
+                    return (data if ok_t and isinstance(data,dict) else None)
+            except Exception as exc:
+                logger.warning('Subscription test failed (%s); membership unchanged',type(exc).__name__)
+                return None
 
-        results = await asyncio.gather(*[_one(i) for i in links], return_exceptions=True)
-
+        # Bounded tests. Failed connections can NEVER prune source membership.
+        results = await asyncio.gather(*[_one(item) for item in unique.values()], return_exceptions=True)
         now_dt = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         rows, report_lines = [], []
-
-        for res in results:
-            if isinstance(res, Exception) or not res:
-                continue
-            item, data = res
-            if not isinstance(data, dict):
-                continue
-
-            status = data.get('status', 'Fail')
-            c_name = data.get('extracted_name') or item.get('name') or 'Unknown'
-            full_name = f"{sub_name} | {c_name}"
-            score = data.get('score', 0) if status == 'OK' else 0
-
-            rows.append((
-                uid, sub_id, 'sub_item', item['link'], full_name, now_dt, score, status,
-                data.get('ping', 0), data.get('jitter', 0),
-                data.get('down', 0), data.get('up', 0),
-            ))
-
-            if status == 'OK':
-                report_lines.append(
-                    f"<b>{html.escape(c_name)}</b>\n"
-                    f"├ 📶 Ping: <code>{data.get('ping', 0)}</code>\n"
-                    f"└ ⭐️ Score: <code>{score}/10</code>"
-                )
-
-        # 🚀 یک نوشتن، داخل ترد — نه ۳۰۰ نوشتن روی event loop
-        if not rows or not any(r[7] == 'OK' for r in rows):
-            return ["❌ هیچ کانفیگ سالمی پس از تست دریافت نشد؛ اطلاعات قبلی حفظ شدند."]
-        diff = await run_sync(self._bulk_save_sub_items, uid, sub_id, rows)
+        counts = {'OK':0, 'Fail':0, 'Unknown':0}
+        for item, data in zip(unique.values(), results):
+            if not isinstance(data,dict):data=None
+            status = data.get('status') if data else 'Unknown'
+            if status not in ('OK','Fail'):status='Unknown'
+            counts[status]+=1
+            c_name = (data.get('extracted_name') if data else None) or item.get('name') or 'Unknown'
+            full_name = f"{sub_name} | {str(c_name)[:180]}"
+            score = data.get('score',0) if status=='OK' else 0
+            rows.append((uid,sub_id,'sub_item',item['link'],full_name,now_dt,score,status,
+                         data.get('ping') if data else None,data.get('jitter') if data else None,
+                         data.get('down') if data else None,data.get('up') if data else None))
+            if status=='OK':
+                report_lines.append(f"<b>{html.escape(str(c_name))}</b>\n"
+                                    f"├ 📶 Ping: <code>{data.get('ping',0)}</code>\n"
+                                    f"└ ⭐ Score: <code>{score}/10</code>")
+        diff = await run_sync(self._bulk_save_sub_items, uid, sub_id, rows, allow_delete=authoritative)
         if not diff:
-            return ["❌ ذخیره کانفیگ‌ها ناموفق بود؛ داده‌های قبلی حفظ شدند."]
-        if isinstance(diff, dict):
-            report_lines.insert(0, f"🔄 همگام‌سازی: {diff['added']} جدید | {diff['removed']} حذف‌شده | {diff['kept']} بدون تغییر")
+            return ['❌ ذخیره کانفیگ‌ها ناموفق بود؛ داده قبلی حفظ شد.']
+        report_lines.insert(0, f"🔄 همگام‌سازی: {diff['added']} جدید | {diff['removed']} حذف‌شده | {diff['kept']} بدون تغییر\n"
+                               f"✅ سالم: {counts['OK']} | ❌ خراب: {counts['Fail']} | ⚪ نامشخص: {counts['Unknown']}")
+        if not authoritative:
+            report_lines.append('⚠️ حذف خودکار انجام نشد: منبع کامل‌بودن فهرست را تأیید نکرده یا به سقف ۶۰۰ رسیده است.')
         if sub_info:
             try:
                 await run_sync(self._save_sub_info, sub_id, sub_info)

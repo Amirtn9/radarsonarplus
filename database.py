@@ -62,7 +62,7 @@ class Database:
             last_err = None
             for _ in range(3):
                 try:
-                    self.pool = psycopg2.pool.ThreadedConnectionPool(1, max(2,min(60,int(os.getenv('SONAR_DB_POOL_MAX','60')))), **self.db_config)
+                    self.pool = psycopg2.pool.ThreadedConnectionPool(1, max(2,min(20,int(os.getenv('SONAR_DB_POOL_MAX','12')))), **self.db_config)
                     self._pool_error = None
                     if init_schema:
                         self. init_db()

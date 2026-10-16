@@ -20,7 +20,7 @@ import ssl
 from datetime import datetime, timedelta
 import logging
 
-AGENT_VERSION = '6.0.0-preview.1'
+AGENT_VERSION = '6.0.0-rc.1'
 AGENT_PROTOCOL = 2
 
 logger = logging.getLogger('sonar.agent')  # ✅ خودکار به سیستم متصل می‌شه
@@ -96,53 +96,69 @@ def decode_base64(data):
 # ==============================================================================
 # 🔗 SUBSCRIPTION FETCH & PARSE (CLI MODE SUPPORT)
 # ==============================================================================
-def fetch_url(url, timeout=20):
-    """HTTPS-only, DNS-pinned fetch; reject redirects and private destinations.
+class SubscriptionFetchError(ValueError):
+    """Safe error code; the subscription URL and credentials must never enter logs."""
 
-    DNS is resolved once; the verified address is the actual socket target.
-    TLS still validates the requested DNS hostname, not its resolved address.
+
+SUB_ALLOWED_PORTS = frozenset((443, 8443, 2096, 2053, 2083, 2087))
+
+
+def fetch_url(url, timeout=20, *, raise_errors=False):
+    """Fetch a bounded HTTPS subscription over DNS-pinned PUBLIC IPv4/IPv6 only.
+
+    Reject DNS rebind/private answers and redirects; try ALL validated resolved
+    addresses, so a dead IPv6 route does not prevent working IPv4.
     """
     import http.client
     import ipaddress
-
     try:
         parsed = urllib.parse.urlsplit(str(url or ''))
-        if (parsed.scheme != 'https' or not parsed.hostname or parsed.username
-                or parsed.password or parsed.port not in (None, 443)):
-            raise ValueError('only standard-port HTTPS URLs without credentials are allowed')
+        try: port = parsed.port or 443
+        except ValueError: raise SubscriptionFetchError('INVALID_PORT') from None
+        if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or
+            parsed.password or port not in SUB_ALLOWED_PORTS):
+            raise SubscriptionFetchError('UNSUPPORTED_HTTPS_URL_OR_PORT')
         hostname = parsed.hostname.encode('idna').decode('ascii')
-        results = socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)
-        addresses = [row[4][0] for row in results]
+        results = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        addresses = list(dict.fromkeys(item[4][0] for item in results))
         if not addresses or any(not ipaddress.ip_address(ip).is_global for ip in addresses):
-            raise ValueError('subscription destination is not public')
-        pinned_ip = addresses[0]
-
-        class PinnedHTTPSConnection(http.client.HTTPSConnection):
-            def connect(self):
-                raw = socket.create_connection((pinned_ip, 443), self.timeout)
-                try:
-                    self.sock = self._context.wrap_socket(raw, server_hostname=hostname)
-                except BaseException:
-                    raw.close()
-                    raise
-
+            raise SubscriptionFetchError('NON_PUBLIC_DNS_RESULT')
         ctx = ssl.create_default_context()
-        conn = PinnedHTTPSConnection(hostname, 443, timeout=timeout, context=ctx)
-        try:
-            path = urllib.parse.urlunsplit(('', '', parsed.path or '/', parsed.query, ''))
-            conn.request('GET', path, headers={'Host': hostname, 'User-Agent': USER_AGENT,
-                                               'Accept': '*/*', 'Connection': 'close'})
-            response = conn.getresponse()
-            if response.status != 200:
-                raise ValueError(f'upstream status {response.status} (redirects forbidden)')
-            raw = response.read(2 * 1024 * 1024 + 1)
-            if len(raw) > 2 * 1024 * 1024:
-                raise ValueError('subscription response exceeded 2 MiB')
-            return raw
-        finally:
-            conn.close()
-    except (OSError, ValueError, ssl.SSLError, http.client.HTTPException) as exc:
-        logger.warning('Subscription fetch blocked/failed: %s', type(exc).__name__)
+        path = urllib.parse.urlunsplit(('', '', parsed.path or '/', parsed.query, ''))
+        failures = []
+        for pinned_ip in addresses:
+            class PinnedHTTPSConnection(http.client.HTTPSConnection):
+                def connect(self):
+                    raw = socket.create_connection((pinned_ip, port), self.timeout)
+                    try: self.sock = self._context.wrap_socket(raw, server_hostname=hostname)
+                    except BaseException:
+                        raw.close()
+                        raise
+            conn = PinnedHTTPSConnection(hostname, port, timeout=timeout, context=ctx)
+            try:
+                host_header = hostname if port == 443 else f'{hostname}:{port}'
+                conn.request('GET', path, headers={'Host':host_header, 'User-Agent':USER_AGENT,
+                                                   'Accept':'*/*', 'Connection':'close'})
+                response = conn.getresponse()
+                if response.status != 200:
+                    raise SubscriptionFetchError(f'HTTP_STATUS_{response.status}')
+                raw = response.read(2*1024*1024+1)
+                if len(raw)>2*1024*1024:
+                    raise SubscriptionFetchError('RESPONSE_TOO_LARGE')
+                if not raw.strip():
+                    raise SubscriptionFetchError('EMPTY_RESPONSE')
+                return raw
+            except SubscriptionFetchError:
+                raise
+            except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+                failures.append(type(exc).__name__)
+            finally:
+                conn.close()
+        raise SubscriptionFetchError('CONNECTION_FAILED_' + (failures[-1] if failures else 'UNKNOWN'))
+    except (OSError,ValueError,ssl.SSLError,http.client.HTTPException) as exc:
+        code = str(exc) if isinstance(exc, SubscriptionFetchError) else type(exc).__name__
+        logger.warning('Subscription fetch failed: %s',code)
+        if raise_errors:raise SubscriptionFetchError(code) from None
         return b''
 
 
@@ -176,59 +192,117 @@ def extract_name_from_link(link):
         return ""
 
 def _clash_link(proxy):
-    """Convert common Clash proxy records to ordinary Xray share links.
-
-    Non-Xray protocols are deliberately not advertised as supported.
-    """
-    if not isinstance(proxy, dict): return None
-    kind = str(proxy.get('type', '')).lower()
-    host = str(proxy.get('server') or '').strip()
-    name = str(proxy.get('name') or host or 'Proxy')[:180]
-    try: port = int(proxy.get('port'))
-    except (ValueError, TypeError): return None
-    if not host or not 1 <= port <= 65535: return None
-    # Encode IPv6 host in URL authority; never append untrusted raw query fragments.
-    netloc = '[' + host + ']' if ':' in host and not host.startswith('[') else host
-    import urllib.parse as urlparse
-    qs = {'type': str(proxy.get('network') or 'tcp')}
-    ws_opts = proxy.get('ws-opts') if isinstance(proxy.get('ws-opts'), dict) else {}
-    if qs['type'] == 'ws':
-        qs['path'] = str(ws_opts.get('path') or '/')
-        headers = ws_opts.get('headers') or {}
-        if isinstance(headers, dict) and headers.get('Host'): qs['host'] = str(headers['Host'])
-    if qs['type'] == 'grpc':
-        grpc = proxy.get('grpc-opts') or {}
-        qs['serviceName'] = str(grpc.get('grpc-service-name') or '') if isinstance(grpc, dict) else ''
+    """Lossless subset of Clash/Sing-box -> Xray link; reject unsupported knobs."""
+    if not isinstance(proxy,dict):return None
+    kind=str(proxy.get('type','')).lower()
+    host=str(proxy.get('server') or '').strip()
+    name=str(proxy.get('name') or proxy.get('tag') or host or 'Proxy')[:180]
+    try:port=int(proxy.get('port'))
+    except (TypeError,ValueError):return None
+    if not host or not 1<=port<=65535:return None
+    netloc='['+host+']' if ':' in host and not host.startswith('[') else host
+    net=str(proxy.get('network') or 'tcp').lower()
+    if net not in ('tcp','ws','grpc'):return None
+    if proxy.get('plugin') or proxy.get('plugin-opts') or proxy.get('h2-opts') or proxy.get('http-opts'):
+        return None
+    if proxy.get('skip-cert-verify'):
+        # Never silently disregard requested certificate exceptions.
+        return None
+    qs={'type':net}
+    ws_opts=proxy.get('ws-opts') or {}
+    if net=='ws':
+        if not isinstance(ws_opts,dict):return None
+        qs['path']=str(ws_opts.get('path') or '/')
+        headers=ws_opts.get('headers') or {}
+        if not isinstance(headers,dict):return None
+        if headers.get('Host'):qs['host']=str(headers['Host'])
+    if net=='grpc':
+        grpc=proxy.get('grpc-opts') or {}
+        if not isinstance(grpc,dict):return None
+        qs['serviceName']=str(grpc.get('grpc-service-name') or '')
     if proxy.get('servername') or proxy.get('sni'):
-        qs['sni'] = str(proxy.get('servername') or proxy.get('sni'))
-    if kind == 'vmess':
-        uuid = proxy.get('uuid')
-        if not uuid: return None
-        cfg = {'v':'2','ps':name,'add':host,'port':str(port),'id':uuid,'aid':str(proxy.get('alterId',0)),
-               'scy':str(proxy.get('cipher','auto')),'net':qs['type'],
-               'tls':'tls' if proxy.get('tls') else 'none','path':qs.get('path','/'),
-               'host':qs.get('host',''),'sni':qs.get('sni','')}
-        return 'vmess://' + base64.urlsafe_b64encode(json.dumps(cfg).encode()).decode().rstrip('=')
-    if kind == 'vless':
+        qs['sni']=str(proxy.get('servername') or proxy.get('sni'))
+    tls=bool(proxy.get('tls'))
+    if proxy.get('client-fingerprint'):qs['fp']=str(proxy['client-fingerprint'])
+    if proxy.get('alpn'):
+        if not isinstance(proxy['alpn'],list):return None
+        qs['alpn']=','.join(str(x) for x in proxy['alpn'])
+    reality=proxy.get('reality-opts') or {}
+    if reality and not isinstance(reality,dict):return None
+    if reality.get('public-key'):
+        tls=True
+        qs.update(security='reality',pbk=str(reality['public-key']),sid=str(reality.get('short-id') or ''))
+        if reality.get('spider-x'):qs['spx']=str(reality['spider-x'])
+    else:qs['security']='tls' if tls else 'none'
+    quote=urllib.parse.quote
+    urlencode=urllib.parse.urlencode
+    if kind=='vmess':
+        if qs['security']=='reality':return None
         uuid=proxy.get('uuid')
         if not uuid:return None
-        qs['security']='tls' if proxy.get('tls') else 'none'
-        reality=proxy.get('reality-opts') or {}
-        if isinstance(reality,dict) and reality.get('public-key'):
-            qs.update(security='reality',pbk=str(reality['public-key']),sid=str(reality.get('short-id','')))
+        cfg={'v':'2','ps':name,'add':host,'port':str(port),'id':uuid,
+             'aid':str(proxy.get('alterId',0)),'scy':str(proxy.get('cipher','auto')),
+             'net':net,'tls':'tls' if tls else 'none','path':qs.get('path',qs.get('serviceName','')),
+             'host':qs.get('host',''),'sni':qs.get('sni',''),'alpn':qs.get('alpn',''),'fp':qs.get('fp','')}
+        return 'vmess://'+base64.urlsafe_b64encode(json.dumps(cfg).encode()).decode().rstrip('=')
+    if kind=='vless':
+        if not proxy.get('uuid'):return None
         if proxy.get('flow'):qs['flow']=str(proxy['flow'])
-        return 'vless://' + urlparse.quote(str(uuid),safe='')+'@'+netloc+':'+str(port)+'?'+urlparse.urlencode(qs)+'#'+urlparse.quote(name)
-    if kind == 'trojan':
-        password=proxy.get('password')
-        if not password:return None
-        qs['security']='tls'
-        return 'trojan://'+urlparse.quote(str(password),safe='')+'@'+netloc+':'+str(port)+'?'+urlparse.urlencode(qs)+'#'+urlparse.quote(name)
+        return 'vless://'+quote(str(proxy['uuid']),safe='')+'@'+netloc+':'+str(port)+'?'+urlencode(qs)+'#'+quote(name)
+    if kind=='trojan':
+        if not proxy.get('password'):return None
+        if qs['security']=='none':qs['security']='tls'
+        return 'trojan://'+quote(str(proxy['password']),safe='')+'@'+netloc+':'+str(port)+'?'+urlencode(qs)+'#'+quote(name)
     if kind in ('ss','shadowsocks'):
         method,password=proxy.get('cipher'),proxy.get('password')
-        if not method or not password:return None
+        if not method or not password or net!='tcp' or tls:return None
         user=base64.urlsafe_b64encode((str(method)+':'+str(password)).encode()).decode().rstrip('=')
-        return 'ss://'+user+'@'+netloc+':'+str(port)+'#'+urlparse.quote(name)
+        return 'ss://'+user+'@'+netloc+':'+str(port)+'#'+quote(name)
     return None
+
+
+def _normalize_singbox(proxy):
+    """Preserve nested sing-box TLS, Reality, uTLS, WS and gRPC settings."""
+    if not isinstance(proxy,dict):return None
+    kind=proxy.get('type')
+    if kind not in ('vmess','vless','trojan','shadowsocks'):return None
+    if proxy.get('multiplex') or proxy.get('detour') or proxy.get('packet_encoding'):
+        return None
+    result={'type':'ss' if kind=='shadowsocks' else kind,'name':proxy.get('tag','Proxy'),
+            'server':proxy.get('server'),'port':proxy.get('server_port'),
+            'uuid':proxy.get('uuid'),'password':proxy.get('password'),
+            'cipher':proxy.get('method',proxy.get('security','auto')),'flow':proxy.get('flow')}
+    transport=proxy.get('transport') or {}
+    if not isinstance(transport,dict):return None
+    t=transport.get('type','tcp')
+    if t not in ('tcp','ws','grpc'):return None
+    result['network']=t
+    if t=='ws':
+        result['ws-opts']={'path':transport.get('path') or '/',
+                           'headers':transport.get('headers') or {}}
+        if transport.get('max_early_data') or transport.get('early_data_header_name'):return None
+    if t=='grpc':result['grpc-opts']={'grpc-service-name':transport.get('service_name') or ''}
+    tls=proxy.get('tls') or {}
+    if not isinstance(tls,dict):return None
+    if tls.get('ech') or tls.get('certificate') or tls.get('certificate_path') or tls.get('disable_sni'):
+        return None
+    result['tls']=bool(tls.get('enabled'))
+    if tls.get('insecure'):return None
+    if tls.get('server_name'):result['servername']=tls['server_name']
+    if tls.get('alpn'):result['alpn']=tls['alpn']
+    utls=tls.get('utls') or {}
+    if utls:
+        if not isinstance(utls,dict):return None
+        if utls.get('enabled') and utls.get('fingerprint'):
+            result['client-fingerprint']=utls['fingerprint']
+    reality=tls.get('reality') or {}
+    if reality:
+        if not isinstance(reality,dict):return None
+        if reality.get('enabled'):
+            if not reality.get('public_key'):return None
+            result['reality-opts']={'public-key':reality['public_key'],
+                                    'short-id':reality.get('short_id') or ''}
+    return result
 
 
 def _structured_sub_links(text_data):
@@ -256,15 +330,11 @@ def _structured_sub_links(text_data):
     else:return []
     if not isinstance(proxies,list):return []
     out=[]
-    for proxy in proxies[:600]:
+    for proxy in proxies[:601]:
         if not isinstance(proxy,dict):continue
-        # sing-box types and keys -> normalized Clash common entries
-        if 'server_port' in proxy and proxy.get('type') in ('vmess','vless','trojan','shadowsocks'):
-            proxy={**proxy,'port':proxy['server_port'],'type':'ss' if proxy['type']=='shadowsocks' else proxy['type'],
-                   'name':proxy.get('tag','Proxy'),'uuid':proxy.get('uuid'),
-                   'cipher':proxy.get('method',proxy.get('security','auto')),
-                   'tls':bool(proxy.get('tls',{}).get('enabled')) if isinstance(proxy.get('tls'),dict) else False,
-                   'servername':proxy.get('tls',{}).get('server_name') if isinstance(proxy.get('tls'),dict) else None}
+        if 'server_port' in proxy:
+            proxy=_normalize_singbox(proxy)
+            if proxy is None:continue
         link=_clash_link(proxy)
         if link:out.append({'name':str(proxy.get('name') or proxy.get('tag') or 'Proxy')[:180], 'link':link})
     return out
@@ -404,7 +474,9 @@ def parse_xray_config(link):
             if tls == 'tls':
                 stream["tlsSettings"] = {
                     "serverName": (c.get('sni') or c.get('host') or c.get('add') or ""),
-                    "allowInsecure": False
+                    "allowInsecure": False,
+                    "alpn": [x for x in str(c.get("alpn", "")).split(",") if x],
+                    "fingerprint": c.get("fp") or "chrome"
                 }
 
             return {
@@ -446,13 +518,17 @@ def parse_xray_config(link):
             if sec == 'tls':
                 stream['tlsSettings'] = {
                     "serverName": q.get('sni', [p.hostname or ""])[0] or (p.hostname or ""),
-                    "allowInsecure": False
+                    "allowInsecure": q.get('allowInsecure',['false'])[0].lower() == 'true',
+                    "fingerprint": q.get('fp',['chrome'])[0] or 'chrome',
+                    "alpn": [x for x in q.get('alpn',[''])[0].split(',') if x]
                 }
             elif sec == 'reality':
                 stream['realitySettings'] = {
                     "publicKey": q.get('pbk', [''])[0] or "",
                     "serverName": q.get('sni', [p.hostname or ""])[0] or (p.hostname or ""),
-                    "fingerprint": q.get('fp', ['chrome'])[0] or "chrome"
+                    "fingerprint": q.get('fp', ['chrome'])[0] or "chrome",
+                    "shortId": q.get('sid', [''])[0] or "",
+                    "spiderX": q.get('spx', ['/'])[0] or "/"
                 }
 
             return {
@@ -479,7 +555,7 @@ def parse_xray_config(link):
             p = urllib.parse.urlparse(link)
             q = urllib.parse.parse_qs(p.query)
 
-            password = p.username or p.password or ""
+            password = urllib.parse.unquote(p.username or p.password or '')
             net = q.get('type', ['tcp'])[0]
             sec = q.get('security', ['tls'])[0]  # trojan commonly uses tls
             stream = {"network": net, "security": sec or "tls"}
@@ -495,7 +571,9 @@ def parse_xray_config(link):
             if sec == 'tls':
                 stream['tlsSettings'] = {
                     "serverName": q.get('sni', [p.hostname or ""])[0] or (p.hostname or ""),
-                    "allowInsecure": False
+                    "allowInsecure": q.get('allowInsecure',['false'])[0].lower()=='true',
+                    "fingerprint": q.get('fp',['chrome'])[0],
+                    "alpn": [x for x in q.get('alpn',[''])[0].split(',') if x]
                 }
 
             return {
@@ -515,51 +593,23 @@ def parse_xray_config(link):
         # SHADOWSOCKS (basic)
         # ----------------------------
         if link.startswith('ss://'):
-            body = link[5:]
-            # strip fragment
-            body, _, frag = body.partition('#')
-            # strip query
-            body, _, _q = body.partition('?')
-
-            method = password = host = None
-            port = None
-
-            if '@' in body:
-                userinfo, _, hostport = body.rpartition('@')
-                if ':' in userinfo:
-                    method, password = userinfo.split(':', 1)
-                    method = urllib.parse.unquote(method)
-                    password = urllib.parse.unquote(password)
-                else:
-                    dec = decode_base64(userinfo)
-                    if ':' in dec:
-                        method, password = dec.split(':', 1)
-                if ':' in hostport:
-                    host, port = hostport.split(':', 1)
-            else:
-                dec = decode_base64(body)
-                if '@' in dec:
-                    userinfo, hostport = dec.rsplit('@', 1)
-                    if ':' in userinfo:
-                        method, password = userinfo.split(':', 1)
-                    if ':' in hostport:
-                        host, port = hostport.split(':', 1)
-
-            if not (method and password and host and port):
+            parsed=urllib.parse.urlsplit(link)
+            if parsed.query:  # plugin= and other unsupported transports
                 return None
-
-            return {
-                "protocol": "shadowsocks",
-                "settings": {
-                    "servers": [{
-                        "address": host,
-                        "port": int(port),
-                        "method": method,
-                        "password": password
-                    }]
-                },
-                "tag": "proxy"
-            }
+            body=link[5:].split('#',1)[0]
+            if '@' not in body:
+                body=decode_base64(body)
+            if '@' not in body:return None
+            userinfo, hostport=body.rsplit('@',1)
+            userinfo=urllib.parse.unquote(userinfo)
+            if ':' not in userinfo:userinfo=decode_base64(userinfo)
+            if ':' not in userinfo:return None
+            method,password=userinfo.split(':',1)
+            authority=urllib.parse.urlsplit('ss://'+hostport)
+            host,port=authority.hostname,authority.port
+            if not method or not password or not host or not port:return None
+            return {'protocol':'shadowsocks','settings':{'servers':[
+                {'address':host,'port':int(port),'method':method,'password':password}]},'tag':'proxy'}
 
         return None
     except Exception as e:
@@ -774,7 +824,7 @@ Protocol:
         except asyncio.TimeoutError:
             return
 
-        if not AGENT_TOKEN or not hmac.compare_digest(str(token), AGENT_TOKEN):
+        if not AGENT_TOKEN or not isinstance(token,str) or not token.isascii() or len(token)>256 or not hmac.compare_digest(token.encode('utf-8'), AGENT_TOKEN.encode('utf-8')):
             try:
                 await websocket.close(code=4001, reason="unauthorized")
             except Exception:
@@ -837,23 +887,29 @@ Protocol:
                 loop = asyncio.get_running_loop()
 
                 def _fetch():
-                    raw = fetch_url(sub_link, timeout=25)
-                    text = normalize_subscription_text(raw)
-                    return parse_subscription_links(text, limit=600)
-
+                    raw=fetch_url(sub_link,timeout=25,raise_errors=True)
+                    text=normalize_subscription_text(raw)
+                    if not text:raise SubscriptionFetchError('EMPTY_SUBSCRIPTION')
+                    results=parse_subscription_links(text,limit=601)
+                    if not results:raise SubscriptionFetchError('NO_SUPPORTED_CONFIGS')
+                    # Never authorize pruning if the source was truncated or contains
+                    # unsupported records: partial parsing is not authoritative.
+                    plain_source = not text.lstrip().startswith(('{','[','proxies:','mixed-port:'))
+                    entries = [line.strip() for line in text.splitlines() if line.strip()]
+                    supported = all(line.startswith(('vmess://','vless://','trojan://','ss://')) for line in entries)
+                    complete = plain_source and supported and len(results) < 600
+                    return results[:600],complete
                 try:
-                    configs = await loop.run_in_executor(_get_test_executor(), _fetch)
-                    await websocket.send(json.dumps({
-                        "links": configs,
-                        "sub_info": {
-                            "url": sub_link,
-                            "total": len(configs),
-                            "fetched_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-                            "mode": "list",
-                        },
-                    }))
-                except Exception as e:
-                    await websocket.send(json.dumps({"error": "fetch_sub_failed"}))
+                    configs,complete=await loop.run_in_executor(_get_test_executor(),_fetch)
+                    await websocket.send(json.dumps({'links':configs,'sub_info':{
+                        'total':len(configs),'complete':complete,
+                        'fetched_at':datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+                        'mode':'list'}}))
+                except SubscriptionFetchError as exc:
+                    await websocket.send(json.dumps({'error':str(exc)[:100]}))
+                except Exception as exc:
+                    logger.warning('fetch_sub failed: %s',type(exc).__name__)
+                    await websocket.send(json.dumps({'error':'FETCH_INTERNAL_ERROR'}))
 
             elif action == 'run_cmd':
                 # Remote shell via WebSocket is deliberately disabled.

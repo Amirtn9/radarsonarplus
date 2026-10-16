@@ -9,6 +9,7 @@ from telegram import InlineKeyboardButton as B, InlineKeyboardMarkup as M
 from secure_handlers import SecureCallbackQueryHandler, SecureCommandHandler
 from settings import SUPER_ADMIN_ID
 from diagnostics import snapshot, build_bundle, collect_agent_journals
+from runtime import background_callback
 
 
 def rows(*parts):
@@ -133,4 +134,4 @@ def register(app):
     app.add_handler(SecureCallbackQueryHandler(section,pattern=r'^v6_(servers|configs|monitor|tools|account|admin)$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(diag_menu,pattern=r'^v6_diag$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(diag_health,pattern=r'^v6_diag_health$'),group=0)
-    app.add_handler(SecureCallbackQueryHandler(diag_zip,pattern=r'^v6_diag_zip(?:_agents)?$'),group=0)
+    app.add_handler(SecureCallbackQueryHandler(background_callback(diag_zip),pattern=r'^v6_diag_zip(?:_agents)?$'),group=0)
