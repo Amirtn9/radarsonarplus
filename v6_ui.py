@@ -54,8 +54,8 @@ async def dashboard(update, context):
                   ('📡 مانیتورینگ و هشدارها','v6_monitor'),('🧰 ابزارها و تنظیمات','v6_tools'),
                   ('👤 حساب کاربری','v6_account'),('🏆 مرکز Pro','pro_home'),
                   *([('👑 مدیریت ربات','v6_admin')] if owner else []),
-                  ('🏠 بازگشت به منوی قبلی','main_menu'))
-    await show(update,'🦇 <b>SONAR RADAR • VERSION 6</b>\n\nمرکز کنترل یکپارچه سرورها، کانفیگ‌ها، تست‌ها و هشدارها.\nاز دسته‌بندی‌های زیر انتخاب کنید.',markup)
+                  ('🏠 منوی اصلی','main_menu'))
+    await show(update,'🦇 <b>SONAR RADAR • VERSION 6.2</b>\n\nمرکز کنترل یکپارچه سرورها، کانفیگ‌ها، تست‌ها و هشدارها.\nاز دسته‌بندی‌های زیر انتخاب کنید.',markup)
 
 
 async def section(update, context):
