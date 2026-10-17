@@ -100,6 +100,17 @@ async def resources(kind:str,uid:int=Depends(actor),owner:int|None=None,q:str=''
     if kind not in ('server','config'):raise HTTPException(status_code=404)
     return await guarded(store.list_resources,uid,kind,owner, '' if q.startswith('#') else q, q[1:] if q.startswith('#') else tag, favorites,page)
 
+
+@app.get('/api/server-resources/{server_id}')
+async def server_resources(server_id:int,uid:int=Depends(actor),owner:int|None=None):
+    def read():
+        workspace=store.workspace(uid,owner)
+        server=store.db.execute('SELECT id,name FROM servers WHERE id=%s AND owner_id=%s',(server_id,workspace),fetch='one')
+        if not server:raise ValueError('Server not found')
+        rows=store.db.execute("SELECT cpu,ram,created_at FROM server_stats WHERE server_id=%s AND created_at >= NOW()-INTERVAL '24 hours' ORDER BY created_at DESC LIMIT 288",(server_id,),fetch='all')
+        return {'server':dict(server),'samples':[{'cpu':r['cpu'],'ram':r['ram'],'time':r['created_at'].isoformat() if r['created_at'] else None} for r in reversed(rows)],'temperature':None,'network':None}
+    return await guarded(read)
+
 @app.get('/api/rankings')
 async def rankings(uid:int=Depends(actor),owner:int|None=None):return await guarded(store.rankings,uid,owner,30)
 

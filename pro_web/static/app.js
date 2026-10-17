@@ -25,7 +25,7 @@ function tabClick(name){if(name==='support'&&!state.admin)return;state.tab=name;
   $(['servers','configs','rankings','incidents'].includes(name)?'listing':name).classList.add('active');
   const pages=['servers','configs','rankings','incidents'];
   if(pages.includes(name))loadList();
-  if(name==='overview')summary().catch(e=>toast(e.message));
+  if(name==='overview'){summary().catch(e=>toast(e.message));loadResourceServers();}
   if(name==='team')loadTeam();
   if(name==='audit')loadAudit();
   if(name==='settings')loadPreferences();
@@ -82,3 +82,31 @@ for(const key of ['daily_digest','multi_probe'])$(key).onchange=async e=>{try{aw
 $('health-btn').onclick=loadHealth;$('download-btn').onclick=supportZip;$('trend-close').onclick=()=>$('trend').close();
 async function boot(){if(tg){tg.ready();tg.expand();}try{const me=await request('/api/me');state.admin=!!me.admin;$('admin-tab').hidden=!me.admin;setStatus('متصل');await summary();tabClick('overview');}catch(e){setStatus('اتصال ناموفق',false);toast(e.message);$('last-test').textContent=e.message;}}
 boot();
+
+// Resource telemetry: historical samples only; no synthetic sensor values.
+async function loadResourceServers(){
+ const select=$('resource-server');if(!select)return;const previous=select.value;
+ try{const servers=await request('/api/resources/server?page=1');select.replaceChildren(elem('option','انتخاب سرور'));
+ servers.forEach(s=>{const o=elem('option',s.name||('سرور '+s.id));o.value=String(s.id);select.append(o);});
+ if(previous&&servers.some(s=>String(s.id)===previous))select.value=previous;
+ if(select.value)await loadResourceChart();else $('resource-message').textContent='یک سرور انتخاب کنید. (حداکثر ۱۲ سرور آخر در فهرست)'
+ }catch(e){$('resource-message').textContent=e.message;}
+}
+async function loadResourceChart(){
+ const id=Number($('resource-server').value);if(!Number.isSafeInteger(id)||id<1)return;
+ const message=$('resource-message');message.textContent='در حال دریافت نمونه‌ها...';
+ try{const result=await request('/api/server-resources/'+id);const samples=result.samples||[];
+ const last=samples.at(-1);$('resource-cpu').textContent=last?.cpu==null?'—':Number(last.cpu).toFixed(1)+'٪';
+ $('resource-ram').textContent=last?.ram==null?'—':Number(last.ram).toFixed(1)+'٪';
+ $('resource-time').textContent=last?.time?new Date(last.time).toLocaleTimeString('fa-IR'):'—';
+ $('resource-temp').textContent=result.temperature==null?'پشتیبانی نشده':result.temperature+'°C';
+ $('resource-traffic').textContent=result.network==null?'پشتیبانی نشده':String(result.network);
+ const canvas=$('resource-chart'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);
+ ctx.fillStyle='#111a28';ctx.fillRect(0,0,w,h);ctx.font='14px sans-serif';
+ for(let i=0;i<=4;i++){const y=20+(h-45)*i/4;ctx.strokeStyle='#304255';ctx.beginPath();ctx.moveTo(42,y);ctx.lineTo(w-15,y);ctx.stroke();ctx.fillStyle='#a9b9c9';ctx.fillText((100-i*25)+'%',5,y+4);}
+ for(const [key,color] of [['cpu','#63d8ee'],['ram','#a78bfa']]){ctx.strokeStyle=color;ctx.lineWidth=3;ctx.beginPath();let active=false;
+ samples.forEach((s,i)=>{const n=Number(s[key]);if(s[key]==null||!Number.isFinite(n)){active=false;return;}const x=43+i*(w-65)/Math.max(1,samples.length-1),y=h-25-Math.min(100,Math.max(0,n))*(h-45)/100;if(!active)ctx.moveTo(x,y);else ctx.lineTo(x,y);active=true;});ctx.stroke();}
+ message.textContent=samples.length?'CPU (آبی) • RAM (بنفش) | '+samples.length.toLocaleString('fa-IR')+' نمونه واقعی':'هنوز نمونه‌ای از مصرف منابع این سرور ثبت نشده است.';
+ }catch(e){message.textContent=e.message;}
+}
+$('resource-server')?.addEventListener('change',loadResourceChart);

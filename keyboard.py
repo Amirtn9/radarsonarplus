@@ -238,7 +238,7 @@ def server_list_kb(servers, group_id=None, is_all=False):
     if servers:
         kb.append([InlineKeyboardButton("🗑 حذف سرویس", callback_data='srv_multidel_start')])
 
-    back_cb = 'list_groups_for_servers'
+    back_cb = 'v6_servers' if is_all else 'list_groups_for_servers'
     kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data=back_cb)])
     return InlineKeyboardMarkup(kb)
 
