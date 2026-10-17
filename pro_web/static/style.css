@@ -8,3 +8,105 @@ main{width:100%;max-width:1400px;margin:0 auto;padding:30px clamp(16px,4vw,54px)
 
 /* v6.2 resource telemetry */
 .resource-panel{margin:20px 0}.resource-head{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}.resource-head select{background:#172536;color:#eaf3fc;border:1px solid #42556a;border-radius:10px;padding:10px;max-width:100%}.resource-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:12px;margin:18px 0}.resource-metrics>div{background:#152131;border:1px solid #304258;border-radius:14px;padding:15px;display:grid;gap:9px}.resource-metrics small{color:#a9b9c9}.resource-metrics b{font-size:clamp(15px,2vw,24px);overflow-wrap:anywhere}#resource-chart{display:block;width:100%;height:auto;max-height:350px;border-radius:14px;background:#111a28}
+
+
+/* Sonar 6.2.1 UX refresh: native-feeling, accessible, low-noise Telegram Mini App. */
+:root{
+ color-scheme:dark;--bg:#090e19;--sidebar:#101827;--surface:#141e30;--surface2:#1c2940;
+ --outline:#293a50;--text:#f6f8fc;--sub:#adbbce;--accent:#66b4ff;--blue:#66b4ff;
+ --red:#ff939b;--radius:22px;--shadow:0 15px 45px rgba(0,0,0,.12)
+}
+html{scroll-behavior:smooth;-webkit-tap-highlight-color:transparent}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Tahoma,system-ui,sans-serif;line-height:1.65;background:radial-gradient(ellipse at 96% -20%,#1b3357 0,transparent 44%),var(--bg)}
+button,select,input{font-size:14px;min-height:42px}
+button{transition:background-color .18s ease,transform .16s ease,box-shadow .18s ease,border-color .18s ease}
+button:active:not(:disabled){transform:scale(.97)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #0a84ff;outline-offset:3px}
+button:disabled{cursor:not-allowed;opacity:.45}
+.sidebar{background:color-mix(in srgb,var(--sidebar) 95%,transparent);backdrop-filter:blur(22px)}
+.brandmark{background:linear-gradient(140deg,#73c8ff,#176be0);color:white;box-shadow:0 8px 22px rgba(10,132,255,.20);border:0}
+.brand b span,.eyebrow{color:var(--accent)}
+.navbtn{color:var(--sub);font-weight:550;min-height:49px}
+.navbtn:hover{background:var(--surface2);color:var(--text)}
+.navbtn.active{background:rgba(10,132,255,.15);border:1px solid rgba(10,132,255,.30);color:var(--text)}
+.topbar{background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(18px)}
+.topbar h1{font-weight:730;letter-spacing:-.7px}
+.iconbtn{border-radius:50%;width:42px;height:42px;padding:0}
+.welcome{border:1px solid rgba(131,176,239,.18);background:radial-gradient(ellipse at 95% 15%,rgba(85,160,250,.26),transparent 63%),linear-gradient(120deg,var(--surface),var(--surface2));padding:32px}
+.welcome h2{font-size:clamp(25px,3.4vw,37px);font-weight:760;letter-spacing:-.75px}
+.welcome p{max-width:570px;line-height:1.8;margin-bottom:4px}
+.welcome-hint{display:inline-flex;align-items:center;font-size:11px;color:var(--sub);margin-top:13px}
+.live-indicator{width:8px;height:8px;background:#30d158;display:inline-block;vertical-align:middle;border-radius:50%;margin-inline-end:7px;box-shadow:0 0 0 4px rgba(48,209,88,.13)}
+.metric,.panel,.resource-metrics>div{box-shadow:var(--shadow)}
+.metric,.panel{border-radius:23px}
+.metric b{font-weight:740;letter-spacing:-1px}
+.quicklinks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.quicklinks button{display:flex;justify-content:space-between;align-items:center;gap:10px;text-align:right;background:var(--surface2);padding:15px;border-radius:14px;border:1px solid var(--outline)}
+.quicklinks button span{opacity:.6}
+.primary{background:#0a84ff;border-color:#0a84ff;color:#fff}
+.primary:hover{background:#0075e5;border-color:#0075e5}
+.search,.formline input,.healthlog{background:var(--surface2)}
+.item{background:var(--surface2);border-radius:17px;transition:transform .16s,border-color .16s}
+.item:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--outline))}
+.item strong{font-weight:680}
+.pager{border-top:1px solid var(--outline);padding-top:16px}
+.setting{background:var(--surface2)}
+.setting input{accent-color:#0a84ff}
+.resource-metrics>div{background:var(--surface2)}
+.resource-metrics b{font-variant-numeric:tabular-nums}
+.resource-head select{background:var(--surface2);color:var(--text);border-color:var(--outline);min-width:155px}
+.chart-legend{display:flex;flex-wrap:wrap;gap:17px;padding:0 4px 12px;color:var(--sub);font-size:12px}
+.chart-legend span{display:inline-flex;align-items:center;gap:7px}
+.chart-legend i{display:inline-block;width:10px;height:10px;border-radius:50%}
+.legend-cpu{background:#0a84ff}.legend-ram{background:#a78bfa}
+#resource-chart{background:var(--surface2);min-height:160px}
+#toast{background:var(--surface2);color:var(--text);box-shadow:0 12px 32px rgba(0,0,0,.25);border-color:var(--accent);animation:slideToast .25s ease both}
+.view.active{animation:fadeUp .35s cubic-bezier(.2,.8,.2,1) both}
+@keyframes fadeUp{from{opacity:.12;transform:translateY(9px)}to{opacity:1;transform:translateY(0)}}
+@keyframes slideToast{from{opacity:0;transform:translateY(13px)}to{opacity:1;transform:translateY(0)}}
+@media(max-width:950px) and (min-width:641px){.sidebar{flex-basis:95px}.navbtn{font-size:19px}}
+@media(max-width:640px){
+ .shell{padding-bottom:calc(83px + env(safe-area-inset-bottom))}
+ .sidebar{height:calc(72px + env(safe-area-inset-bottom));padding:5px 9px calc(5px + env(safe-area-inset-bottom));background:color-mix(in srgb,var(--sidebar) 91%,transparent)}
+ .sidebar nav{gap:4px;justify-content:flex-start;overscroll-behavior-x:contain}
+ .navbtn{flex:0 0 auto;min-width:65px;display:flex;flex-direction:column;gap:0;padding:5px 9px;font-size:22px;line-height:1.15;border-radius:12px}
+ .navbtn span{display:block;font-size:10px;line-height:1.5;white-space:nowrap;font-weight:600}
+ .topbar{padding:18px 17px}.topbar h1{font-size:23px}
+ .eyebrow{font-size:9px}
+ main{padding:14px}
+ .welcome{padding:24px 21px;border-radius:20px}
+ .welcome p{font-size:13px;line-height:1.8}
+ .metricgrid{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+ .metric{padding:13px 10px;border-radius:17px;min-width:0}
+ .metric b{font-size:clamp(19px,5.5vw,28px);margin:12px 0 3px;white-space:nowrap}
+ .metric small{font-size:10px}.metric-head{font-size:11px}
+ .resource-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+ .resource-metrics>div{padding:13px;border-radius:14px}
+ .resource-head{align-items:stretch}
+ .resource-head label{width:100%;display:grid;gap:5px;color:var(--sub)}
+ .resource-head select{width:100%}
+ .quicklinks{grid-template-columns:1fr}
+ .item{align-items:flex-start;flex-direction:column}
+ .item .tools{width:100%;justify-content:flex-start}
+ #resource-chart{min-height:120px}
+ #toast{bottom:calc(86px + env(safe-area-inset-bottom));left:14px;right:14px}
+}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+/* Light Telegram / iOS color scheme. Contrast remains readable on cards and charts. */
+:root[data-theme="light"]{
+ color-scheme:light;--bg:#f5f7fb;--sidebar:#ffffff;--surface:#ffffff;--surface2:#f0f4fa;
+ --outline:#e0e6f0;--text:#17243b;--sub:#52647c;--accent:#006fe6;--red:#be3448;
+ --shadow:0 8px 28px rgba(45,72,111,.055)
+}
+:root[data-theme="light"] body{background:radial-gradient(ellipse at top right,#e9f2ff,transparent 47%),var(--bg)}
+:root[data-theme="light"] .sidebar,:root[data-theme="light"] .topbar{background:rgba(255,255,255,.85)}
+:root[data-theme="light"] .welcome{background:radial-gradient(ellipse at 100% 0%,rgba(10,132,255,.11),transparent 63%),linear-gradient(120deg,#fff,#f0f6ff)}
+:root[data-theme="light"] .welcome p{color:var(--sub)}
+:root[data-theme="light"] .navbtn.active{background:#e9f3ff;color:#0954a2}
+:root[data-theme="light"] .panel p,:root[data-theme="light"] .metric-head,:root[data-theme="light"] .sidefoot{color:var(--sub)}
+:root[data-theme="light"] .resource-head select,:root[data-theme="light"] .formline input,:root[data-theme="light"] .search input{color:var(--text)}
+:root[data-theme="light"] #resource-chart{background:#fbfcff}
+:root[data-theme="light"] .score{color:#056aa7}
+:root[data-theme="light"] .healthlog{color:#324c67}
+:root[data-theme="light"] dialog{background:var(--surface);color:var(--text)}
+:root[data-theme="light"] .version{color:var(--sub)}

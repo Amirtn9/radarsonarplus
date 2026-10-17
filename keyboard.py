@@ -166,7 +166,7 @@ def admin_pay_settings_kb(methods):
 # 🖥 SERVER MANAGEMENT KEYBOARDS
 # ==============================================================================
 
-def server_detail_kb(sid, server_ip, is_premium):
+def server_detail_kb(sid, server_ip, is_premium, back_callback="list_groups_for_servers"):
     """منوی مدیریت یک سرور خاص"""
     # دکمه‌های شرطی
     btn_clean = InlineKeyboardButton("🧹 پاکسازی دیسک", callback_data=f'act_cleandisk_{sid}')
@@ -206,7 +206,7 @@ def server_detail_kb(sid, server_ip, is_premium):
         ],
         [btn_clean, btn_script],
         [InlineKeyboardButton("❌ حذف سرور", callback_data=f'act_del_{sid}')],
-        [InlineKeyboardButton("🔙 بازگشت به لیست", callback_data='list_groups_for_servers')]
+        [InlineKeyboardButton("🔙 بازگشت به لیست", callback_data=back_callback)]
     ]
     return InlineKeyboardMarkup(kb)
 
@@ -238,7 +238,7 @@ def server_list_kb(servers, group_id=None, is_all=False):
     if servers:
         kb.append([InlineKeyboardButton("🗑 حذف سرویس", callback_data='srv_multidel_start')])
 
-    back_cb = 'v6_servers' if is_all else 'list_groups_for_servers'
+    back_cb = 'list_groups_for_servers'  # Always return to the folder picker.
     kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data=back_cb)])
     return InlineKeyboardMarkup(kb)
 

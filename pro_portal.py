@@ -96,7 +96,7 @@ async def readiness():
 async def summary(uid:int=Depends(actor),owner:int|None=None):return await guarded(store.summary,uid,owner)
 
 @app.get('/api/resources/{kind}')
-async def resources(kind:str,uid:int=Depends(actor),owner:int|None=None,q:str='',tag:str|None=None,favorites:bool=False,page:int=1):
+async def resources(kind:str,uid:int=Depends(actor),owner:int|None=None,q:str='',tag:str|None=None,favorites:bool=False,page:int=Query(default=1,ge=1,le=10000)):
     if kind not in ('server','config'):raise HTTPException(status_code=404)
     return await guarded(store.list_resources,uid,kind,owner, '' if q.startswith('#') else q, q[1:] if q.startswith('#') else tag, favorites,page)
 
@@ -108,7 +108,7 @@ async def server_resources(server_id:int,uid:int=Depends(actor),owner:int|None=N
         server=store.db.execute('SELECT id,name FROM servers WHERE id=%s AND owner_id=%s',(server_id,workspace),fetch='one')
         if not server:raise ValueError('Server not found')
         rows=store.db.execute("SELECT cpu,ram,created_at FROM server_stats WHERE server_id=%s AND created_at >= NOW()-INTERVAL '24 hours' ORDER BY created_at DESC LIMIT 288",(server_id,),fetch='all')
-        return {'server':dict(server),'samples':[{'cpu':r['cpu'],'ram':r['ram'],'time':r['created_at'].isoformat() if r['created_at'] else None} for r in reversed(rows)],'temperature':None,'network':None}
+        return {'server':dict(server),'samples':[{'cpu':r['cpu'],'ram':r['ram'],'time':r['created_at'].isoformat() if r['created_at'] else None} for r in reversed(rows)],'temperature':None,'network':None, 'retention_hours':24}
     return await guarded(read)
 
 @app.get('/api/rankings')

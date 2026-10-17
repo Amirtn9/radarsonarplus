@@ -231,18 +231,18 @@ async def show_servers(update: Update, context: ContextTypes.DEFAULT_TYPE, scope
     except:
         pass
     uid, data = update.effective_user.id, scope or update.callback_query.data
+    # Scope is the exact callback for this listing; do not guess from the next screen.
     # ذخیره اسکوپ نمایش برای عملیات‌های بعدی مثل حذف دسته‌جمعی
     context.user_data['last_server_list_scope'] = data
 
     servers = db.get_all_user_servers(uid) if data == 'list_all' else db.get_servers_by_group(uid, int(
         data.split('_')[1]))
     if not servers:
-        try:
-            await update.callback_query.answer("⚠️ این پوشه خالی است!", show_alert=True)
-        except:
-            pass
+        context.user_data['last_server_list_ids'] = []
+        await safe_edit_message(update, "📂 **این بخش هنوز سروری ندارد.**\nاز قسمت افزودن سرور، یک سرور اضافه کنید.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به گروه‌ها", callback_data="list_groups_for_servers")]]))
         return
-    
+
     # ذخیره شناسه‌ها برای عملیات‌های بعدی
     context.user_data['last_server_list_ids'] = [s['id'] for s in servers]
 
@@ -524,7 +524,9 @@ async def server_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, cust
                     uptime = "⚠️ نامعلوم (نیاز به آپدیت ایجنت)"
 
                 profile=await run_sync(db.get_user,update.effective_user.id)
-                reply_markup = keyboard.server_detail_kb(sid,srv['ip'],has_premium(profile,update.effective_user.id,SUPER_ADMIN_ID))
+                scope = context.user_data.get('last_server_list_scope', 'list_all')
+                return_to = scope if (scope == 'list_all' or str(scope).startswith('listsrv_')) else 'list_groups_for_servers'
+                reply_markup = keyboard.server_detail_kb(sid,srv['ip'],has_premium(profile,update.effective_user.id,SUPER_ADMIN_ID),back_callback=return_to)
 
                 if res.get('status') == 'Online':
                     db.update_status(sid, "Online")

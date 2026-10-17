@@ -102,36 +102,32 @@ async def safe_edit_message(update: Update, text: str, reply_markup=None, parse_
         return None
 
     except Exception as e:
-        logger.warning("⚠️ safe_edit_message failed: %s", e, exc_info=True)
-
-        # Retry without parse_mode to avoid markdown entity errors
+        # Telegram returns this for harmless refreshes; avoid logging a fake failure
+        # and especially avoid retrying the identical request.
+        if "Message is not modified" in str(e):
+            return update.callback_query.message if update.callback_query else None
+        # Only formatting errors benefit from a plain-text retry.
+        if not ("parse entities" in str(e).lower() or "can't parse" in str(e).lower()):
+            logger.warning("Edit failed (%s)", type(e).__name__)
+            return None
         try:
             clean = _sanitize(text)
             if update.callback_query:
                 return await update.callback_query.edit_message_text(
-                    text=clean,
-                    reply_markup=reply_markup,
-                    parse_mode=None,
-                    disable_web_page_preview=True,
-                )
+                    text=clean, reply_markup=reply_markup, parse_mode=None,
+                    disable_web_page_preview=True)
             if message_id is not None and chat_id is not None:
                 return await update.get_bot().edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=clean,
-                    reply_markup=reply_markup,
-                    parse_mode=None,
-                    disable_web_page_preview=True,
-                )
+                    chat_id=chat_id, message_id=message_id, text=clean,
+                    reply_markup=reply_markup, parse_mode=None,
+                    disable_web_page_preview=True)
             if update.message:
                 return await update.message.reply_text(
-                    text=clean,
-                    reply_markup=reply_markup,
-                    parse_mode=None,
-                    disable_web_page_preview=True,
-                )
-        except Exception:
-            pass
+                    text=clean, reply_markup=reply_markup, parse_mode=None,
+                    disable_web_page_preview=True)
+        except Exception as retry_error:
+            if "Message is not modified" not in str(retry_error):
+                logger.warning("Plain-text edit failed (%s)", type(retry_error).__name__)
         return None
 
 
