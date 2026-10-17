@@ -1,5 +1,18 @@
 # Changelog
 
+## 6.1.0-rc.1 · 2026-10-17
+
+**Release packaging and consistency**
+- Bumped the application, installer banner, web panel badge, and `VERSION` file to `6.1.0-rc.1` so operators can identify the same build across entry points.
+- Updated the version consistency regression test to validate the 6.1 release line.
+- Preserved the complete V6 feature set and the existing upgrade, diagnostics, security, agent, Telegram, and web-panel flows. This release does not intentionally remove any capability.
+- Rebuilt the SHA-256 integrity manifest after the release metadata updates.
+
+**Validation notes**
+- Python bytecode compilation and installer preflight pass in the packaging environment.
+- Automated regression suite requires runtime dependencies declared in `requirements.txt` and `requirements-web.txt`. In the isolated build environment, `paramiko` and `python-telegram-bot` are unavailable and network access prevents installing them, so SSH and real Telegram registration tests cannot be fully run here.
+- This remains a release candidate until end-to-end installation, PostgreSQL, Telegram Bot API, SSH, WSS/TLS, and restore/rollback tests pass on a disposable VPS. See `AUDIT_V6_RC1_FA.md` for the outstanding production-validation checklist.
+
 ## 6.0.0-rc.1 · 2026-10-16
 
 **Data safety**: subscription membership is now derived from fetched links, not test success; `Unknown` preserves stable IDs and historical measurement fields. Destructive sync is disabled for incomplete/truncated/structured subscriptions and for fetch failures.

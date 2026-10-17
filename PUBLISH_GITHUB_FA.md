@@ -1,4 +1,4 @@
-# انتشار V6 RC1 در مخزن GitHub
+# انتشار V6.1 RC1 در مخزن GitHub
 
 مخزن هدف: https://github.com/Amirtn9/radarsonarplus
 
@@ -15,12 +15,12 @@ python3 -m pytest -q tests
 سپس روی سیستم توسعه با `git`، در مخزن متعلق به خودتان یک branch جدید بسازید:
 
 ```bash
-git checkout -b release/v6-rc1
+git checkout -b release/v6.1-rc1
 git add -A
 git status --short
 git diff --cached --check
-git commit -m "Sonar Radar Pro 6.0.0-rc.1: data-safe subscription sync and diagnostics"
-git push -u origin release/v6-rc1
+git commit -m "Sonar Radar Pro 6.1.0-rc.1: release consistency and regression checks"
+git push -u origin release/v6.1-rc1
 ```
 
 پس از بازبینی Pull Request و تست CI، انتشار را انجام دهید. **بدون قبولی تست‌های انتهابه‌انتها نسخه را Stable ننامید.** `MANIFEST_SHA256.txt` امضای امنیتی نیست. برای نصب از GitHub باید کد RC1 را واقعاً به مخزن منتقل کنید؛ بازکردن URL به‌تنهایی محتوای این ZIP را منتشر نمی‌کند.

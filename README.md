@@ -1,6 +1,6 @@
-# 🦇 Sonar Radar Pro V6
+# 🦇 Sonar Radar Pro V6.1
 
-**Version:** `6.0.0-rc.1` · **Telegram + VPS Agents + Web Panel** · **Status: Release Candidate (not production-certified)**
+**Version:** `6.1.0-rc.1` · **Telegram + VPS Agents + Web Panel** · **Status: Release Candidate (not production-certified)**
 
 مدیریت VPS، نصب ایجنت رمزنگاری‌شده، تست کانفیگ‌های Xray، مدیریت سابسکریپشن، مانیتورینگ چندنقطه‌ای، هشدارها، بکاپ و عیب‌یابی از طریق تلگرام و پنل وب.
 
@@ -41,7 +41,7 @@ sudo ./install.sh
 
 ### نصب از فایل ZIP، بدون GitHub
 
-فایل ZIP منتشرشده را روی سرور تست استخراج و داخل پوشه `Sonar_Radar_Pro_6.0` اجرا کنید:
+فایل ZIP منتشرشده را روی سرور تست استخراج و داخل پوشه `Sonar_Radar_Pro_6.1` اجرا کنید:
 
 ```bash
 bash install.sh --check
