@@ -28,3 +28,11 @@
 **Docs and QA**: refreshed README, recovery, security, publication notes, source audit, RC tests and installation smoke script. Historic 5.3 reports moved to documentation archive.
 
 **Known limitations**: production end-to-end environment untested; no complete SSH key wizard, durable distributed test queue, native upload benchmark, or full web parity. See QA report.
+
+## 6.1.0-rc.1 package hardening (local revision)
+
+- The standalone GitHub bootstrap now requests `sudo` automatically for host-mutating actions, so the documented `wget` / `chmod` / `./install.sh` flow works when started from a regular shell account.
+- `--check` and `--help` remain usable without root.
+- Added regression checks for direct bootstrap privilege escalation and for preserving the backup-before-upgrade ordering.
+- Regenerated `MANIFEST_SHA256.txt` after the package changes.
+- Validation in this build container: Bash syntax, Python compilation, and source manifest passed. The complete suite remains environment-blocked where optional runtime dependencies (`paramiko`, `python-telegram-bot`) are not installed.

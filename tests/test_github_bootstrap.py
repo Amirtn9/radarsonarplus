@@ -33,3 +33,18 @@ def test_version_matches():
     v = (ROOT / 'VERSION').read_text().strip()
     assert v.startswith('6.1.0-')
     assert v in (ROOT / 'settings.py').read_text()
+
+
+def test_direct_installer_requests_privileges_automatically():
+    # The requested wget/chmod/./install.sh flow must not fail just because
+    # the user did not prefix the command with sudo.
+    assert 'exec sudo -- bash "$SOURCE_DIR/install.sh" "$@"' in INSTALL
+    assert '--check|--help|-h) ;;' in INSTALL
+    assert "GITHUB_REPOSITORY='Amirtn9/radarsonarplus'" in INSTALL
+
+
+def test_upgrade_path_keeps_backup_before_code_switch():
+    body = INSTALL.split('install_app() {', 1)[1].split('configure_web_port()', 1)[0]
+    assert body.index('make_backup') < body.index('prepare_release')
+    assert 'Preserving data and upgrading existing installation.' in body
+    assert 'STATE_OLD="$BACKUP_DIR/previous-code-' in body

@@ -25,6 +25,23 @@ SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 GITHUB_REPOSITORY='Amirtn9/radarsonarplus'
 GITHUB_BRANCH='main'
 GITHUB_URL="https://github.com/${GITHUB_REPOSITORY}.git"
+
+# The documented one-command bootstrap is intentionally usable as a normal
+# account: elevate only commands that mutate the host. Read-only source checks
+# and help remain unprivileged. Never silently continue without sudo/root.
+case "${1:-}" in
+  --check|--help|-h) ;;
+  *)
+    if (( EUID != 0 )); then
+      if command -v sudo >/dev/null 2>&1; then
+        printf 'Sonar Radar Pro needs administrator privileges; requesting sudo…\\n' >&2
+        exec sudo -- bash "$SOURCE_DIR/install.sh" "$@"
+      fi
+      printf 'Administrator access required. Install sudo or run: su -c "bash %q %s"\\n' "$SOURCE_DIR/install.sh" "${*:-}" >&2
+      exit 1
+    fi
+    ;;
+esac
 STATE_STAGE=''; STATE_OLD=''; STATE_SWITCH=0; STATE_OLD_PRESENT=0
 STATE_BOT_ACTIVE=0; STATE_WEB_ACTIVE=0; STATE_BOT_UNIT=''; STATE_WEB_UNIT=''
 STATE_OK=0
