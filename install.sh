@@ -164,14 +164,30 @@ existing_components() {
   return "$found"
 }
 verify_restore_rehearsal() {
-  # Real recovery test, not just pg_restore --list. No production DB touched.
-  # Postgres owns this temporary DB, automatically removed on completion.
-  local dump="$1" scratch="sonar_restore_check_$$" rc=0
+  # Real recovery test, not just pg_restore --list. Never expose the private
+  # backup directory to postgres: stage a private copy in a postgres-owned dir.
+  # This matters because the installer runs with umask 077 and BACKUP_DIR is 0700.
+  local dump="$1" scratch="sonar_restore_check_$$" rc=0 stage_dir=''
   [[ -s "$dump" && ! -L "$dump" ]] || die 'Restore rehearsal requires an existing regular dump.'
-  runuser -u postgres -- createdb --template=template0 "$scratch" >> "$INSTALL_LOG" 2>&1 || die 'Could not create isolated restore rehearsal database.'
-  runuser -u postgres -- pg_restore --exit-on-error --no-owner --no-acl -d "$scratch" "$dump" >> "$INSTALL_LOG" 2>&1 || rc=$?
-  runuser -u postgres -- dropdb --if-exists "$scratch" >> "$INSTALL_LOG" 2>&1 || die 'Cannot remove temporary restore rehearsal database; remove manually.'
-  (( rc == 0 )) || die 'Restore rehearsal FAILED. Backup cannot be marked verified.'
+  stage_dir="$(mktemp -d /tmp/sonar-restore-check.XXXXXXXX)" || die 'Could not create isolated restore staging directory.'
+  if ! chown postgres:postgres "$stage_dir" || ! chmod 0700 "$stage_dir" ||
+     ! install -o postgres -g postgres -m 0600 -- "$dump" "$stage_dir/backup.dump"; then
+    rm -f -- "$stage_dir/backup.dump" 2>/dev/null || true
+    rmdir -- "$stage_dir" 2>/dev/null || true
+    die 'Could not stage backup securely for restore rehearsal.'
+  fi
+  if ! runuser -u postgres -- createdb --template=template0 "$scratch" >> "$INSTALL_LOG" 2>&1; then
+    rm -f -- "$stage_dir/backup.dump"; rmdir -- "$stage_dir" 2>/dev/null || true
+    die 'Could not create isolated restore rehearsal database.'
+  fi
+  runuser -u postgres -- pg_restore --exit-on-error --no-owner --no-acl -d "$scratch" "$stage_dir/backup.dump" >> "$INSTALL_LOG" 2>&1 || rc=$?
+  if ! runuser -u postgres -- dropdb --if-exists "$scratch" >> "$INSTALL_LOG" 2>&1; then
+    rm -f -- "$stage_dir/backup.dump"; rmdir -- "$stage_dir" 2>/dev/null || true
+    die 'Cannot remove temporary restore rehearsal database; remove manually.'
+  fi
+  rm -f -- "$stage_dir/backup.dump"
+  rmdir -- "$stage_dir" || die 'Could not remove restore rehearsal staging directory.'
+  (( rc == 0 )) || die 'Restore rehearsal FAILED. Backup cannot be marked verified; inspect PostgreSQL errors in the installer log.'
 }
 archive_existing_components() {
   # Archive all of the project-owned configuration before a destructive reset.
