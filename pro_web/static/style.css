@@ -110,3 +110,24 @@ button:disabled{cursor:not-allowed;opacity:.45}
 :root[data-theme="light"] .healthlog{color:#324c67}
 :root[data-theme="light"] dialog{background:var(--surface);color:var(--text)}
 :root[data-theme="light"] .version{color:var(--sub)}
+
+/* Uptime console 6.3 */
+.service-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:14px;margin:22px 0}
+.service-card{border:1px solid var(--outline);background:var(--surface2);border-radius:17px;padding:18px;min-width:0}
+.service-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.service-card-head strong{font-size:16px}.service-chip{font-size:12px;border:1px solid var(--outline);border-radius:999px;padding:4px 11px}
+.service-chip.up{color:#42d68d;border-color:#367757}.service-chip.down{color:var(--red);border-color:#a94b59}.service-chip.paused{color:var(--sub)}
+.service-target{overflow-wrap:anywhere;direction:ltr;text-align:left;color:var(--sub);font-size:12px;margin-top:10px}
+.service-actions{display:flex;gap:8px;flex-wrap:wrap}.service-actions button{min-height:36px;padding:7px 12px;border:1px solid var(--outline);border-radius:9px}
+.service-actions .destructive{color:var(--red)}.service-form label{min-width:140px;flex:1}.service-form label:nth-child(3){flex:2 0 240px}
+.service-form select{background:var(--surface2);border:1px solid var(--outline);border-radius:10px;padding:11px;color:var(--text)}
+.service-notice{margin-top:20px;font-size:12px}.service-history{display:grid;gap:8px}
+.uptime-strip{display:flex;gap:2px;min-height:30px;direction:ltr;overflow-x:auto;align-items:stretch}
+.uptime-strip span{display:block;flex:1;min-width:3px;max-width:14px;border-radius:3px;background:var(--outline)}
+.uptime-strip .ok{background:#3cc986}.uptime-strip .fail{background:#ee6875}
+.session-warning{background:var(--surface2);border:1px solid var(--red);border-radius:12px;color:var(--red);padding:13px 18px;margin:10px}
+.session-warning[hidden]{display:none}
+
+/* 6.3 summary metrics */
+.metricgrid{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media(max-width:720px){.metricgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}

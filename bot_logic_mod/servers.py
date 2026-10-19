@@ -61,6 +61,10 @@ async def add_server_linear_start(update: Update, context: ContextTypes.DEFAULT_
     return GET_LINEAR_DATA
 async def process_linear_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines=(update.message.text or '').splitlines()
+    try:
+        await update.message.delete()
+    except Exception:
+        pass  # Chat permissions or Telegram restrictions can prevent removal.
     while lines and not lines[-1].strip(): lines.pop()
     if not lines or len(lines)%5 or len(lines)>250:
         await update.message.reply_text('❌ هر سرور باید ۵ خط داشته باشد: نام، IP، پورت SSH، کاربر، رمز. حداکثر ۵۰ سرور.')
@@ -138,6 +142,10 @@ async def get_srv_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_srv_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['srv']['password'] = sec.encrypt(update.message.text)
+    try:
+        await update.message.delete()
+    except Exception:
+        pass  # Telegram may not permit deletion; warn users not to reuse SSH passwords.
     # تایید پورت وب‌سوکت از روی کانفیگ (قبل از ادامه)
     await update.message.reply_text(
         f"🔌 **تایید پورت وب‌سوکت ایجنت**\n\n"

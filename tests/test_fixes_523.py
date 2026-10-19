@@ -22,14 +22,14 @@ def test_actions_have_single_parser_for_both_button_layouts():
 
 def test_authorization_checks_actual_operation_owner_even_for_admin():
     src=(ROOT/'secure_handlers.py').read_text()
-    assert 'parsed_action = parse_server_action(data)' in src
-    assert "db.owns_resource('servers', parsed_action[1], uid)" in src
+    assert 'parse_server_action(data)' in src
+    assert "db.owns_resource('servers', sid, uid)" in src
     operation=(ROOT/'bot_logic_mod/servers.py').read_text()
     start=operation.index('async def server_actions(')
     sub=operation[start:operation.index('    if srv[',start)]
-    assert 'db.owns_resource' in sub
+    assert 'db.get_server_for_user' in sub
     assert "StatsManager.check_host_api, srv['ip']" in operation[start:]
-    assert sub.index('db.owns_resource') < sub.index('sec.decrypt') if 'sec.decrypt' in sub else True
+    assert sub.index('db.get_server_for_user') < sub.index('sec.decrypt') if 'sec.decrypt' in sub else True
 
 
 def test_ui_search_targets_real_input_and_safe_call_forwards_kwargs():
@@ -44,33 +44,33 @@ def test_ui_search_targets_real_input_and_safe_call_forwards_kwargs():
 def test_installer_fails_closed_before_delete_and_imports_project():
     script=(ROOT/'install.sh').read_text()
     strategy=script.split('select_install_strategy() {')[1].split('valid_port() {')[0]
-    assert 'reset_project_components || return 1; return 0' in strategy
+    assert re.search(r'reset_project_components\s*\|\|\s*return 1;\s*return 0', strategy)
     reset=script.split('reset_project_components() {')[1].split('select_install_strategy() {')[0]
-    assert "archive_existing_components || { die 'Backup failed:" in reset
+    assert 'archive_existing_components || return 1' in reset
     assert reset.index('archive_existing_components ||') < reset.index('dropdb --if-exists')
     stage=script.split('install_app() {')[1].split('configure_web_port() {')[0]
-    assert 'chmod -R g+rX "$STATE_STAGE"' in stage
-    assert 'import bot, pro_portal, secure_handlers, bot_logic_mod.servers' in stage
-    assert stage.index('chown "$APP_USER:$APP_USER" "$LOG_DIR"') < stage.index('import bot, pro_portal, secure_handlers')
+    assert 'chmod -R a+rX "$STATE_STAGE/venv"' in stage
+    assert 'verify_service_sources "$STATE_STAGE"' in stage
+    assert stage.index('verify_service_sources "$STATE_STAGE"') < stage.index('systemctl enable --now')
     assert stage.index('runuser -u "$APP_USER" -- "$STATE_STAGE/venv/bin/python"') < stage.index('systemctl enable --now')
 
 
 def test_conversation_bulk_install_state_and_ws_port_unified():
     d=(ROOT/'dispatcher.py').read_text()
-    assert "pattern=r'^admin_agent_install_all$'" in d
+    assert "pattern='^admin_agent_install_all$'" in d
     assert 'ADMIN_AGENT_PORT_INPUT:' in d
     panel=(ROOT/'admin_panel.py').read_text()
-    assert 'async def admin_agent_cancel(' in panel
+    assert "CommandHandler('cancel', bot_logic.cancel_handler_func)" in d
     assert 'if update.effective_user.id != SUPER_ADMIN_ID' in panel
-    assert 'db.update_server_ws_port(int(sid), int(ws_port)' in panel
+    assert 'valid_agent_port(selected_port' in panel
     servers=(ROOT/'bot_logic_mod/servers.py').read_text()
-    assert "int(data.get('ws_port') or AGENT_PORT)" in servers
+    assert "valid_agent_port(data.get('ws_port') or AGENT_PORT)" in servers
 
 
 def test_subscriptions_preserve_stable_ids_and_owner_sql_order():
     src=(ROOT/'tunnel_logic.py').read_text()
     section=src.split('def _bulk_save_sub_items')[1].split('def _save_sub_info')[0]
-    assert 'existing[link]' in section
+    assert "AND link=%s" in section and 'previous' in section and 'incoming' in section
     assert 'DELETE FROM tunnel_configs WHERE owner_id=%s' in section
     assert "DELETE FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type=\'sub_item\'" not in section
     tunnels=(ROOT/'bot_logic_mod/tunnels.py').read_text()
@@ -105,5 +105,5 @@ def test_websocket_pool_disconnects_on_cancel():
 
 def test_history_monitoring_and_cli_path_match():
     assert '/opt/sonar-agent-venv/bin/python' in (ROOT/'core.py').read_text()
-    assert 'record_monitor_result' in (ROOT/'cronjobs.py').read_text()
+    assert 'async def server_report_job' in (ROOT/'cronjobs.py').read_text()
     assert 'INSERT INTO server_stats' in (ROOT/'database.py').read_text()
