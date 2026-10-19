@@ -267,7 +267,7 @@ def test_sensitive_http_urls_are_scrubbed():
 def test_legacy_subscription_handlers_enforce_ownership():
     source=(ROOT/'bot_logic_mod/tunnels.py').read_text()
     assert 'SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s' in source
-    assert '(sub_id, update.effective_user.id)' in source
+    assert '(sub_id, shared_uid(update))' in source
     assert 'api.qrserver.com' not in source
     assert 'UPDATE tunnel_configs SET last_status=\'Fail\' WHERE id=%s AND owner_id=%s' in source
 

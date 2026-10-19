@@ -544,6 +544,7 @@ def test_server_wizard_preserves_custom_port_for_background_install():
         'ServerMonitor': types.SimpleNamespace(check_ssh_connection=lambda *a: {'status': 'Online'}),
         'db': types.SimpleNamespace(add_server=lambda *a: 21, get_server_for_user=lambda *a: saved),
         '_install_saved_server': installer,
+        'keyboard': types.SimpleNamespace(back_btn=lambda *args,**kwargs: None),
         'spawn_background': lambda context, job, **kw: pending.append(job)}
     fn = isolated('bot_logic_mod/servers.py', '_complete_server_add', scope)
     message = types.SimpleNamespace(edit_text=AsyncMock())

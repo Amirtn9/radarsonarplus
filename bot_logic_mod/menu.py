@@ -85,21 +85,12 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_monitor_ready = await loop.run_in_executor(EXECUTOR, db.is_monitor_active)
     reply_markup = keyboard.main_menu_kb(user_id, is_monitor_ready, SUPER_ADMIN_ID)
 
-    try:
-        from pro_store import ProStore
-        summary = await asyncio.to_thread(ProStore().summary, user_id)
-        s,c = summary['servers'],summary['configs']
-        overview = (f"🖥 سرورها: `{s['active']}/{s['total']}` فعال\n"
-                    f"🧩 کانفیگ‌ها: `{c['healthy']}/{c['total']}` سالم\n"
-                    f"🚨 رخدادهای باز: `{summary['incidents']}`")
-    except Exception:
-        overview = "📊 آمار شبکه موقتاً در دسترس نیست"
-
-    txt = ("📡 *SONAR RADAR | Pro 6.3.1*\n"
-           "━━━━━━━━━━━━━━━━━━━━\n"
-           f"👤 اعتبار حساب: `{remaining}`\n{overview}\n"
-           "━━━━━━━━━━━━━━━━━━━━\n"
-           "از منوی زیر، عملیات مورد نظر را انتخاب کنید.")
+    # No network-bound statistics calls on the home screen: navigation must be immediate.
+    txt = ("📡 *SONAR RADAR | Pro 6.4.0*\n"
+           "━━━━━━━━━━━━━━━━━\n"
+           f"👤 اعتبار شما: `{remaining}`\n\n"
+           "به کدام بخش نیاز دارید؟\n"
+           "تمام گزینه‌ها در دسته‌های کوتاه و روشن قرار دارند.")
 
     if update.callback_query:
         await safe_edit_message(update, txt, reply_markup=reply_markup)

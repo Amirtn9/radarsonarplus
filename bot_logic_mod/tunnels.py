@@ -122,7 +122,7 @@ async def show_tunnels_by_mode(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     if not custom_data:
         context.user_data['last_config_list_route'] = query.data
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     
     # لاجیک صفحه بندی
     page = 1
@@ -208,12 +208,12 @@ async def manage_single_sub_menu(update: Update, context: ContextTypes.DEFAULT_T
         page = int(data_parts[3])
     
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s", (sub_id, update.effective_user.id))
+        cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s", (sub_id, shared_uid(update)))
         sub = cur.fetchone()
         if not sub:
             await query.answer("❌ اشتراک یافت نشد.", show_alert=True)
             return
-        cur.execute("SELECT id, name, last_status, last_ping FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (sub_id, update.effective_user.id))
+        cur.execute("SELECT id, name, last_status, last_ping FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (sub_id, shared_uid(update)))
         items = cur.fetchall()
 
     # ✅ ایمن‌سازی نام برای HTML
@@ -275,13 +275,13 @@ async def get_sub_links_action(update: Update, context: ContextTypes.DEFAULT_TYP
     sub_id = int(query.data.split('_')[3])
     
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, update.effective_user.id))
+        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, shared_uid(update)))
         sub = cur.fetchone()
         if not sub:
             await query.answer("❌ اشتراک یافت نشد.", show_alert=True)
             return
             
-        cur.execute("SELECT link, name FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (sub_id, update.effective_user.id))
+        cur.execute("SELECT link, name FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (sub_id, shared_uid(update)))
         items = cur.fetchall()
         
     if not items:
@@ -315,11 +315,11 @@ async def delete_full_subscription(update: Update, context: ContextTypes.DEFAULT
     """حذف سابسکریپشن و تمام کانفیگ‌های زیرمجموعه (اصلاح شده)"""
     query = update.callback_query
     sub_id = int(query.data.split('_')[3])
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     
     # 1. حذف از دیتابیس
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, update.effective_user.id))
+        cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, shared_uid(update)))
         sub = cur.fetchone()
         if sub:
             # حذف سورس
@@ -337,7 +337,7 @@ async def delete_full_subscription(update: Update, context: ContextTypes.DEFAULT
 async def update_all_configs_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """بروزرسانی وضعیت تمام کانفیگ‌ها به صورت یکجا"""
     query = update.callback_query
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     
     await query.answer("⏳ درخواست ارسال شد. نتیجه به تدریج بروز می‌شود.", show_alert=True)
     
@@ -399,7 +399,7 @@ async def background_update_all(context, uid, configs, monitor):
     except: pass
 async def handle_single_config_auto(update: Update, context: ContextTypes.DEFAULT_TYPE, link: str):
     """پردازش خودکار کانفیگ تکی بدون پرسش اضافی"""
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     
     # پیام اولیه
     status_msg = await update.message.reply_text(
@@ -475,7 +475,7 @@ async def handle_single_config_auto(update: Update, context: ContextTypes.DEFAUL
 async def process_add_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """دریافت لینک و تشخیص مسیر (پرسش نام برای ساب / خودکار برای تکی)"""
     link = update.message.text.strip()
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     
     # ذخیره لینک در حافظه موقت
     context.user_data['temp_link'] = link
@@ -515,7 +515,7 @@ async def handle_config_type_selection(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     choice = query.data
     link = context.user_data.get('temp_link')
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     
     await query.answer()
     
@@ -633,7 +633,7 @@ async def finalize_sub_adding(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """تست دستی و دقیق (Heavy Test) یک کانفیگ با UI حرفه‌ای"""
     query = update.callback_query
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     try:
         cid = int(query.data.split('_')[2])
     except:
@@ -646,7 +646,7 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # 1. دریافت اطلاعات کانفیگ و سرور مانیتورینگ
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s", (cid,update.effective_user.id))
+        cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s", (cid,shared_uid(update)))
         cfg = cur.fetchone()
         cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
         monitor_node = cur.fetchone()
@@ -679,7 +679,7 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         # تست سنگین ۱۰ مگابایتی روی کانکشن پایدار، با رعایت صف عادلانه
         # تا یک کاربر نتواند کل ظرفیت نود مانیتورینگ را بگیرد.
-        async with tunnel_manager._user_sem(update.effective_user.id), tunnel_manager.global_sem:
+        async with tunnel_manager._user_sem(shared_uid(update)), tunnel_manager.global_sem:
             ok, res = await ServerMonitor.ws_test_config(
                 ip, ws_port, token, cfg['link'], size=10.0, timeout=90
             )
@@ -750,7 +750,7 @@ async def view_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
     cid = int(query.data.split('_')[2])
     
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s", (cid,update.effective_user.id))
+        cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s", (cid,shared_uid(update)))
         cfg = cur.fetchone()
         
     if not cfg:
@@ -781,7 +781,7 @@ async def view_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def delete_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     cid = int(query.data.split('_')[2])
-    uid = update.effective_user.id
+    uid = shared_uid(update)
 
     db.delete_tunnel_config(cid, uid)
 
@@ -799,7 +799,7 @@ async def delete_config_action(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def advanced_monitoring_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """منوی تنظیمات پیشرفته مانیتورینگ"""
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     if update.callback_query:
         await update.callback_query.answer()
         
@@ -822,7 +822,7 @@ async def advanced_monitoring_settings(update: Update, context: ContextTypes.DEF
 
 async def set_small_size_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """منوی انتخاب حجم تست سبک"""
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     curr = db.get_setting(uid, 'monitor_small_size') or '0.5'
     reply_markup = keyboard.monitor_size_kb(curr, 'small')
     await safe_edit_message(update, "🔹 حجم دانلود برای **تست سبک** (Ping Check):", reply_markup=reply_markup)
@@ -830,7 +830,7 @@ async def set_small_size_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def set_big_size_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """منوی انتخاب حجم تست سنگین"""
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     curr = db.get_setting(uid, 'monitor_big_size') or '10'
     reply_markup = keyboard.monitor_size_kb(curr, 'big')
     await safe_edit_message(update, "🔸 حجم دانلود برای **تست سنگین** (Speed Test):", reply_markup=reply_markup)
@@ -838,7 +838,7 @@ async def set_big_size_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_big_interval_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """منوی انتخاب فاصله زمانی تست سنگین"""
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     curr = db.get_setting(uid, 'monitor_big_interval') or '60'
     reply_markup = keyboard.monitor_interval_kb(curr)
     await safe_edit_message(update, "⏰ فاصله زمانی اجرای **تست سنگین**:", reply_markup=reply_markup)
@@ -847,7 +847,7 @@ async def set_big_interval_menu(update: Update, context: ContextTypes.DEFAULT_TY
 async def save_setting_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ذخیره تنظیمات انتخاب شده"""
     query = update.callback_query
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     data = query.data 
     
     parts = data.split('_')
@@ -895,7 +895,7 @@ async def save_setting_action(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def custom_small_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         val = monitoring_setting('small', update.message.text)
-        db.set_setting(update.effective_user.id, 'monitor_small_size', val)
+        db.set_setting(shared_uid(update), 'monitor_small_size', val)
         await update.message.reply_text("✅ ذخیره شد.")
         await advanced_monitoring_settings(update, context)
         return ConversationHandler.END
@@ -907,7 +907,7 @@ async def custom_small_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 async def custom_big_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         val = monitoring_setting('big', update.message.text)
-        db.set_setting(update.effective_user.id, 'monitor_big_size', val)
+        db.set_setting(shared_uid(update), 'monitor_big_size', val)
         await update.message.reply_text("✅ ذخیره شد.")
         await advanced_monitoring_settings(update, context)
         return ConversationHandler.END
@@ -919,7 +919,7 @@ async def custom_big_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def custom_int_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         val = monitoring_setting('int', update.message.text)
-        db.set_setting(update.effective_user.id, 'monitor_big_interval', val)
+        db.set_setting(shared_uid(update), 'monitor_big_interval', val)
         await update.message.reply_text("✅ ذخیره شد.")
         await advanced_monitoring_settings(update, context)
         return ConversationHandler.END
@@ -942,7 +942,7 @@ async def show_config_details(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s", (cid,update.effective_user.id))
+        cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s", (cid,shared_uid(update)))
         cfg = cur.fetchone()
         
     if not cfg:
@@ -960,7 +960,7 @@ async def show_config_details(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not parent_id and " | " in cfg['name']:
             sub_name = cfg['name'].split(" | ")[0]
             with db.get_connection() as (conn, cur):
-                cur.execute("SELECT id FROM tunnel_configs WHERE name=%s AND type='sub_source' AND owner_id=%s", (sub_name,update.effective_user.id))
+                cur.execute("SELECT id FROM tunnel_configs WHERE name=%s AND type='sub_source' AND owner_id=%s", (sub_name,shared_uid(update)))
                 parent = cur.fetchone()
                 if parent:
                     parent_id = parent['id']
@@ -989,7 +989,7 @@ async def copy_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
     cid = int(query.data.split('_')[2])
     
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT link FROM tunnel_configs WHERE id=%s AND owner_id=%s", (cid,update.effective_user.id))
+        cur.execute("SELECT link FROM tunnel_configs WHERE id=%s AND owner_id=%s", (cid,shared_uid(update)))
         cfg = cur.fetchone()
         
     if cfg:
@@ -1004,7 +1004,7 @@ async def qr_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from io import BytesIO
     import qrcode
     query=update.callback_query
-    uid=int(update.effective_user.id)
+    uid=int(shared_uid(update))
     try:cid=int(query.data.split('_')[2])
     except (IndexError,ValueError):
         await query.answer('شناسه کانفیگ نامعتبر است',show_alert=True);return
@@ -1029,7 +1029,7 @@ async def qr_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def manual_update_sub_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Schedule an async subscription update without blocking the Telegram event loop."""
     query = update.callback_query
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     sub_id = int(query.data.split('_')[2])
     with db.get_connection() as (conn, cur):
         cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, uid))
@@ -1066,7 +1066,7 @@ async def delete_item_from_list_action(update: Update, context: ContextTypes.DEF
     cid = int(parts[3])
     mode = parts[4]
     page = int(parts[5])
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     
     # 1. حذف از دیتابیس
     db.delete_tunnel_config(cid, uid)
@@ -1111,7 +1111,7 @@ async def mass_update_test_start(update: Update, context: ContextTypes.DEFAULT_T
     """شروع عملیات بروزرسانی همگانی و تست دقیق (ضد کرش)"""
     logger.info("🚀 Mass Update Triggered")
     query = update.callback_query
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     
     # 1. پاسخ به دکمه (با محافظت ضد کرش)
     try:
@@ -1235,7 +1235,7 @@ async def show_account_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def refresh_conf_dash_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """اجرای تست سبک (پینگ) برای همه کانفیگ‌ها در پس‌زمینه (Non-Blocking)"""
     query = update.callback_query
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     
     # 1. بررسی اینکه آیا کاربر تسک فعالی دارد یا خیر (جلوگیری از اسپم توسط یک نفر)
     if uid in USER_ACTIVE_TASKS and not USER_ACTIVE_TASKS[uid].done():
@@ -1405,7 +1405,7 @@ async def select_payment_method(update: Update, context: ContextTypes.DEFAULT_TY
 async def channels_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت کانال‌ها"""
     if update.callback_query: await update.callback_query.answer()
-    channels = db.get_user_channels(update.effective_user.id)
+    channels = db.get_user_channels(shared_uid(update))
     kb = []
     for ch in channels:
         kb.append([InlineKeyboardButton(f"🗑 حذف: {ch['name']}", callback_data=f"delchan_{ch['id']}")])
@@ -1416,7 +1416,7 @@ async def channels_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def schedules_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """منوی زمان‌بندی‌ها"""
     if update.callback_query: await update.callback_query.answer()
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     # دریافت تنظیمات فعلی برای نمایش تیک
     srv_alert = "✅" if (db.get_setting(uid, 'down_alert_enabled') or '1') == '1' else "❌"
     conf_alert = "✅" if (db.get_setting(uid, 'config_alert_enabled') or '1') == '1' else "❌"
@@ -1430,14 +1430,14 @@ async def schedules_settings_menu(update: Update, context: ContextTypes.DEFAULT_
 
 async def settings_cron_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """منوی زمان‌بندی گزارش سرور"""
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     curr = db.get_setting(uid, 'report_interval') or '0'
     reply_markup = keyboard.settings_cron_kb(curr)
     await safe_edit_message(update, "📊 **زمان‌بندی گزارش وضعیت سرورها:**", reply_markup=reply_markup)
 
 async def config_cron_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """منوی زمان‌بندی گزارش کانفیگ"""
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     curr = db.get_setting(uid, 'config_report_interval') or '60'
     reply_markup = keyboard.config_cron_kb(curr)
     await safe_edit_message(update, "📡 **زمان‌بندی گزارش وضعیت کانفیگ‌ها:**", reply_markup=reply_markup)
@@ -1445,7 +1445,7 @@ async def config_cron_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def toggle_config_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """تغییر وضعیت هشدار کانفیگ"""
     state = update.callback_query.data.split('_')[2]
-    db.set_setting(update.effective_user.id, 'config_alert_enabled', state)
+    db.set_setting(shared_uid(update), 'config_alert_enabled', state)
     await schedules_settings_menu(update, context)
 
 async def send_general_report_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1456,7 +1456,7 @@ async def send_general_report_action(update: Update, context: ContextTypes.DEFAU
 
 async def manage_servers_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """لیست مدیریت خاموش/روشن کردن مانیتورینگ"""
-    servers = db.get_all_user_servers(update.effective_user.id)
+    servers = db.get_all_user_servers(shared_uid(update))
     reply_markup = keyboard.manage_monitor_list_kb(servers)
     await safe_edit_message(update, "⚡️ **برای تغییر وضعیت مانیتورینگ روی سرور بزنید:**", reply_markup=reply_markup)
 
@@ -1478,7 +1478,7 @@ async def config_stats_dashboard(update: Update, context: ContextTypes.DEFAULT_T
     """داشبورد وضعیت کانفیگ‌ها"""
     if update.callback_query: await update.callback_query.answer()
     
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     # آمار کلی
     with db.get_connection() as (conn, cur):
         cur.execute("SELECT COUNT(*) as cnt FROM tunnel_configs WHERE owner_id=%s", (uid,))
@@ -1542,7 +1542,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Automatic subscription refresh controls (off by default)
 # ==============================================================================
 async def auto_sub_update_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     current = db.get_setting(uid, 'auto_sub_update_hours') or '0'
     options = [('خاموش', 0), ('هر ۱۲ ساعت', 12), ('هر ۲۴ ساعت', 24), ('هر ۴۸ ساعت', 48)]
     buttons = [[InlineKeyboardButton(
@@ -1564,6 +1564,6 @@ async def set_auto_sub_update_action(update: Update, context: ContextTypes.DEFAU
         await update.callback_query.answer('❌ بازه نامعتبر', show_alert=True)
         return
     await asyncio.get_running_loop().run_in_executor(EXECUTOR, db.set_setting,
-                                                      update.effective_user.id, 'auto_sub_update_hours', str(hours))
+                                                      shared_uid(update), 'auto_sub_update_hours', str(hours))
     await update.callback_query.answer('✅ تنظیمات ذخیره شد.')
     await auto_sub_update_menu(update, context)

@@ -74,7 +74,7 @@ def test_subscriptions_preserve_stable_ids_and_owner_sql_order():
     assert 'DELETE FROM tunnel_configs WHERE owner_id=%s' in section
     assert "DELETE FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type=\'sub_item\'" not in section
     tunnels=(ROOT/'bot_logic_mod/tunnels.py').read_text()
-    assert '(sub_id, update.effective_user.id)' in tunnels
+    assert '(sub_id, shared_uid(update))' in tunnels
 
 
 def test_websocket_pool_disconnects_on_cancel():

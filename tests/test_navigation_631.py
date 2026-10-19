@@ -56,7 +56,7 @@ def test_section_return_and_admin_authorization():
     asyncio.run(ns['return_to_section'](update, ctx))
     assert shown.await_count == 2
     assert shown.await_args.args[1] == 'server page'
-    assert ('⬅️ دسته‌بندی‌ها', 'v6_home') in shown.await_args.args[2]
+    assert ('🏠 صفحه اصلی', 'main_menu') in shown.await_args.args[2]
     query.data = 'v6_admin'
     asyncio.run(ns['section'](update, ctx))
     assert get_section(ctx) == 'servers', 'denied admin route must not replace current section'

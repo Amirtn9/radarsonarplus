@@ -182,3 +182,8 @@ logger.debug("🔐 SSH session cache initialized")
 USER_ACTIVE_TASKS = {}
 logger.debug("👥 User active tasks tracker initialized")
 # ==============================================================================
+
+
+def shared_uid(update):
+    """Technical workspace data owner; financial profile always uses real actor ID."""
+    return db.workspace_owner(update.effective_user.id)

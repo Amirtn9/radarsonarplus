@@ -40,16 +40,16 @@ async def delete_group_action(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = db.get_user(update.effective_user.id)
     srv_count = len(db.get_all_user_servers(update.effective_user.id))
-    if update.effective_user.id != SUPER_ADMIN_ID and srv_count >= user['server_limit']:
+    if update.effective_user.id != SUPER_ADMIN_ID and srv_count >= db.workspace_server_limit(update.effective_user.id):
         await update.effective_message.reply_text("⛔️ **شما به سقف مجاز افزودن سرور رسیده‌اید.**")
         return ConversationHandler.END
-    await safe_edit_message(update, "🏷 **نام سرور را وارد کنید:**", reply_markup=keyboard.get_cancel_markup())
+    await safe_edit_message(update, "🖥 **افزودن سرور | مرحله ۱ از ۷**\n\nیک نام ساده برای سرور انتخاب کنید. مثلاً: سرور تهران", reply_markup=keyboard.get_cancel_markup())
     return GET_NAME
 
 async def add_server_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = db.get_user(update.effective_user.id)
     srv_count = len(db.get_all_user_servers(update.effective_user.id))
-    if update.effective_user.id != SUPER_ADMIN_ID and srv_count >= user['server_limit']:
+    if update.effective_user.id != SUPER_ADMIN_ID and srv_count >= db.workspace_server_limit(update.effective_user.id):
         await safe_edit_message(update, "⛔️ **شما به سقف مجاز افزودن سرور رسیده‌اید.**")
         return ConversationHandler.END
     reply_markup = keyboard.add_server_method_kb()
@@ -60,7 +60,7 @@ async def add_server_start_menu(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def add_server_step_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    await update.callback_query.message.reply_text("🏷 **نام سرور را وارد کنید:**", reply_markup=keyboard.get_cancel_markup())
+    await update.callback_query.message.reply_text("🖥 **افزودن سرور | مرحله ۱ از ۷**\n\nیک نام ساده برای سرور انتخاب کنید. مثلاً: سرور تهران", reply_markup=keyboard.get_cancel_markup())
     return GET_NAME
 
 async def add_server_linear_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -115,7 +115,7 @@ async def process_linear_data(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 async def get_srv_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['srv'] = {'name': update.message.text}
-    await update.message.reply_text("🌐 **آدرس IP سرور را وارد کنید:**", reply_markup=keyboard.get_cancel_markup(),
+    await update.message.reply_text("🌐 **مرحله ۲ از ۷ | آدرس سرور**\n\nIP یا دامنه سرور را وارد کنید. مثال: `1.2.3.4`", reply_markup=keyboard.get_cancel_markup(),
                                     parse_mode='Markdown')
     return GET_IP
 
@@ -126,7 +126,7 @@ async def get_srv_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text('❌ آدرس IP یا نام میزبان معتبر وارد کنید؛ بدون http و پورت.')
         return GET_IP
-    await update.message.reply_text("🔌 **پورت SSH را وارد کنید:**", reply_markup=keyboard.get_cancel_markup(),
+    await update.message.reply_text("🔌 **مرحله ۳ از ۷ | پورت SSH**\n\nپورت اتصال SSH را وارد کنید (معمولاً 22).", reply_markup=keyboard.get_cancel_markup(),
                                     parse_mode='Markdown')
     return GET_PORT
 
@@ -137,14 +137,14 @@ async def get_srv_port(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ فقط عدد وارد کنید.")
         return GET_PORT
-    await update.message.reply_text("👤 **نام کاربری (Username) را وارد کنید:**", reply_markup=keyboard.get_cancel_markup(),
+    await update.message.reply_text("👤 **مرحله ۴ از ۷ | نام کاربری**\n\nنام کاربری SSH را وارد کنید؛ مثلاً root.", reply_markup=keyboard.get_cancel_markup(),
                                     parse_mode='Markdown')
     return GET_USER
 
 
 async def get_srv_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['srv']['username'] = update.message.text.strip()
-    await update.message.reply_text("🔑 **رمز عبور (Password) را وارد کنید:**", reply_markup=keyboard.get_cancel_markup(),
+    await update.message.reply_text("🔑 **مرحله ۵ از ۷ | رمز عبور**\n\nرمز SSH را وارد کنید. ربات تلاش می‌کند پیام رمز را پاک کند.", reply_markup=keyboard.get_cancel_markup(),
                                     parse_mode='Markdown')
     return GET_PASS
 
@@ -157,7 +157,7 @@ async def get_srv_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass  # Telegram may not permit deletion; warn users not to reuse SSH passwords.
     # تایید پورت وب‌سوکت از روی کانفیگ (قبل از ادامه)
     await update.message.reply_text(
-        f"🔌 **تایید پورت وب‌سوکت ایجنت**\n\n"
+        f"🔌 **مرحله ۶ از ۷ | پورت ایجنت**\n\n"
         f"پورت ایجنت طبق تنظیمات سیستم: `{AGENT_PORT}`\n"
         "آیا این پورت روی سرور باز و آزاد است؟\n\n"
         "(بدون تایید، فرآیند افزودن ادامه پیدا نمی‌کند)",
@@ -1118,7 +1118,7 @@ async def run_terminal_action(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     sid = context.user_data.get('term_sid')
     srv = await run_sync(db.get_server_for_user, sid, update.effective_user.id, SUPER_ADMIN_ID) if sid else None
-    if not srv or (update.effective_user.id != SUPER_ADMIN_ID and srv['owner_id'] != update.effective_user.id):
+    if not srv or (update.effective_user.id != SUPER_ADMIN_ID and srv['owner_id'] != db.workspace_owner(update.effective_user.id)):
         await update.message.reply_text('⛔ سرور متعلق به حساب شما نیست.')
         return ConversationHandler.END
 

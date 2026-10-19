@@ -54,7 +54,7 @@ async def mode_ask_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- پردازش فایل یا متن JSON ---
 
 async def process_json_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+    uid = shared_uid(update)
     config_content = ""
 
     # ۱. دریافت محتوا (متن یا فایل)
@@ -100,7 +100,7 @@ async def process_json_config(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def process_sub_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link = update.message.text.strip()
-    uid = update.effective_user.id
+    uid = shared_uid(update)
 
     try:
         link = valid_subscription_url(link)
