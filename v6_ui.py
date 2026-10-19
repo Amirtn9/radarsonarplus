@@ -34,30 +34,27 @@ async def show(update, text, menu=None):
 
 
 MENUS = {
- 'servers': ('🖥 <b>مرکز مدیریت سرورها</b>\nسرور جدید اضافه کن، گروه‌ها را مدیریت کن، وضعیت و منابع را ببین.',
-    [('➕ افزودن سرور','add_server'),('📂 گروه‌ها و سرورها','list_groups_for_servers'),('📊 داشبورد سرورها','status_dashboard'),('🔧 عملیات گروهی','global_ops_menu'),('⚙️ تنظیمات منابع','settings_thresholds')]),
- 'configs': ('🧩 <b>مرکز کانفیگ و اشتراک</b>\nثبت و تست کانفیگ، سابسکریپشن و تاریخچه کیفیت.',
-    [('➕ افزودن کانفیگ / ساب','add_tunnel_config'),('📋 فهرست کانفیگ‌ها','tunnel_list_menu'),('🏆 رتبه‌بندی کیفیت','pro_rank'),('📈 گزارش تست‌ها','pro_report'),('🇮🇷 نود مانیتورینگ','monitor_settings_panel')]),
- 'monitor': ('📡 <b>مانیتورینگ و هشدار</b>\nوضعیت لحظه‌ای، رخدادها و زمان‌بندی خودکار.',
-    [('📊 وضعیت شبکه','status_dashboard'),('🚨 رخدادهای شبکه','pro_incidents'),('📅 وظایف زمان‌بندی‌شده','cronjob_hub_main'),('🔔 تنظیمات اعلان‌ها','advanced_monitoring_settings'),('📑 گزارش‌های پیشرفته','pro_home')]),
- 'tools': ('🧰 <b>ابزارها و تنظیمات</b>\nابزار شبکه، DNS، زمان‌بندی و اطلاعات پنل.',
-    [('📍 تست Ping','manual_ping_start'),('⚙️ تنظیمات برنامه','settings_menu'),('📱 پنل وب','gen_web_token'),('🏷 برچسب‌ها','pro_tags'),('👥 تیم و دسترسی‌ها','pro_team')]),
- 'account': ('👤 <b>حساب و فضای کاری</b>\nپروفایل، وضعیت اعتبار و عضویت تیمی.',
-    [('👤 پروفایل','user_profile'),('💳 خرید و اعتبار','wallet_menu'),('🤝 دعوت دوستان','referral_menu'),('👥 فضای کاری','pro_home'),('📱 پنل وب','gen_web_token')]),
- 'admin': ('👑 <b>مرکز مدیریت نسخه ۶</b>\nکاربران، ایجنت‌ها، بکاپ، سرویس‌ها و عیب‌یابی.',
-    [('👥 مدیریت کاربران','admin_users_page_1'),('🔎 جست‌وجوی کاربر','admin_search_start'),('🖥 تمام سرورها','admin_all_servers_1'),('🛰 مدیریت ایجنت‌ها','admin_agent_dashboard'),('📦 بکاپ پایگاه داده','admin_backup_get'),('📢 اعلان همگانی','admin_broadcast_start'),('⚙️ مدیریت قدیمی','admin_panel_main'),('🩺 عیب‌یابی نسخه ۶','v6_diag')]),
+ 'servers': ('🖥 <b>سرورهای من</b>\n\nاز اینجا می‌توانید سرور اضافه کنید، سرورهای قبلی را ببینید یا آن‌ها را گروه‌بندی کنید.',
+    [('➕ افزودن سرور (مرحله‌ای)','add_server'),('📋 مشاهده سرورها','list_groups_for_servers'),('📂 پوشه‌بندی سرورها','groups_menu'),('📊 وضعیت همه سرورها','show_server_stats')]),
+ 'configs': ('🧩 <b>کانفیگ‌های من</b>\n\nکانفیگ جدید وارد کنید، کانفیگ‌های ذخیره‌شده را ببینید و وضعیتشان را بررسی کنید.',
+    [('➕ افزودن کانفیگ','add_tunnel_config'),('📋 مشاهده کانفیگ‌ها','tunnel_list_menu'),('🔍 گزارش سلامت کانفیگ‌ها','show_config_stats'),('🔄 بروزرسانی و تست','mass_update_test_all')]),
+ 'monitor': ('📡 <b>وضعیت و هشدارها</b>\n\nسلامت سرورها، قطعی‌ها و هشدارهای مهم را ببینید.',
+    [('📊 وضعیت سرورها','status_dashboard'),('🚨 هشدارها و رخدادها','pro_incidents'),('🔔 تنظیم هشدار','menu_schedules'),('📈 گزارش پیشرفته','pro_report')]),
+ 'tools': ('🧰 <b>ابزارها</b>\n\nبرای بررسی ارتباط، شبکه و کیفیت سرویس‌ها.',
+    [('📍 تست Ping','manual_ping_start'),('🔧 عملیات گروهی سرورها','global_ops_menu'),('🏆 کیفیت کانفیگ‌ها','pro_rank'),('🏷 برچسب‌ها','pro_tags')]),
+ 'settings': ('⚙️ <b>تنظیمات</b>\n\nزمان‌بندی، کانال اعلان و تنظیمات خودکار را از همین بخش کنترل کنید.',
+    [('⏰ زمان‌بندی و هشدارها','menu_schedules'),('🗓 کرون‌جاب‌ها','cronjob_hub_main'),('📢 کانال اعلان‌ها','channels_menu'),('⚙️ همه تنظیمات','settings_menu'),('🇮🇷 سرور مانیتورینگ','monitor_settings_panel')]),
+ 'account': ('👤 <b>حساب و همکاران</b>\n\nپروفایل، اعتبار و فضای کاری مشترک.',
+    [('👤 پروفایل من','user_profile'),('💳 اعتبار و اشتراک','wallet_menu'),('👥 هم‌گروهی و فضای مشترک','ui_team_home'),('🤝 دعوت دوستان','referral_menu'),('📱 پنل وب','gen_web_token'),('💎 مرکز Pro','pro_home')]),
+ 'admin': ('👑 <b>مدیریت ربات</b>\n\nاین بخش فقط برای مدیر اصلی است.',
+    [('👥 مدیریت کاربران','admin_users_page_1'),('🔎 جست‌وجوی کاربر','admin_search_start'),('🖥 سرورهای کاربران','admin_all_servers_1'),('🛰 مدیریت ایجنت‌ها','admin_agent_dashboard'),('📦 پشتیبان‌گیری','admin_backup_get'),('📢 پیام همگانی','admin_broadcast_start'),('⚙️ تنظیمات مدیریت','admin_panel_main'),('🩺 عیب‌یابی','v6_diag')]),
 }
 
 
 async def dashboard(update, context):
+    from bot_logic_mod.menu import show_main_menu
     clear_section(context)
-    owner = is_admin(update)
-    markup = rows(('🖥 سرورها','v6_servers'),('🧩 کانفیگ و سابسکریپشن','v6_configs'),
-                  ('📡 مانیتورینگ و هشدارها','v6_monitor'),('🧰 ابزارها و تنظیمات','v6_tools'),
-                  ('👤 حساب کاربری','v6_account'),('🏆 مرکز Pro','pro_home'),
-                  *([('👑 مدیریت ربات','v6_admin')] if owner else []),
-                  ('🏠 منوی اصلی','main_menu'))
-    await show(update,'📡 <b>SONAR RADAR • Pro 6.3.1</b>\n\nمرکز کنترل یکپارچه سرورها، کانفیگ‌ها، تست‌ها و هشدارها.\nاز دسته‌بندی‌های زیر انتخاب کنید.',markup)
+    await show_main_menu(update,context)
 
 
 async def section(update, context):
@@ -68,7 +65,7 @@ async def section(update, context):
         await update.callback_query.answer('فقط مدیر اصلی',show_alert=True);return
     remember_section(context, section_name)
     desc, buttons = MENUS[section_name]
-    await show(update,desc,rows(*buttons,('⬅️ دسته‌بندی‌ها','v6_home')))
+    await show(update,desc,rows(*buttons,('🏠 صفحه اصلی','main_menu')))
 
 
 async def return_to_section(update, context):
@@ -83,7 +80,7 @@ async def return_to_section(update, context):
         await show_main_menu(update, context)
         return
     desc, buttons = MENUS[target]
-    await show(update, desc, rows(*buttons, ('⬅️ دسته‌بندی‌ها','v6_home')))
+    await show(update, desc, rows(*buttons, ('🏠 صفحه اصلی','main_menu')))
 
 
 async def diag_menu(update, context):
@@ -146,11 +143,13 @@ async def diag_zip(update, context):
 
 
 def register(app):
+    from workspace_ui import register as register_workspace
+    register_workspace(app)
     app.add_handler(SecureCommandHandler('menu',dashboard),group=0)
     app.add_handler(SecureCommandHandler('doctor',diag_menu),group=0)
     app.add_handler(SecureCallbackQueryHandler(dashboard,pattern=r'^v6_home$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(return_to_section,pattern=r'^v6_return$'),group=0)
-    app.add_handler(SecureCallbackQueryHandler(section,pattern=r'^v6_(servers|configs|monitor|tools|account|admin)$'),group=0)
+    app.add_handler(SecureCallbackQueryHandler(section,pattern=r'^v6_(servers|configs|monitor|tools|settings|account|admin)$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(diag_menu,pattern=r'^v6_diag$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(diag_health,pattern=r'^v6_diag_health$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(background_callback(diag_zip),pattern=r'^v6_diag_zip(?:_agents)?$'),group=0)

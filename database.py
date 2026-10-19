@@ -91,6 +91,10 @@ class Database:
                 raise psycopg2.OperationalError(self._pool_error or "Database pool is not initialized")
             conn = self.pool.getconn()
             cur = conn.cursor(cursor_factory=RealDictCursor)
+            from workspace_service import ACTOR_ID
+            actor = ACTOR_ID.get()
+            if actor:
+                cur.execute("SELECT set_config('sonar.actor',%s,true)",(str(int(actor)),))
             yield conn, cur
         except psycopg2.Error as e:
             logger.error(f"⚠️ Database Error: {e}")
@@ -286,7 +290,26 @@ class Database:
                   AND child.name LIKE replace(replace(parent.name, '%', '\\%'), '_', '\\_') || ' | %' ESCAPE '\\'
                 ORDER BY length(parent.name) DESC, parent.id LIMIT 1
             ) WHERE child.type='sub_item' AND child.parent_sub_id IS NULL""")
+            from workspace_service import SCHEMA, AUDIT_SCHEMA, REDIRECT_SCHEMA
+            cur.execute(SCHEMA)
+            cur.execute(AUDIT_SCHEMA)
+            cur.execute(REDIRECT_SCHEMA)
             conn.commit()
+
+    def workspace_owner(self, user_id):
+        from workspace_service import WorkspaceService
+        return WorkspaceService(self).owner(user_id)
+
+    def workspace_members(self, user_id):
+        from workspace_service import WorkspaceService
+        return WorkspaceService(self).members(user_id)
+
+    def workspace_server_limit(self, user_id):
+        """Member quotas are pooled, but each account subscription remains private."""
+        ids = self.workspace_members(user_id)
+        row = self.execute('SELECT COALESCE(SUM(server_limit),0) AS total FROM users WHERE user_id=ANY(%s)',
+                           (ids,),fetch='one')
+        return max(0,int(row['total'] or 0))
 
     def get_tehran_datetime(self):
         return datetime.now(__import__('zoneinfo').ZoneInfo('Asia/Tehran'))
@@ -434,6 +457,12 @@ class Database:
                   'tunnel_configs','server_stats','settings',
                   'servers','groups','channels')
         with self.get_connection() as (conn, cur):
+            cur.execute('SELECT pg_advisory_xact_lock(641400)')
+            cur.execute('SELECT 1 FROM sonar_workspaces WHERE owner_id=%s AND member_id<>%s LIMIT 1', (owner,owner))
+            if cur.fetchone():
+                raise ValueError('این کاربر مدیر فضای کاری مشترک است؛ حذف او بدون انتقال مدیریت مجاز نیست.')
+            cur.execute('DELETE FROM sonar_workspaces WHERE member_id=%s', (owner,))
+            cur.execute('DELETE FROM sonar_workspace_requests WHERE requester=%s OR target=%s', (owner,owner))
             for table in tables:
                 # Legacy installations may not yet have pro_* schema.
                 cur.execute('SELECT to_regclass(%s) AS relation', ('public.' + table,))
@@ -455,6 +484,7 @@ class Database:
     # ==========================================================================
     
     def get_all_user_servers(self, owner_id):
+        owner_id = self.workspace_owner(owner_id)
         with self. get_connection() as (conn, cur):
             cur.execute('SELECT * FROM servers WHERE owner_id = %s ORDER BY id ASC', (owner_id,))
             return cur.fetchall()
@@ -481,11 +511,13 @@ class Database:
             return cur.fetchone()
 
     def get_server_for_user(self, sid, actor, admin_id=0):
+        actor = self.workspace_owner(actor)
         if int(actor)==int(admin_id) and int(admin_id)>0:
             return self.get_server_by_id(sid)
         return self.execute('SELECT * FROM servers WHERE id=%s AND owner_id=%s', (int(sid),int(actor)),fetch='one')
 
     def add_server(self, owner_id, group_id, data, super_admin_id=0):
+        owner_id = self.workspace_owner(owner_id)
         from core import sec
         
         g_id = group_id if group_id != 0 else None
@@ -497,7 +529,7 @@ class Database:
         current = len(self.get_all_user_servers(owner_id))
         
         if user and owner_id != super_admin_id:
-            if current >= user['server_limit']: 
+            if current >= self.workspace_server_limit(owner_id):
                 return -1
         
         now = self.get_tehran_datetime().strftime('%Y-%m-%d %H:%M:%S')
@@ -528,9 +560,11 @@ class Database:
                 return -2
 
     def delete_server(self, s_id, owner_id):
+        owner_id = self.workspace_owner(owner_id)
         self.execute('DELETE FROM servers WHERE id = %s AND owner_id = %s', (s_id, owner_id))
 
     def activate_monitor_node(self, sid, owner):
+        owner = self.workspace_owner(owner)
         with self.get_connection() as (conn, cur):
             cur.execute('SELECT pg_advisory_xact_lock(535301)')
             cur.execute('SELECT id FROM servers WHERE id=%s AND owner_id=%s FOR UPDATE', (sid, owner))
@@ -621,6 +655,7 @@ class Database:
         return token,row['agent_cert_pem']
 
     def owns_resource(self, table, resource_id, owner_id):
+        owner_id = self.workspace_owner(owner_id)
         if table not in ('servers', 'tunnel_configs', 'groups', 'channels'):
             return False
         return bool(self.execute(
@@ -628,6 +663,7 @@ class Database:
             (int(resource_id), int(owner_id)), fetch='one'))
 
     def update_server_ws_port(self, server_id, ws_port, owner_id):
+        owner_id = self.workspace_owner(owner_id)
         from access_policy import valid_agent_port
         ws_port=valid_agent_port(ws_port)
         with self.get_connection() as (conn,cur):
@@ -642,6 +678,7 @@ class Database:
         return new_state
 
     def get_servers_by_group(self, owner_id, group_id):
+        owner_id = self.workspace_owner(owner_id)
         with self.get_connection() as (conn, cur):
             if group_id == 0:
                 sql = 'SELECT * FROM servers WHERE owner_id = %s AND group_id IS NULL'
@@ -682,6 +719,7 @@ class Database:
             ORDER BY created_at ASC""",(int(server_id),),fetch='all')
 
     def add_group(self, owner_id, name):
+        owner_id = self.workspace_owner(owner_id)
         try:
             self.execute('INSERT INTO groups (owner_id, name) VALUES (%s,%s)', (owner_id, name))
             return True
@@ -689,11 +727,13 @@ class Database:
             return False
 
     def get_user_groups(self, owner_id):
+        owner_id = self.workspace_owner(owner_id)
         with self. get_connection() as (conn, cur):
             cur.execute('SELECT * FROM groups WHERE owner_id = %s', (owner_id,))
             return cur.fetchall()
 
     def delete_group(self, group_id, owner_id):
+        owner_id = self.workspace_owner(owner_id)
         with self.get_connection() as (conn, cur):
             cur.execute('DELETE FROM groups WHERE id = %s AND owner_id = %s', (group_id, owner_id))
             cur.execute('UPDATE servers SET group_id = NULL WHERE group_id = %s AND owner_id = %s', (group_id, owner_id)) 
@@ -704,12 +744,14 @@ class Database:
     # ==========================================================================
     
     def get_setting(self, owner_id, key):
+        owner_id = self.workspace_owner(owner_id)
         with self.get_connection() as (conn, cur):
             cur.execute('SELECT value FROM settings WHERE owner_id = %s AND key = %s', (owner_id, key))
             res = cur.fetchone()
             return res['value'] if res else None
 
     def set_setting(self, owner_id, key, value):
+        owner_id = self.workspace_owner(owner_id)
         with self.get_connection() as (conn, cur):
             cur.execute('''
                 INSERT INTO settings (owner_id, key, value) VALUES (%s, %s, %s) 
@@ -718,17 +760,20 @@ class Database:
             conn.commit()
 
     def get_user_channels(self, owner_id):
+        owner_id = self.workspace_owner(owner_id)
         with self.get_connection() as (conn, cur):
             cur.execute('SELECT * FROM channels WHERE owner_id = %s', (owner_id,))
             return cur.fetchall()
 
     def add_channel(self, owner_id, chat_id, name, usage_type='all', topic_id=0):
+        owner_id = self.workspace_owner(owner_id)
         with self.get_connection() as (conn, cur):
             cur.execute('DELETE FROM channels WHERE owner_id=%s AND usage_type=%s', (owner_id, usage_type))
             cur.execute('INSERT INTO channels (owner_id, chat_id, name, usage_type, topic_id) VALUES (%s,%s,%s,%s,%s)', (owner_id, chat_id, name, usage_type, topic_id))
             conn.commit()
             
     def delete_channel(self, c_id, owner_id):
+        owner_id = self.workspace_owner(owner_id)
         self.execute('DELETE FROM channels WHERE id = %s AND owner_id = %s', (c_id, owner_id))
 
     # ==========================================================================
@@ -797,6 +842,7 @@ class Database:
             return pay['user_id'], plan['name']
 
     def delete_tunnel_config(self, cid, owner_id):
+        owner_id = self.workspace_owner(owner_id)
         self.execute('DELETE FROM tunnel_configs WHERE id = %s AND owner_id = %s', (cid, owner_id))
 
     def apply_referral_reward(self, inviter_id):

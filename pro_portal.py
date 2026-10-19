@@ -51,13 +51,26 @@ async def actor(authorization:str=Header(default='')):
         if not allowed:raise HTTPException(status_code=403,detail='Inactive account')
     except HTTPException:raise
     except Exception:log.exception('Auth database failure');raise HTTPException(status_code=503,detail='Service unavailable')
-    return uid
+    from workspace_service import ACTOR_ID
+    token=ACTOR_ID.set(uid)
+    try:
+        yield uid
+    finally:
+        ACTOR_ID.reset(token)
 
 
 async def guarded(fn,*args,**kwargs):
     try:return await asyncio.to_thread(fn,*args,**kwargs)
     except PermissionError:raise HTTPException(status_code=403,detail='Not authorized')
     except ValueError:raise HTTPException(status_code=400,detail='Invalid request')
+
+
+def shared_owner(uid:int, explicit:int|None=None):
+    """The logged-in account stays private; technical resources route to team."""
+    if explicit is not None and int(explicit)!=int(uid):
+        return int(explicit)
+    route=getattr(store.db,'workspace_owner',None)
+    return int(route(uid)) if callable(route) else int(uid)
 
 
 @app.middleware('http')
@@ -152,17 +165,17 @@ class PreferencesUpdate(BaseModel):
 
 @app.post('/api/favorites')
 async def toggle_fav(body:Favorite,uid:int=Depends(actor)):
-    owner=body.owner or uid
+    owner=shared_owner(uid,body.owner)
     active=await guarded(store.toggle_favorite,uid,owner,body.kind,body.rid)
     return {'favorite':active}
 
 @app.post('/api/incidents/ack')
 async def acknowledge(body:IncidentAction,uid:int=Depends(actor)):
-    return {'acknowledged':await guarded(store.acknowledge,uid,body.owner or uid,body.incident_id)}
+    return {'acknowledged':await guarded(store.acknowledge,uid,shared_owner(uid,body.owner),body.incident_id)}
 
 @app.post('/api/preferences')
 async def set_preferences(body:PreferencesUpdate,uid:int=Depends(actor)):
-    await guarded(store.set_preference,uid,body.owner or uid,body.key,body.value)
+    await guarded(store.set_preference,uid,shared_owner(uid,body.owner),body.key,body.value)
     return {'ok':True}
 
 
@@ -201,7 +214,7 @@ class TeamUpdate(BaseModel):
 
 @app.post('/api/team')
 async def set_team(body:TeamUpdate,uid:int=Depends(actor)):
-    await guarded(store.set_member,uid,body.owner or uid,body.member,body.role)
+    await guarded(store.set_member,uid,shared_owner(uid,body.owner),body.member,body.role)
     return {'ok':True}
 
 
@@ -227,28 +240,28 @@ async def services(uid:int=Depends(actor),owner:int|None=None):
 
 @app.post('/api/services',status_code=201)
 async def add_service(body:ServiceCreate,uid:int=Depends(actor)):
-    sid=await guarded(service_store.create,uid,body.owner or uid,body.name,body.kind,body.target,
+    sid=await guarded(service_store.create,uid,shared_owner(uid,body.owner),body.name,body.kind,body.target,
              body.interval,body.timeout,body.failure_threshold,body.recovery_threshold,body.expected_status)
     return {'id':sid}
 
 @app.put('/api/services/{sid}')
 async def update_service(sid:int,body:ServiceCreate,uid:int=Depends(actor)):
-    await guarded(service_store.update,uid,body.owner or uid,sid,body.name,body.kind,body.target,
+    await guarded(service_store.update,uid,shared_owner(uid,body.owner),sid,body.name,body.kind,body.target,
              body.interval,body.timeout,body.failure_threshold,body.recovery_threshold,body.expected_status)
     return {'ok':True}
 
 @app.post('/api/services/{sid}/enabled')
 async def service_enable(sid:int,body:ServiceAction,uid:int=Depends(actor)):
     if body.enabled is None:raise HTTPException(status_code=400,detail='enabled is required')
-    await guarded(service_store.set_enabled,uid,body.owner or uid,sid,body.enabled)
+    await guarded(service_store.set_enabled,uid,shared_owner(uid,body.owner),sid,body.enabled)
     return {'ok':True}
 
 @app.delete('/api/services/{sid}')
 async def service_delete(sid:int,uid:int=Depends(actor),owner:int|None=None):
-    await guarded(service_store.delete,uid,owner or uid,sid)
+    await guarded(service_store.delete,uid,shared_owner(uid,owner),sid)
     return {'ok':True}
 
 @app.get('/api/services/{sid}/history')
 async def service_history(sid:int,uid:int=Depends(actor),owner:int|None=None,days:int=Query(default=7,ge=1,le=30)):
-    return await guarded(service_store.history,uid,owner or uid,sid,days)
+    return await guarded(service_store.history,uid,shared_owner(uid,owner),sid,days)
 

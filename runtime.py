@@ -47,11 +47,11 @@ async def run_sync(func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     همیشه از این استفاده کنید، نه از run_in_executor(None, ...).
     """
     loop = asyncio.get_running_loop()
-    if kwargs:
-        from functools import partial
-
-        return await loop.run_in_executor(SHARED_EXECUTOR, partial(func, *args, **kwargs))
-    return await loop.run_in_executor(SHARED_EXECUTOR, func, *args)
+    from contextvars import copy_context
+    from functools import partial
+    bound = partial(func, *args, **kwargs)
+    captured = copy_context()
+    return await loop.run_in_executor(SHARED_EXECUTOR, captured.run, bound)
 
 
 async def db_call(func: Callable[..., T], *args: Any, **kwargs: Any) -> T:

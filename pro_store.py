@@ -79,6 +79,7 @@ class ProStore:
     def role(self, user_id, owner_id):
         user_id,owner_id=int(user_id),int(owner_id)
         if user_id==owner_id: return 'owner'
+        if callable(getattr(self.db,'workspace_owner',None)) and self.db.workspace_owner(user_id)==owner_id: return 'manager'
         row=self.db.execute('SELECT role FROM pro_team WHERE owner_id=%s AND member_id=%s',
                             (owner_id,user_id),fetch='one')
         return row['role'] if row else None
@@ -93,7 +94,9 @@ class ProStore:
         return role
 
     def workspace(self, actor, owner=None):
-        owner=int(owner or actor)
+        shared=self.db.workspace_owner(actor) if callable(getattr(self.db,'workspace_owner',None)) else int(actor)
+        owner=int(owner or shared)
+        if owner==int(actor): owner=shared
         self.require(actor,owner)
         # A valid member never overrides a suspended/expired workspace owner.
         # The check is repeated for every resource and write operation.
@@ -274,11 +277,18 @@ class ProStore:
 
     def team(self,actor,owner=None):
         owner=self.workspace(actor,owner)
-        return self.db.execute('SELECT member_id,role,created_at FROM pro_team WHERE owner_id=%s ORDER BY member_id LIMIT 50',(owner,),fetch='all')
+        legacy=self.db.execute('SELECT member_id,role,created_at FROM pro_team WHERE owner_id=%s ORDER BY member_id LIMIT 50',(owner,),fetch='all')
+        members={int(row['member_id']):dict(row) for row in legacy}
+        shared=self.db.execute('SELECT member_id,joined_at FROM sonar_workspaces WHERE owner_id=%s AND member_id<>%s',(owner,owner),fetch='all')
+        for member in shared:
+            members[int(member['member_id'])]={'member_id':member['member_id'],'role':'manager','created_at':member['joined_at']}
+        return list(members.values())[:50]
 
     def set_member(self,actor,owner,member,role):
         self.require(actor,owner)
         if actor != owner: raise PermissionError('Only workspace owner can manage team')
+        if role in ('manager','viewer'):
+            raise ValueError('Invitations require recipient approval. Use the Team wizard.')
         member=int(member)
         if member==owner:raise ValueError('Owner cannot be added as a member')
         if role not in ('manager','viewer','remove'):raise ValueError('Role invalid')

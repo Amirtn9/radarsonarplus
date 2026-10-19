@@ -4,7 +4,7 @@ Only a category slug is stored. No WebSocket/agent settings are referenced.
 Never serialize user credentials into UI state.
 """
 
-CATEGORIES = frozenset(('servers', 'configs', 'monitor', 'tools', 'account', 'admin'))
+CATEGORIES = frozenset(('servers', 'configs', 'monitor', 'tools', 'settings', 'account', 'admin'))
 KEY = '_sonar_navigation_section'
 
 

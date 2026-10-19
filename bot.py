@@ -94,6 +94,9 @@ def main():
         app.job_queue.run_once(cronjobs.startup_whitelist_job, when=15)
         app.job_queue.run_once(cronjobs.send_startup_topic_test, when=10)
         app.job_queue.run_daily(cronjobs.check_expiry_job, time=dt.time(hour=8, minute=30, second=0))
+        from workspace_service import workspace_alert_job
+        app.job_queue.run_repeating(workspace_alert_job, interval=10, first=15,
+                                    job_kwargs={'max_instances':1, 'coalesce':True})
         app.job_queue.run_repeating(cronjobs.auto_scheduler_job, interval=120, first=30)
         app.job_queue.run_repeating(cronjobs.global_monitor_job, interval=60, first=10, job_kwargs={'max_instances':1,'coalesce':True})
         app.job_queue.run_repeating(cronjobs.server_report_job,interval=60,first=45,job_kwargs={'max_instances':1,'coalesce':True})

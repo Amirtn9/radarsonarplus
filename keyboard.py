@@ -41,22 +41,19 @@ def ws_port_confirm_kb() -> InlineKeyboardMarkup:
 
 # --- جایگزین تابع main_menu_kb قبلی شود ---
 def main_menu_kb(user_id, is_monitor_ready, admin_id):
-    """Version 6 grouped home; old callbacks remain available in category pages."""
+    """Beginner-first home: short labels, no duplicate actions."""
     kb = [
-        [InlineKeyboardButton('🖥 سرورها', callback_data='v6_servers'),
-         InlineKeyboardButton('🧩 کانفیگ و اشتراک', callback_data='v6_configs')],
-        [InlineKeyboardButton('📡 مانیتورینگ', callback_data='v6_monitor'),
+        [InlineKeyboardButton('🖥 سرورهای من', callback_data='v6_servers'),
+         InlineKeyboardButton('🧩 کانفیگ‌ها', callback_data='v6_configs')],
+        [InlineKeyboardButton('📡 وضعیت و هشدارها', callback_data='v6_monitor'),
          InlineKeyboardButton('🧰 ابزارها', callback_data='v6_tools')],
-        [InlineKeyboardButton('📊 مرکز حرفه‌ای Pro', callback_data='pro_home')],
-        [InlineKeyboardButton('👤 حساب من', callback_data='v6_account'),
-         InlineKeyboardButton('📚 همه دسته‌بندی‌ها', callback_data='v6_home')],
+        [InlineKeyboardButton('⚙️ تنظیمات', callback_data='v6_settings'),
+         InlineKeyboardButton('👤 حساب و همکاران', callback_data='v6_account')],
     ]
-    webapp = _webapp_button()
-    if webapp:
-        kb.append([webapp])
     if user_id == admin_id and admin_id:
-        kb.insert(0, [InlineKeyboardButton('👑 مرکز مدیریت ربات', callback_data='v6_admin'),
-                      InlineKeyboardButton('🩺 عیب‌یابی', callback_data='v6_diag')])
+        kb.append([InlineKeyboardButton('👑 مدیریت ربات', callback_data='v6_admin')])
+    webapp=_webapp_button()
+    if webapp: kb.append([webapp])
     return InlineKeyboardMarkup(kb)
 
 def account_dashboard_kb():
@@ -167,54 +164,20 @@ def admin_pay_settings_kb(methods):
 # ==============================================================================
 
 def server_detail_kb(sid, server_ip, is_premium, back_callback="list_groups_for_servers"):
-    """منوی مدیریت یک سرور خاص"""
-    # دکمه‌های شرطی
-    btn_clean = InlineKeyboardButton("🧹 پاکسازی دیسک", callback_data=f'act_cleandisk_{sid}')
-    btn_script = InlineKeyboardButton("🛠 اسکریپت", callback_data=f'act_installscript_{sid}') if is_premium else InlineKeyboardButton("🔒 اسکریپت", callback_data=f'act_installscript_{sid}')
-
-    kb = [
-        [
-            InlineKeyboardButton("📊 نمودار", callback_data=f'act_chart_{sid}'),
-            InlineKeyboardButton("🔄 تازه‌سازی", callback_data=f'detail_{sid}')
-        ],
-        [
-            InlineKeyboardButton("🇮🇷 وضعیت شبکه (ایران)", callback_data=f'act_checkhost_{sid}_{server_ip}'),
-            InlineKeyboardButton("🏢 دیتاسنتر", callback_data=f'act_datacenter_{sid}')
-        ],
-        [
-            InlineKeyboardButton("📝 گزارش جامع جهانی", callback_data=f'act_fullreport_{sid}')
-        ],
-        [
-            InlineKeyboardButton("🚀 تست سرعت", callback_data=f'act_speedtest_{sid}'),
-            InlineKeyboardButton("🧹 پاکسازی RAM", callback_data=f'act_clearcache_{sid}')
-        ],
-        [
-            InlineKeyboardButton("⚙️ DNS", callback_data=f'act_dns_{sid}'),
-            InlineKeyboardButton("📥 نصب Speedtest", callback_data=f'act_installspeed_{sid}')
-        ],
-        [
-            InlineKeyboardButton("📦 بروزرسانی Repo", callback_data=f'act_repoupdate_{sid}'),
-            InlineKeyboardButton("💎 ارتقاء کامل", callback_data=f'act_fullupdate_{sid}')
-        ],
-        [
-            InlineKeyboardButton("🧩 نصب/رفع ایجنت", callback_data=f'act_installagent_{sid}'),
-            InlineKeyboardButton("📜 لاگ ایجنت", callback_data=f'act_agentlog_{sid}')
-        ],
-        [
-            InlineKeyboardButton("📅 ویرایش انقضا", callback_data=f'act_editexpiry_{sid}'),
-            InlineKeyboardButton("⚠️ راه‌اندازی مجدد", callback_data=f'act_reboot_{sid}')
-        ],
-        [btn_clean, btn_script],
-        [InlineKeyboardButton("❌ حذف سرور", callback_data=f'act_del_{sid}')],
-        [InlineKeyboardButton("🔙 بازگشت به لیست", callback_data=back_callback)]
-    ]
-    return InlineKeyboardMarkup(kb)
+    """Main server view is intentionally sparse; advanced actions are nested."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('🔄 تازه‌سازی وضعیت', callback_data=f'detail_{sid}')],
+        [InlineKeyboardButton('🧰 ابزارها و تست‌ها', callback_data=f'ui_server_tools_{sid}')],
+        [InlineKeyboardButton('⚙️ تنظیمات سرور', callback_data=f'ui_server_settings_{sid}')],
+        [InlineKeyboardButton('🛠 امکانات پیشرفته', callback_data=f'ui_server_advanced_{sid}')],
+        [InlineKeyboardButton('⬅️ بازگشت به فهرست', callback_data=back_callback)]
+    ])
 
 def add_server_method_kb():
     """انتخاب روش افزودن سرور"""
     kb = [
-        [InlineKeyboardButton("🧙‍♂️ مرحله به مرحله (ویزارد)", callback_data='add_method_step')],
-        [InlineKeyboardButton("⚡️ افزودن سریع (خطی/چندگانه)", callback_data='add_method_linear')],
+        [InlineKeyboardButton("✅ افزودن آسان (پیشنهادی)", callback_data='add_method_step')],
+        [InlineKeyboardButton("⚡️ ورود چند سرور (پیشرفته)", callback_data='add_method_linear')],
         [InlineKeyboardButton("🔙 انصراف", callback_data='cancel_flow')]
     ]
     return InlineKeyboardMarkup(kb)
@@ -223,7 +186,7 @@ def groups_menu_kb(groups):
     """لیست گروه‌ها"""
     kb = [[InlineKeyboardButton(f"🗑 {g['name']}", callback_data=f'delgroup_{g["id"]}')] for g in groups]
     kb.append([InlineKeyboardButton("➕ گروه جدید", callback_data='add_group')])
-    kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data='settings_menu')])
+    kb.append([InlineKeyboardButton("🔙 بخش سرورها", callback_data='v6_servers')])
     return InlineKeyboardMarkup(kb)
 
 def server_list_kb(servers, group_id=None, is_all=False):
@@ -322,31 +285,16 @@ def dashboard_sort_kb(current_sort):
 # ==============================================================================
 
 def settings_main_kb():
-    """منوی اصلی تنظیمات (ویرایش شده: افزودن گزینه‌های جدید و ادغام)"""
-    kb = [
-        # گزینه ادغام شده (جایگزین خودکارسازی و مانیتورینگ قدیم)
-        [
-            InlineKeyboardButton("⏰ زمان‌بندی و هشدارها", callback_data='menu_schedules')
-        ],
-        # 🔧 اضافه‌شده در ۴.۱: مرکز کرون‌جاب یکپارچه (cronjob_hub.py)
-        [
-            InlineKeyboardButton("🗓 مرکز کرون‌جاب‌ها", callback_data='cronjob_hub_main')
-        ],
-        # گزینه‌های منتقل شده از صفحه اصلی
-        [
-            InlineKeyboardButton("📂 گروه‌بندی سرورها", callback_data='groups_menu'),
-            InlineKeyboardButton("⚡️ عملیات همگانی سرورها (فوری)", callback_data='global_ops_menu')
-        ],
-        # گزینه‌های قبلی که دست نخورده‌اند
-        [
-            InlineKeyboardButton("📢 مدیریت کانال‌های ارسال", callback_data='channels_menu')
-        ],
-        [
-            InlineKeyboardButton("📄 دریافت گزارش کلی ✊🏽", callback_data='send_general_report')
-        ],
-        [InlineKeyboardButton("🔙 بازگشت به بخش قبلی", callback_data='v6_return')]
-    ]
-    return InlineKeyboardMarkup(kb)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('⏰ زمان‌بندی و هشدارها',callback_data='menu_schedules')],
+        [InlineKeyboardButton('🗓 کرون‌جاب‌ها',callback_data='cronjob_hub_main')],
+        [InlineKeyboardButton('📢 کانال اعلان‌ها',callback_data='channels_menu')],
+        [InlineKeyboardButton('📂 پوشه‌های سرورها',callback_data='groups_menu')],
+        [InlineKeyboardButton('🧠 محدودیت منابع',callback_data='settings_thresholds')],
+        [InlineKeyboardButton('📄 گزارش کلی',callback_data='send_general_report')],
+        [InlineKeyboardButton('⬅️ تنظیمات',callback_data='v6_settings')]
+    ])
+
 def schedules_settings_kb(srv_alert_icon, srv_toggle, conf_alert_icon, conf_toggle):
     """منوی جدید ادغام شده: زمان‌بندی‌ها + مانیتورینگ (نسخه کامل)"""
     kb = [

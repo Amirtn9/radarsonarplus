@@ -10,6 +10,7 @@ from access_policy import parse_server_action
 from telegram.ext import CallbackQueryHandler, MessageHandler, CommandHandler
 from settings import SUPER_ADMIN_ID
 from database import Database
+from workspace_service import ACTOR_ID
 
 log = logging.getLogger(__name__)
 
@@ -91,7 +92,11 @@ class SecureCallbackQueryHandler(CallbackQueryHandler):
             if update.callback_query:
                 await update.callback_query.answer('⛔ دسترسی مجاز نیست.', show_alert=True)
             return None
-        return await super().handle_update(update, application, check_result, context)
+        token=ACTOR_ID.set(int(update.effective_user.id))
+        try:
+            return await super().handle_update(update, application, check_result, context)
+        finally:
+            ACTOR_ID.reset(token)
 
 
 class SecureMessageHandler(MessageHandler):
@@ -100,7 +105,11 @@ class SecureMessageHandler(MessageHandler):
             if update.effective_message:
                 await update.effective_message.reply_text('⛔ دسترسی مجاز نیست.')
             return None
-        return await super().handle_update(update, application, check_result, context)
+        token=ACTOR_ID.set(int(update.effective_user.id))
+        try:
+            return await super().handle_update(update, application, check_result, context)
+        finally:
+            ACTOR_ID.reset(token)
 
 
 class SecureCommandHandler(CommandHandler):
@@ -109,4 +118,8 @@ class SecureCommandHandler(CommandHandler):
             if update.effective_message:
                 await update.effective_message.reply_text('⛔ دسترسی مجاز نیست.')
             return None
-        return await super().handle_update(update, application, check_result, context)
+        token=ACTOR_ID.set(int(update.effective_user.id))
+        try:
+            return await super().handle_update(update, application, check_result, context)
+        finally:
+            ACTOR_ID.reset(token)

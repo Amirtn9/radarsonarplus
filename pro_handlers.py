@@ -43,7 +43,7 @@ def nav():return [B('⬅️ مرکز Pro',callback_data='pro_home'),B('🏠 بخ
 
 def owned_context(update,context):
     # Workspace switch is an explicit command; default always own workspace.
-    return int(context.user_data.get('pro_workspace') or update.effective_user.id)
+    return int(context.user_data.get('pro_workspace') or store.db.workspace_owner(update.effective_user.id))
 
 async def safe_call(update,context,fn,*args,write=False,**kwargs):
     actor=update.effective_user.id;owner=owned_context(update,context)
@@ -248,7 +248,7 @@ async def team(update,context):
     if rows is None:return
     txt='👥 <b>اعضای فضای کاری</b>\n\n'
     txt+='\n'.join(f'{r["member_id"]}: {e(r["role"])}' for r in rows) or 'شما تنها عضو فضای کاری هستید.'
-    txt+='\n\nفقط مالک می‌تواند اعضا را مدیریت کند:\n<code>/member 123456 viewer</code>\n<code>/member 123456 manager</code>\n<code>/member 123456 remove</code>\n<code>/workspace 123456</code> برای مشاهده فضای کاری دعوت‌شده.'
+    txt+='\n\nبرای افزودن همکار، به «حساب و همکاران ← فضای کاری مشترک» بروید و درخواست دوطرفه بفرستید.\n<code>/workspace 123456</code> برای مشاهده فضای کاری دعوت‌شده.'
     await display(update,txt,kb(nav()))
 
 
