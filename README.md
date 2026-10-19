@@ -1,12 +1,16 @@
-# Sonar Radar Pro v6.3.0
+# Sonar Radar Pro v6.3.1
 
-# 🦇 Sonar Radar Pro V6.3
+# 📡 Sonar Radar Pro V6.3.1
 
-**Version:** `6.3.0` · **Telegram + VPS Agents + Web Panel** · **Status: Release Candidate (not production-certified)**
+**Version:** `6.3.1` · **Telegram + VPS Agents + Web Panel** · **Status: Release Candidate (not production-certified)**
 
 مدیریت VPS، نصب ایجنت رمزنگاری‌شده، تست کانفیگ‌های Xray، مدیریت سابسکریپشن، مانیتورینگ چندنقطه‌ای، هشدارها، بکاپ و عیب‌یابی از طریق تلگرام و پنل وب.
 
 > ⚠️ این کد هنوز روی یک VPS واقعی با Telegram، PostgreSQL و SSH/WSS انتهابه‌انتها آزمایش نشده است. «آمادهٔ نصب آزمایشی» به معنی «آمادهٔ استفاده در محیط تولید» نیست. ابتدا روی **سرور آزمایشی** نصب کنید و نتیجه `--doctor` و `--support` را بررسی کنید.
+
+## ◉ اصلاح ناوبری در 6.3.1
+
+دکمه‌های بازگشت در منوهای اصلی، صفحه‌بندی فهرست کانفیگ‌ها، لغو عملیات و ثبت موفق اکنون به صفحه‌ی مرتبط برمی‌گردند، نه دسته‌بندی سراسری. برای شرح مسیرها و نصب فایل ZIP **همین نسخه**، `RELEASE_6_3_1_FA.md` را بخوانید. فایل‌های Agent و WebSocket دست‌نخورده‌اند.
 
 ## ◉ قابلیت مانیتورینگ جدید در 6.3
 
@@ -50,7 +54,7 @@ chmod +x install.sh
 
 ### نصب از فایل ZIP، بدون GitHub
 
-فایل ZIP منتشرشده را روی سرور تست استخراج و داخل پوشه `radarsonarplus-6.3.0` اجرا کنید:
+فایل ZIP منتشرشده را روی سرور تست استخراج و داخل پوشه `Sonar_Radar_Pro_v6.3.1` اجرا کنید:
 
 ```bash
 bash install.sh --check
@@ -171,7 +175,14 @@ python3 scripts/verify_manifest.py
 python3 -m pytest -q tests
 ```
 
-وابستگی‌های تست در `requirements.txt` و `requirements-web.txt` ثبت شده‌اند. اجرای مجموعه کامل روی محیط فاقد `paramiko` یا `python-telegram-bot` ناقص می‌شود؛ نتیجه را **NOT_TESTED / BLOCKED** تلقی کنید، نه موفقیت. وضعیت دقیق آزمون‌ها در [`QA_V6_RC1_FA.md`](QA_V6_RC1_FA.md) آمده است.
+وابستگی‌های اجرای برنامه در `requirements.txt` و `requirements-web.txt` و وابستگی‌های توسعه و تست در `requirements-dev.txt` ثبت شده‌اند. برای اجرای کامل آزمون‌ها:
+
+```bash
+python3 -m pip install -r requirements.txt -r requirements-web.txt -r requirements-dev.txt
+python3 -m pytest -q
+```
+
+اجرای مجموعه کامل روی محیط فاقد این وابستگی‌ها ناقص می‌شود؛ نتیجه را **NOT_TESTED / BLOCKED** تلقی کنید، نه موفقیت. وضعیت دقیق آزمون‌ها در [`QA_V6_RC1_FA.md`](QA_V6_RC1_FA.md) آمده است.
 
 ## 🔒 امنیت و محدوده تضمین
 

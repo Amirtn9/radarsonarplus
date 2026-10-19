@@ -10,6 +10,7 @@ from secure_handlers import SecureCallbackQueryHandler, SecureCommandHandler
 from settings import SUPER_ADMIN_ID
 from diagnostics import snapshot, build_bundle, collect_agent_journals
 from runtime import background_callback
+from navigation import remember_section, get_section, clear_section, section_parent
 
 
 def rows(*parts):
@@ -49,13 +50,14 @@ MENUS = {
 
 
 async def dashboard(update, context):
+    clear_section(context)
     owner = is_admin(update)
     markup = rows(('🖥 سرورها','v6_servers'),('🧩 کانفیگ و سابسکریپشن','v6_configs'),
                   ('📡 مانیتورینگ و هشدارها','v6_monitor'),('🧰 ابزارها و تنظیمات','v6_tools'),
                   ('👤 حساب کاربری','v6_account'),('🏆 مرکز Pro','pro_home'),
                   *([('👑 مدیریت ربات','v6_admin')] if owner else []),
                   ('🏠 منوی اصلی','main_menu'))
-    await show(update,'🦇 <b>SONAR RADAR • VERSION 6.2</b>\n\nمرکز کنترل یکپارچه سرورها، کانفیگ‌ها، تست‌ها و هشدارها.\nاز دسته‌بندی‌های زیر انتخاب کنید.',markup)
+    await show(update,'📡 <b>SONAR RADAR • Pro 6.3.1</b>\n\nمرکز کنترل یکپارچه سرورها، کانفیگ‌ها، تست‌ها و هشدارها.\nاز دسته‌بندی‌های زیر انتخاب کنید.',markup)
 
 
 async def section(update, context):
@@ -64,8 +66,24 @@ async def section(update, context):
         await update.callback_query.answer('منوی ناشناخته',show_alert=True);return
     if section_name == 'admin' and not is_admin(update):
         await update.callback_query.answer('فقط مدیر اصلی',show_alert=True);return
+    remember_section(context, section_name)
     desc, buttons = MENUS[section_name]
     await show(update,desc,rows(*buttons,('⬅️ دسته‌بندی‌ها','v6_home')))
+
+
+async def return_to_section(update, context):
+    """Return to the category that launched this flow, not the global categories page."""
+    target = get_section(context)
+    if target == 'admin' and not is_admin(update):
+        clear_section(context)
+        target = None
+    if target not in MENUS:
+        # A user may visit a legacy screen via a /command, bypassing a section.
+        from bot_logic import show_main_menu
+        await show_main_menu(update, context)
+        return
+    desc, buttons = MENUS[target]
+    await show(update, desc, rows(*buttons, ('⬅️ دسته‌بندی‌ها','v6_home')))
 
 
 async def diag_menu(update, context):
@@ -131,6 +149,7 @@ def register(app):
     app.add_handler(SecureCommandHandler('menu',dashboard),group=0)
     app.add_handler(SecureCommandHandler('doctor',diag_menu),group=0)
     app.add_handler(SecureCallbackQueryHandler(dashboard,pattern=r'^v6_home$'),group=0)
+    app.add_handler(SecureCallbackQueryHandler(return_to_section,pattern=r'^v6_return$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(section,pattern=r'^v6_(servers|configs|monitor|tools|account|admin)$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(diag_menu,pattern=r'^v6_diag$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(diag_health,pattern=r'^v6_diag_health$'),group=0)

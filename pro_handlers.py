@@ -38,7 +38,7 @@ async def display(update,text,markup=None):
         await update.effective_message.reply_text(text,reply_markup=markup,parse_mode='HTML')
 
 
-def nav():return [B('🏠 خانه',callback_data='main_menu'),B('📊 پیشرفته',callback_data='pro_home')]
+def nav():return [B('⬅️ مرکز Pro',callback_data='pro_home'),B('🏠 بخش اصلی',callback_data='v6_return')]
 
 
 def owned_context(update,context):
@@ -77,7 +77,7 @@ async def home(update,context):
         [B('🧠 تحلیل اختلالات',callback_data='pro_insights'),B('⚙️ قوانین',callback_data='pro_rules')],
         [B('🏷 برچسب‌ها',callback_data='pro_tags'),B('⚙️ تنظیمات هشدار',callback_data='pro_prefs')],
         [B('🔎 جست‌وجو /find',callback_data='pro_find_help'),B('👥 اعضای تیم',callback_data='pro_team')],
-        [B('📜 فعالیت‌ها',callback_data='pro_audit'),B('🏠 منوی اصلی',callback_data='main_menu')],
+        [B('📜 فعالیت‌ها',callback_data='pro_audit'),B('⬅️ بازگشت به بخش قبلی',callback_data='v6_return')],
     ]
     await display(update,text,M(rows))
 
