@@ -50,9 +50,19 @@ async def cancel_handler_func(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.callback_query.answer()
         except:
             pass
-    await safe_edit_message(update, "🚫 **عملیات لغو شد.**")
-    await asyncio.sleep(1)
-    await start(update, context)
+    # Preserve category/list navigation, but wipe transient flow data (SSH
+    # credentials and partially entered authentication/payment fields included).
+    transient = ('srv', 'srv_group_id', 'ssh_candidate', 'temp_link',
+                 'temp_sub_link', 'new_chan', 'iran_ip', 'iran_name',
+                 'iran_port', 'iran_user', 'iran_pass', 'new_pay_addr',
+                 'new_pay_net', 'new_pay_type', 'current_pay_id',
+                 'selected_plan', 'temp_reboot_time', 'term_sid',
+                 'edit_expiry_sid', 'new_uid', 'target_uid',
+                 'agent_install_targets')
+    for key in transient:
+        context.user_data.pop(key, None)
+    await safe_edit_message(update, '🚫 **عملیات لغو شد.**\nمی‌توانید به بخش قبلی بازگردید.',
+        reply_markup=keyboard.back_btn('v6_return', '⬅️ بازگشت به بخش قبلی'))
     return ConversationHandler.END
 
 

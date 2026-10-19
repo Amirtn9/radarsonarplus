@@ -87,8 +87,8 @@ async def process_json_config(update: Update, context: ContextTypes.DEFAULT_TYPE
             conn.commit()
 
         await update.message.reply_text(f"✅ **کانفیگ JSON با موفقیت ثبت شد.**\n🏷 نام: `{name}`")
-        await asyncio.sleep(1)
-        await start(update, context)
+        await update.message.reply_text('📋 مشاهده کانفیگ‌ها:',
+            reply_markup=keyboard.back_btn('tunnel_list_menu', '⬅️ فهرست کانفیگ‌ها'))
         return ConversationHandler.END
 
     except json.JSONDecodeError:
@@ -187,8 +187,8 @@ async def process_sub_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📂 نام مجموعه: `{sub_name}`\n"
                 f"🔢 تعداد ثبت شده: `{count}` کانفیگ"
             )
-            await asyncio.sleep(2)
-            await start(update, context)
+            await update.message.reply_text('📋 مدیریت اشتراک‌ها:',
+                reply_markup=keyboard.back_btn('list_mode_sub', '⬅️ فهرست اشتراک‌ها'))
             return ConversationHandler.END
 
     except Exception as e:

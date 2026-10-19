@@ -13,15 +13,24 @@ from runtime import spawn_background
 async def groups_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     groups = db.get_user_groups(update.effective_user.id)
     reply_markup = keyboard.groups_menu_kb(groups)
-    await safe_edit_message(update, "📂 Groups:", reply_markup=reply_markup)
+    await safe_edit_message(update, "📂 **مدیریت گروه‌های سرورها**\nبرای افزودن گروه جدید یا حذف گروه موجود انتخاب کنید.", reply_markup=reply_markup)
 
 async def add_group_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await safe_edit_message(update, "📝 Name:", reply_markup=keyboard.get_cancel_markup())
+    await safe_edit_message(update, "📝 **نام گروه جدید را وارد کنید:**", reply_markup=keyboard.get_cancel_markup())
     return GET_GROUP_NAME
 
 async def get_group_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    db.add_group(update.effective_user.id, update.message.text)
-    await start(update, context)
+    name = (update.message.text or '').strip()
+    if not name or len(name) > 80:
+        await update.message.reply_text('❌ نام گروه باید بین ۱ تا ۸۰ نویسه باشد.')
+        return GET_GROUP_NAME
+    if not db.add_group(update.effective_user.id, name):
+        await update.message.reply_text('⚠️ این نام گروه قبلاً ثبت شده؛ نام دیگری وارد کنید.')
+        return GET_GROUP_NAME
+    await update.message.reply_text('✅ گروه ثبت شد. برای ادامه، مدیریت گروه‌ها را باز کنید.',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('📂 مدیریت گروه‌ها', callback_data='groups_menu')],
+            [InlineKeyboardButton('⬅️ بخش قبلی', callback_data='v6_return')]]))
     return ConversationHandler.END
 
 async def delete_group_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1212,7 +1221,8 @@ async def _complete_server_add(update, context):
     saved['_activate_monitor_node']=bool(data.get('_activate_monitor_node'))
     for key in ('srv','srv_group_id','ssh_candidate'):
         context.user_data.pop(key,None)
-    await status.edit_text(f'✅ اتصال SSH تأیید و سرور ثبت شد.\n⏳ نصب ایجنت روی پورت {data["ws_port"]} در پس‌زمینه ادامه دارد.')
+    await status.edit_text(f'✅ اتصال SSH تأیید و سرور ثبت شد.\n⏳ نصب ایجنت روی پورت {data["ws_port"]} در پس‌زمینه ادامه دارد.',
+        reply_markup=keyboard.back_btn('v6_return', '⬅️ بخش سرورها'))
     spawn_background(context,_install_saved_server(context,uid,saved,status),name=f'agent-add-{sid}')
     return ConversationHandler.END
 
@@ -1251,7 +1261,9 @@ async def _install_saved_server(context, uid, server, message):
             await run_sync(db.activate_monitor_node,server['id'],uid)
         await run_sync(db.update_server_error,server['id'],'' if ok else str(detail))
         await message.edit_text(('✅ نصب و اتصال ایجنت تأیید شد.\n' if ok else '⚠️ سرور ثبت شده، اما ایجنت آماده نشد.\n')+str(detail)[:2200],
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🖥 جزئیات سرور',callback_data=f'detail_{server["id"]}')]]))
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('🖥 جزئیات سرور',callback_data=f'detail_{server["id"]}')],
+                [InlineKeyboardButton('⬅️ بخش سرورها', callback_data='v6_return')]]))
     except asyncio.CancelledError:
         raise
     except Exception as exc:

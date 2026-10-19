@@ -95,7 +95,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         overview = "📊 آمار شبکه موقتاً در دسترس نیست"
 
-    txt = ("📡 *SONAR RADAR | Pro 6.2*\n"
+    txt = ("📡 *SONAR RADAR | Pro 6.3.1*\n"
            "━━━━━━━━━━━━━━━━━━━━\n"
            f"👤 اعتبار حساب: `{remaining}`\n{overview}\n"
            "━━━━━━━━━━━━━━━━━━━━\n"
@@ -107,6 +107,8 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(txt, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from navigation import clear_section
+    clear_section(context)
     await show_main_menu(update, context)
 
 async def user_profile_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):

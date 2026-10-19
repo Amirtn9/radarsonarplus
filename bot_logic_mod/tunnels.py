@@ -47,14 +47,6 @@ async def tunnel_list_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.callback_query.message.reply_text("❌ خطایی در نمایش منو رخ داد. لطفاً دوباره تلاش کنید.")
             except: pass
 
-    except Exception as e:
-        # اگر هر خطایی رخ بده اینجا چاپ میشه
-        logger.error(f"❌ ERROR in tunnel_list_menu: {e}")
-        logger.error(traceback.format_exc()) # چاپ ریز مکالمات خطا
-        
-        # یه پیام هم به کاربر نشون میدیم که بفهمه خراب شده
-        if update.callback_query:
-            await update.callback_query.message.reply_text(f"❌ خطا در بخش مدیریت کانفیگ:\n{e}")
 async def perform_fast_scan(context, uid, mode):
     """تست سریع کانفیگ‌ها قبل از نمایش لیست"""
     # تعیین نوع کانفیگ برای اسکن
@@ -125,6 +117,11 @@ async def show_tunnels_by_mode(update: Update, context: ContextTypes.DEFAULT_TYP
     target_data = custom_data if custom_data else query.data
     data_parts = target_data.split('_')
     mode = data_parts[2] # single, sub, all
+    if mode not in ('single', 'sub', 'all'):
+        await query.answer('فهرست نامعتبر', show_alert=True)
+        return
+    if not custom_data:
+        context.user_data['last_config_list_route'] = query.data
     uid = update.effective_user.id
     
     # لاجیک صفحه بندی
@@ -204,6 +201,7 @@ async def manage_single_sub_menu(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     data_parts = query.data.split('_')
     sub_id = int(data_parts[2])
+    context.user_data['last_config_list_route'] = query.data
     
     page = 1
     if len(data_parts) > 3 and data_parts[3].isdigit():
@@ -742,7 +740,8 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
         report = f"❌ خطای سیستمی در اجرای تست:\n`{e}`"
 
     # استفاده از ماژول کیبورد
-    reply_markup = keyboard.config_test_result_kb(cid)
+    reply_markup = keyboard.config_test_result_kb(
+        cid, context.user_data.get('last_config_list_route', 'tunnel_list_menu'))
     
     await safe_edit_message(update, report, reply_markup=reply_markup, parse_mode='Markdown')
 async def view_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -786,8 +785,10 @@ async def delete_config_action(update: Update, context: ContextTypes.DEFAULT_TYP
 
     db.delete_tunnel_config(cid, uid)
 
-    await query.answer("✅ کانفیگ حذف شد.")
-    await tunnel_list_menu(update, context)
+    await query.answer('✅ کانفیگ حذف شد.')
+    route = context.user_data.get('last_config_list_route', 'tunnel_list_menu')
+    await safe_edit_message(update, '✅ کانفیگ حذف شد. به فهرست قبلی بازگردید.',
+        reply_markup=keyboard.back_btn(route, '⬅️ بازگشت به فهرست'))
 # ==============================================================================
 # 🧩 MISSING FUNCTIONS (ADDED TO FIX CRASH)
 # ==============================================================================
@@ -953,7 +954,10 @@ async def show_config_details(update: Update, context: ContextTypes.DEFAULT_TYPE
     # پیدا کردن والد (Parent) برای دکمه بازگشت در صورت ساب‌دامین بودن
     parent_id = None
     if cfg['type'] == 'sub_item':
-        if " | " in cfg['name']:
+        # Prefer the actual foreign key, since imported items may not have a
+        # subscription name prefix and names are not globally unique.
+        parent_id = cfg.get('parent_sub_id') or None
+        if not parent_id and " | " in cfg['name']:
             sub_name = cfg['name'].split(" | ")[0]
             with db.get_connection() as (conn, cur):
                 cur.execute("SELECT id FROM tunnel_configs WHERE name=%s AND type='sub_source' AND owner_id=%s", (sub_name,update.effective_user.id))
@@ -974,7 +978,8 @@ async def show_config_details(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"📅 تاریخ ثبت: `{cfg['added_at']}`"
     )
 
-    reply_markup = keyboard.config_detail_kb(cid, parent_id)
+    reply_markup = keyboard.config_detail_kb(cid, parent_id,
+        context.user_data.get('last_config_list_route', 'tunnel_list_menu'))
     await safe_edit_message(update, txt, reply_markup=reply_markup)
 
 
@@ -1373,9 +1378,9 @@ async def perform_manual_ping(update: Update, context: ContextTypes.DEFAULT_TYPE
     if ok:
         # استفاده از فرمت‌دهی موجود در StatsManager
         res = StatsManager.format_check_host_results(data)
-        await msg.edit_text(res, parse_mode='Markdown')
+        await msg.edit_text(res, parse_mode='Markdown', reply_markup=keyboard.back_btn('v6_return', '⬅️ بازگشت به ابزارها'))
     else:
-        await msg.edit_text(f"❌ خطا در دریافت اطلاعات: {data}")
+        await msg.edit_text(f"❌ خطا در دریافت اطلاعات: {data}", reply_markup=keyboard.back_btn('v6_return', '⬅️ بازگشت به ابزارها'))
     return ConversationHandler.END
 
 async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
