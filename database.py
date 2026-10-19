@@ -504,8 +504,12 @@ class Database:
         loc = data.get('location_type', 'ext')
         
         password = data['password']
-        if password and not password.startswith('gAAAAAB'):
-            password = sec.encrypt(password)
+        if password:
+            from cryptography.fernet import InvalidToken
+            try:
+                sec.cipher.decrypt(password.encode('utf-8'))
+            except (InvalidToken, ValueError, TypeError):
+                password = sec.encrypt(password)
         
         with self.get_connection() as (conn, cur):
             try:

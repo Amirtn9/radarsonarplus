@@ -277,7 +277,8 @@ class WebSocketPool:
                 async with self._global_lock:
                     self._counts[key] = max(0, self._counts.get(key, 1) - 1)
                     waiting = self._queues.get(key)
-                    if waiting is not None:
+                    if waiting is not None and getattr(waiting, '_getters', None):
+                        # Wake only active waiters; never accumulate stale sentinels.
                         waiting.put_nowait(None)
                 raise
 
@@ -320,8 +321,8 @@ class WebSocketPool:
         async with self._global_lock:
             self._counts[conn.key] = max(0, self._counts.get(conn.key, 1) - 1)
             queue = self._queues.get(conn.key)
-            if queue is not None:
-                queue.put_nowait(None)  # Wake a waiter when failed capacity becomes available.
+            if queue is not None and getattr(queue, '_getters', None):
+                queue.put_nowait(None)  # Wake an active waiter without leaving stale sentinels.
 
     async def _connect(self, key: Key) -> _Conn:
         if websockets is None:

@@ -68,6 +68,7 @@ async def home(update,context):
           f'🚨 رخدادهای باز: <b>{data["incidents"]}</b>\n'
           f'🕒 آخرین تست جدید: {e(data["last_test_at"] or "هنوز ثبت نشده")}\n'
           '━━━━━━━━━━━━━━━━━━━━\n'
+          'مانیتورینگ سرویس‌های HTTP/TCP: دستور /uptime\n'
           'از دکمه‌های زیر برای مشاهده جزئیات استفاده کنید.')
     rows=[
         [B('🖥 سرورها',callback_data='pro_list_server_1'),B('🧩 کانفیگ‌ها',callback_data='pro_list_config_1')],

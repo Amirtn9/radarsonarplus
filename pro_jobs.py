@@ -169,5 +169,8 @@ async def digest_job(context):
     finally:_RUNNING.remove('digest')
 
 async def cleanup_job(context):
-    try:await asyncio.to_thread(store.cleanup)
+    try:
+        await asyncio.to_thread(store.cleanup)
+        from service_monitor import ServiceStore
+        await asyncio.to_thread(ServiceStore(store).cleanup)
     except Exception:log.exception('Pro retention cleanup failed')

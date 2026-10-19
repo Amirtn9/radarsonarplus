@@ -85,6 +85,8 @@ def main():
     # ✅ ثبت تمام هندلرها از فایل دیسپچر
     # این خط حیاتی است: تمام دکمه‌ها و دستورات اینجا لود می‌شوند
     register_all_handlers(app)
+    from service_bot import register as register_service_handlers
+    register_service_handlers(app)
 
     # راه‌اندازی جاب‌ها (Job Queue)
     if app.job_queue:
@@ -105,6 +107,9 @@ def main():
         app.job_queue.run_repeating(digest_job, interval=3600, first=360,
                                     job_kwargs={'max_instances': 1, 'coalesce': True})
         app.job_queue.run_daily(cleanup_job, time=dt.time(hour=3, minute=0))
+        from service_jobs import service_check_job
+        app.job_queue.run_repeating(service_check_job, interval=30, first=35,
+                                    job_kwargs={'max_instances':1,'coalesce':True})
     else:
         logger.error("JobQueue not available.")
 

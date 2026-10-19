@@ -1,5 +1,11 @@
 # Changelog
 
+## 6.3.0 · Service uptime integration
+
+- Added opt-in per-workspace HTTP/HTTPS and TCP monitoring, durable incident history, probe hysteresis, tenant-safe REST API, Telegram commands and Mini App controls.
+- Added SSRF protections and pinned-DNS connections; no redirects, private addresses blocked by default.
+- Added schema readiness check, sanitized probe errors, explicit expiry messaging and packaging integrity improvements.
+
 ## 6.1.0-rc.1 · 2026-10-17
 
 **Release packaging and consistency**

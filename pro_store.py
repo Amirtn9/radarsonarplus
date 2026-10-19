@@ -61,6 +61,10 @@ def install_schema(db=None):
             cur.execute(stmt)
         cur.execute('INSERT INTO pro_migrations(version) VALUES (5) ON CONFLICT DO NOTHING')
         conn.commit()
+    from service_monitor import install_schema as install_service_schema
+    install_service_schema(db)
+    from service_monitor import install_schema as install_service_schema
+    install_service_schema(db)
 
 
 def _resource_table(kind):
@@ -114,10 +118,14 @@ class ProStore:
                 FROM tunnel_configs WHERE owner_id=%s AND type IN ('single','sub_item','json')""",(owner,)); configs=cur.fetchone()
             cur.execute("SELECT COUNT(*) n FROM pro_incidents WHERE owner_id=%s AND status<>'resolved'",(owner,))
             inc=cur.fetchone()['n']
+            cur.execute("""SELECT COUNT(*) total, COUNT(*) FILTER(WHERE status='up') up,
+                COUNT(*) FILTER(WHERE status='down') down,
+                COUNT(*) FILTER(WHERE status='paused') paused FROM pro_services WHERE owner_id=%s""",(owner,))
+            services=cur.fetchone()
             cur.execute("SELECT MAX(measured_at) last FROM pro_metrics WHERE owner_id=%s",(owner,))
             stamp=cur.fetchone()['last']
         return {'owner_id':owner,'servers':dict(servers),'configs':dict(configs),
-                'incidents':inc,'last_test_at':stamp.isoformat() if stamp else None}
+                'incidents':inc,'services':dict(services),'last_test_at':stamp.isoformat() if stamp else None}
 
     def list_resources(self,actor,kind,owner=None,term='',tag=None,favorites=False,page=1,per_page=12):
         owner=self.workspace(actor,owner)

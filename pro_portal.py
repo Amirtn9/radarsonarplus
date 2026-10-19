@@ -9,6 +9,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from datetime import timezone
 from functools import lru_cache
 from fastapi import FastAPI, Depends, HTTPException, Header, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -19,12 +20,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from pro_auth import verify_init_data
 from pro_store import ProStore
+from service_monitor import ServiceStore
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
-app=FastAPI(title='Sonar Radar Pro V6',docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='Sonar Radar Pro V6.3',docs_url=None,redoc_url=None,openapi_url=None)
 app.mount('/static',StaticFiles(directory=BASE/'pro_web'/'static'),name='static')
 store=ProStore()
+service_store=ServiceStore(store)
 
 
 @lru_cache(maxsize=1)
@@ -80,9 +83,12 @@ async def readiness():
     # Readiness is distinct from liveness: execute a real bounded DB query.
     def check():
         with store.db.get_connection() as (_connection,cursor):
-            cursor.execute('SELECT 1 AS ok')
+            # A standalone web process must not claim readiness with missing schema.
+            cursor.execute("SELECT to_regclass('public.pro_preferences') AS prefs,"
+                           " to_regclass('public.pro_services') AS services,"
+                           " to_regclass('public.pro_service_history') AS history")
             row=cursor.fetchone()
-            return bool(row and (row['ok'] if isinstance(row,dict) else row[0])==1)
+            return bool(row and row['prefs'] and row['services'] and row['history'])
     try:
         success=bool(get_bot_token()) and await asyncio.wait_for(asyncio.to_thread(check),timeout=5)
     except Exception:
@@ -108,7 +114,7 @@ async def server_resources(server_id:int,uid:int=Depends(actor),owner:int|None=N
         server=store.db.execute('SELECT id,name FROM servers WHERE id=%s AND owner_id=%s',(server_id,workspace),fetch='one')
         if not server:raise ValueError('Server not found')
         rows=store.db.execute("SELECT cpu,ram,created_at FROM server_stats WHERE server_id=%s AND created_at >= NOW()-INTERVAL '24 hours' ORDER BY created_at DESC LIMIT 288",(server_id,),fetch='all')
-        return {'server':dict(server),'samples':[{'cpu':r['cpu'],'ram':r['ram'],'time':r['created_at'].isoformat() if r['created_at'] else None} for r in reversed(rows)],'temperature':None,'network':None, 'retention_hours':24}
+        return {'server':dict(server),'samples':[{'cpu':r['cpu'],'ram':r['ram'],'time':(r['created_at'].replace(tzinfo=timezone.utc) if r['created_at'].tzinfo is None else r['created_at']).isoformat() if r['created_at'] else None} for r in reversed(rows)],'temperature':None,'network':None, 'retention_hours':24}
     return await guarded(read)
 
 @app.get('/api/rankings')
@@ -185,7 +191,7 @@ async def diagnostic_bundle(uid:int=Depends(actor)):
     except Exception:
         log.exception('Diagnostic report failed')
         raise HTTPException(status_code=503,detail='Diagnostic report unavailable')
-    return FileResponse(path,media_type='application/zip',filename='sonar-v6-support.zip',
+    return FileResponse(path,media_type='application/zip',filename='sonar-v6.3-support.zip',
                         background=BackgroundTask(path.unlink,missing_ok=True))
 
 class TeamUpdate(BaseModel):
@@ -197,3 +203,52 @@ class TeamUpdate(BaseModel):
 async def set_team(body:TeamUpdate,uid:int=Depends(actor)):
     await guarded(store.set_member,uid,body.owner or uid,body.member,body.role)
     return {'ok':True}
+
+
+# Uptime monitoring: all resource access is owner scoped and manager writes are required.
+class ServiceCreate(BaseModel):
+    name:str=Field(min_length=1,max_length=120)
+    kind:str
+    target:str=Field(min_length=1,max_length=1024)
+    interval:int=Field(default=60,ge=60,le=3600)
+    timeout:int=Field(default=5,ge=1,le=15)
+    failure_threshold:int=Field(default=2,ge=1,le=5)
+    recovery_threshold:int=Field(default=1,ge=1,le=5)
+    expected_status:int|None=Field(default=None,ge=200,le=599)
+    owner:int|None=None
+
+class ServiceAction(BaseModel):
+    owner:int|None=None
+    enabled:bool|None=None
+
+@app.get('/api/services')
+async def services(uid:int=Depends(actor),owner:int|None=None):
+    return await guarded(service_store.list,uid,owner)
+
+@app.post('/api/services',status_code=201)
+async def add_service(body:ServiceCreate,uid:int=Depends(actor)):
+    sid=await guarded(service_store.create,uid,body.owner or uid,body.name,body.kind,body.target,
+             body.interval,body.timeout,body.failure_threshold,body.recovery_threshold,body.expected_status)
+    return {'id':sid}
+
+@app.put('/api/services/{sid}')
+async def update_service(sid:int,body:ServiceCreate,uid:int=Depends(actor)):
+    await guarded(service_store.update,uid,body.owner or uid,sid,body.name,body.kind,body.target,
+             body.interval,body.timeout,body.failure_threshold,body.recovery_threshold,body.expected_status)
+    return {'ok':True}
+
+@app.post('/api/services/{sid}/enabled')
+async def service_enable(sid:int,body:ServiceAction,uid:int=Depends(actor)):
+    if body.enabled is None:raise HTTPException(status_code=400,detail='enabled is required')
+    await guarded(service_store.set_enabled,uid,body.owner or uid,sid,body.enabled)
+    return {'ok':True}
+
+@app.delete('/api/services/{sid}')
+async def service_delete(sid:int,uid:int=Depends(actor),owner:int|None=None):
+    await guarded(service_store.delete,uid,owner or uid,sid)
+    return {'ok':True}
+
+@app.get('/api/services/{sid}/history')
+async def service_history(sid:int,uid:int=Depends(actor),owner:int|None=None,days:int=Query(default=7,ge=1,le=30)):
+    return await guarded(service_store.history,uid,owner or uid,sid,days)
+
