@@ -1,0 +1,31 @@
+/* Sonar 6.5.1 console extensions, built on existing dashboard theme. */
+#server-detail .panel,#config-detail .panel{margin:15px 0}
+.detail-header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:8px 0 14px;flex-wrap:wrap}
+.btn-back{font-weight:650;background:var(--surface2);border:1px solid var(--outline)}
+.soft-tag{padding:7px 13px;background:var(--surface2);color:var(--sub);border-radius:99px;font-size:11px}
+.console-record-title{display:flex;align-items:center;gap:15px;margin:5px 0 25px}
+.console-record-emoji{font-size:29px;padding:10px;border-radius:16px;background:var(--surface2)}
+.console-record-title h2{margin:0;overflow-wrap:anywhere}
+.console-record-title p{margin:4px 0 0}
+.console-details-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:14px 0}
+.console-detail-cell{display:flex;flex-direction:column;gap:10px;min-width:0;padding:16px;border:1px solid var(--outline);background:var(--surface2);border-radius:16px}
+.console-detail-cell span{font-size:12px}
+.console-detail-cell strong{font-size:15px;line-height:1.5;overflow-wrap:anywhere;direction:auto;unicode-bidi:plaintext}
+#detail-chart{width:100%;height:auto;display:block;border:1px solid var(--outline);border-radius:14px;max-height:300px}
+#detail-chart-status{margin-top:12px;font-size:12px}
+.info-strip{margin-top:15px;border:1px solid var(--outline);padding:13px 16px;border-radius:13px;background:var(--surface2);color:var(--sub);line-height:1.8}
+.console-timeline-item{display:flex;align-items:flex-start;gap:12px;border-bottom:1px solid var(--outline);padding:10px 0}
+.console-timeline-item:last-child{border-bottom:0}
+.console-timeline-point{color:var(--accent)}
+.console-timeline-item strong{display:block;font-size:14px}
+.console-timeline-item small{display:block;margin-top:5px;color:var(--sub)}
+#recent-activity{margin:8px 0}
+#team-form[hidden]{display:none!important}
+@media(max-width:640px){.console-details-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.console-detail-cell{padding:12px}.console-detail-cell strong{font-size:13px}}
+@media(prefers-reduced-motion:reduce){.view.active,.item,#toast{animation:none!important;transition:none!important}}
+
+.filter-tools{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin:15px 0;color:var(--sub)}
+.filter-tools[hidden]{display:none}
+.filter-tools label{display:flex;align-items:center;gap:7px;cursor:pointer}
+.filter-tools input{accent-color:#0a84ff}
+#rule-form select{background:var(--surface2);color:var(--text);border:1px solid var(--outline);border-radius:10px;padding:10px}

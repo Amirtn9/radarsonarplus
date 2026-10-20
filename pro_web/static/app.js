@@ -3,8 +3,8 @@
 const tg=window.Telegram?.WebApp;
 const auth=tg?.initData||'';
 const $=id=>document.getElementById(id);
-const state={tab:'overview',index:1,search:'',admin:false,listingRequest:0,resourceRequest:0};
-const titles={overview:'داشبورد',servers:'مدیریت سرورها',configs:'کانفیگ و اشتراک',rankings:'رتبه‌بندی کیفیت',incidents:'مرکز رخدادها',team:'اعضای تیم',audit:'فعالیت‌ها',settings:'تنظیمات',support:'مرکز عیب‌یابی',services:'مانیتورینگ سرویس‌ها'};
+const state={tab:'overview',index:1,search:'',admin:false,listingRequest:0,resourceRequest:0,onlyFavorites:false};
+const titles={overview:'داشبورد',servers:'مدیریت سرورها',configs:'کانفیگ و اشتراک',rankings:'رتبه‌بندی کیفیت',incidents:'مرکز رخدادها',team:'اعضای تیم',audit:'فعالیت‌ها',settings:'تنظیمات',support:'مرکز عیب‌یابی',services:'مانیتورینگ سرویس‌ها',channels:'کانال‌های اعلان', 'server-detail':'جزئیات سرور','config-detail':'جزئیات کانفیگ'};
 const elem=(tag,text,cl)=>{const el=document.createElement(tag);if(text!=null)el.textContent=String(text);if(cl)el.className=cl;return el;};
 function toast(text){$('toast').textContent=text;$('toast').classList.add('visible');clearTimeout(toast.delay);toast.delay=setTimeout(()=>$('toast').classList.remove('visible'),4000);}
 async function request(path,options={}){
@@ -27,12 +27,15 @@ function tabClick(name){if(!Object.prototype.hasOwnProperty.call(titles,name)||(
   document.querySelector?.('.workspace')?.scrollIntoView({block:'start',behavior:'instant'});
   const pages=['servers','configs','rankings','incidents'];
   if(pages.includes(name))loadList();
-  if(name==='overview'){summary().catch(e=>toast(e.message));loadResourceServers();}
+  if(name==='overview'){summary().catch(e=>toast(e.message));loadResourceServers();window.SonarConsole?.loadRecent();}
   if(name==='services')loadServices();
   if(name==='team')loadTeam();
   if(name==='audit')loadAudit();
   if(name==='settings')loadPreferences();
   if(name==='support')loadHealth();
+  if(name==='channels')window.SonarConsole?.loadChannels();
+  if(name==='server-detail')window.SonarConsole?.loadServer();
+  if(name==='config-detail')window.SonarConsole?.loadConfig();
 }
 function statusText(item){const raw=String(item.last_status||'Unknown');return raw.length<70?raw:raw.slice(0,67)+'…';}
 function rowItem(item){const root=elem('article',null,'item'),detail=elem('div'),name=elem('strong',item.name||item.title||item.kind||'بدون نام');detail.append(name);
@@ -44,12 +47,13 @@ function rowItem(item){const root=elem('article',null,'item'),detail=elem('div')
  detail.append(elem('small',subtitle));root.append(detail);
  const controls=elem('div',null,'tools');
  if(['servers','configs'].includes(state.tab)){const b=elem('button',item.favorite?'★':'☆');b.setAttribute('aria-label','تغییر علاقه‌مندی');b.onclick=async()=>{try{const v=await jsonPost('/api/favorites',{kind:state.tab==='servers'?'server':'config',rid:item.id});item.favorite=v.favorite;b.textContent=v.favorite?'★':'☆';toast('علاقه‌مندی ذخیره شد');}catch(e){toast(e.message);}};controls.append(b);}
+ if(['servers','configs'].includes(state.tab)){const tag=elem('button','🏷 برچسب');tag.setAttribute('aria-label','افزودن برچسب');tag.onclick=async()=>{const value=prompt('برچسب کوتاه بنویسید (حداکثر ۳۲ کاراکتر):');if(!value)return;try{await jsonPost('/api/console/tags',{kind:state.tab==='servers'?'server':'config',rid:item.id,tag:value.trim()});toast('برچسب ذخیره شد');}catch(e){toast(e.message);}};controls.append(tag);const details=elem('button','جزئیات');details.className='primary';details.onclick=()=>window.SonarConsole?.openDetails(state.tab==='servers'?'server':'config',item.id);controls.append(details);}
  if(state.tab==='rankings'){controls.append(elem('strong',`${item.score??0}/100`,'score'));const b=elem('button','📈 نمودار');b.onclick=()=>drawTrend(item);controls.append(b);}
  if(state.tab==='incidents'&&item.status==='open'){const b=elem('button','تأیید مشاهده');b.onclick=async()=>{try{await jsonPost('/api/incidents/ack',{incident_id:item.id});await loadList();}catch(e){toast(e.message);}};controls.append(b);}
  root.append(controls);return root;
 }
 async function loadList(){const requestId=++state.listingRequest,tab=state.tab,page=state.index,search=state.search;const host=$('list-content');host.replaceChildren(elem('p','در حال دریافت اطلاعات...','muted'));
- const title=titles[tab];$('list-title').textContent=title;$('list-subtitle').textContent='اطلاعات ثبت‌شده در سیستم';$('search').hidden=!['servers','configs'].includes(tab);
+ const title=titles[tab];$('list-title').textContent=title;$('list-subtitle').textContent='اطلاعات ثبت‌شده در سیستم';$('search').hidden=!['servers','configs'].includes(tab);const ftools=document.querySelector?.('.filter-tools');if(ftools)ftools.hidden=!['servers','configs'].includes(tab);
  $('prev').disabled=state.index===1;
  try{
  let url='';if(['servers','configs'].includes(tab)){url=`/api/resources/${tab==='servers'?'server':'config'}?page=${page}&q=${encodeURIComponent(search)}`;}
@@ -78,10 +82,12 @@ const samples=vals.map(x=>Number(x.ping)),max=Math.max(...samples,100)*1.1;ctx.s
 $('refresh').onclick=()=>{tabClick(state.tab);};
 document.querySelectorAll('.navbtn').forEach(b=>b.addEventListener('click',()=>tabClick(b.dataset.tab)));
 document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>tabClick(b.dataset.go)));
+$('only-favorites')?.addEventListener('change', e=>{state.onlyFavorites=e.target.checked;state.index=1;if(['servers','configs'].includes(state.tab))loadList();});
 $('prev').onclick=()=>{if(state.index>1){state.index--;loadList();}};$('next').onclick=()=>{if(!$('next').disabled){state.index++;loadList();}};
 let searchDebounce;$('search').addEventListener('input',event=>{clearTimeout(searchDebounce);searchDebounce=setTimeout(()=>{state.search=event.target.value;state.index=1;loadList();},300);});
-$('team-form').onsubmit=async e=>{e.preventDefault();try{await jsonPost('/api/team',{member:Number($('member-id').value),role:$('member-role').value});toast('دسترسی بروزرسانی شد');loadTeam();}catch(err){toast(err.message);}};
+if($('team-form'))$('team-form').onsubmit=async e=>{e.preventDefault();try{await jsonPost('/api/team',{member:Number($('member-id').value),role:$('member-role').value});toast('دسترسی بروزرسانی شد');loadTeam();}catch(err){toast(err.message);}};
 for(const key of ['daily_digest','multi_probe'])$(key).onchange=async e=>{try{await jsonPost('/api/preferences',{key,value:e.target.checked});toast('تنظیمات ذخیره شد');}catch(err){e.target.checked=!e.target.checked;toast(err.message);}};
+$('rule-form')?.addEventListener('submit',async e=>{e.preventDefault();const btn=e.submitter;if(btn)btn.disabled=true;try{await jsonPost('/api/console/rules',{event:$('rule-event').value,action:$('rule-action').value,enabled:$('rule-enabled').value==='true'});toast('قانون ثبت شد');await loadPreferences();}catch(err){toast(err.message);}finally{if(btn)btn.disabled=false;}});
 $('health-btn').onclick=loadHealth;$('download-btn').onclick=supportZip;$('trend-close').onclick=()=>$('trend').close();
 async function boot(){if(tg){tg.ready();tg.expand();if(document.documentElement?.dataset)document.documentElement.dataset.theme=tg.colorScheme==='light'?'light':'dark';tg.onEvent?.('themeChanged',()=>{if(document.documentElement?.dataset)document.documentElement.dataset.theme=tg.colorScheme==='light'?'light':'dark';});}try{const me=await request('/api/me');state.admin=!!me.admin;$('admin-tab').hidden=!me.admin;setStatus('متصل');tabClick('overview');}catch(e){setStatus('اتصال ناموفق',false);toast(e.message);$('last-test').textContent=e.message;}}
 boot();

@@ -562,16 +562,16 @@ def test_server_wizard_preserves_custom_port_for_background_install():
 
 
 def test_monitor_job_persists_down_streak_and_recovery(monkeypatch):
-    observations, incidents = [], []
+    observations, persisted_states = [], []
     notify = AsyncMock(return_value=True)
     health = [{'status': 'Offline', 'error': 'test failure'}] * 3 + [
         {'status': 'Online', 'cpu': 15, 'ram': 20, 'disk': 30}]
     async def stats(*args, **kwargs):
         return health.pop(0)
-    store = types.SimpleNamespace(incident=lambda *args: incidents.append(args), should_notify=lambda *args: True)
+    store = types.SimpleNamespace(record_server_observation=lambda owner,sid,online,*args: (persisted_states.append((owner,sid,online)),(None,0))[1])
     monkeypatch.setitem(__import__('sys').modules, 'pro_store', types.SimpleNamespace(ProStore=lambda: store))
     scope = {'asyncio': asyncio, 'run_sync': direct, 'SUPER_ADMIN_ID': 777, 'DOWN_RETRY_LIMIT': 3,
-        'SERVER_FAILURE_COUNTS': {}, 'CPU_ALERT_TRACKER': {}, '_RESOURCE_RUNNING': {21},
+        'CPU_ALERT_TRACKER': {}, '_RESOURCE_RUNNING': {21},
         '_RESOURCE_LIMIT': asyncio.Semaphore(8), 'time': __import__('time'),
         'logger': logging.getLogger('test'), 'send_notification': notify,
         'sec': types.SimpleNamespace(decrypt=lambda value: value),
@@ -587,6 +587,7 @@ def test_monitor_job_persists_down_streak_and_recovery(monkeypatch):
             await fn(object(), server)
     asyncio.run(check())
     assert len(observations) == 4
-    assert [incident[-1] for incident in incidents] == [True, False]
-    assert notify.await_count == 2
-    assert not scope['SERVER_FAILURE_COUNTS'] and not scope['_RESOURCE_RUNNING']
+    assert [online for _,_,online in persisted_states] == [False,False,False,True]
+    # Transitions and notifications are now committed by the durable DB helper.
+    assert notify.await_count == 0
+    assert not scope['_RESOURCE_RUNNING']
