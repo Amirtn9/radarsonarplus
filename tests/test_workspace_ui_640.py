@@ -136,7 +136,7 @@ def test_beginner_menus_and_server_actions_have_handlers():
 
 def test_version_consistent_and_agent_ws_sources_untouched_by_new_logic():
     version=(ROOT/'VERSION').read_text().strip()
-    assert version=='6.4.0'
+    assert version=='6.5.0'
     assert version in (ROOT/'settings.py').read_text()
     assert 'ACTOR_ID' in (ROOT/'secure_handlers.py').read_text()
     assert 'copy_context' in (ROOT/'runtime.py').read_text()

@@ -838,7 +838,7 @@ async def set_config_cron_action(update: Update, context: ContextTypes.DEFAULT_T
     await config_cron_menu(update, context)
 
 async def set_cron_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    db.set_setting(update.effective_user.id, 'report_interval', int(update.callback_query.data.split('_')[1]))
+    db.set_setting(update.effective_user.id, 'report_interval', int(update.callback_query.data.split('_')[1]) // 60)
     try:
         await update.callback_query.answer("ذخیره شد.")
     except:
@@ -999,6 +999,12 @@ async def get_channel_forward(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             return GET_CHANNEL_FORWARD
 
+        # Test the actual Telegram permission path before storing a broken destination.
+        try:
+            await context.bot.send_message(chat_id=c_id, text='✅ آزمون اتصال سونار رادار: ارسال اعلان‌ها به این مقصد فعال است.')
+        except Exception:
+            await msg.reply_text('❌ ربات به کانال/گروه دسترسی ارسال ندارد. آن را ادمین کنید و مجوز Post Messages بدهید؛ سپس دوباره امتحان کنید.')
+            return GET_CHANNEL_FORWARD
         context.user_data['new_chan'] = {'id': c_id, 'name': c_name}
 
         kb = [
@@ -1256,7 +1262,14 @@ async def _install_saved_server(context, uid, server, message):
             await message.edit_text('⛔ سرور حذف شده یا دسترسی تغییر کرده است.')
             return
         port=valid_agent_port(server.get('ws_port') or AGENT_PORT)
-        ok,detail=await run_sync(ServerMonitor.install_agent_service,server['ip'],server['port'],server['username'],sec.decrypt(server['password']),port)
+        loop=asyncio.get_running_loop()
+        progress_stamp=[0.0]
+        def progress(stage, detail):
+            import time as _time
+            if _time.monotonic()-progress_stamp[0]<2 and stage not in ('failed','success','fallback','transfer'):return
+            progress_stamp[0]=_time.monotonic()
+            asyncio.run_coroutine_threadsafe(message.edit_text(f'🛰 نصب Agent | {server["name"]}\n🔹 {stage}: {detail[:210]}'),loop)
+        ok,detail=await run_sync(ServerMonitor.install_agent_service,server['ip'],server['port'],server['username'],sec.decrypt(server['password']),port, progress=progress)
         if ok and server.get('_activate_monitor_node') and uid==SUPER_ADMIN_ID:
             await run_sync(db.activate_monitor_node,server['id'],uid)
         await run_sync(db.update_server_error,server['id'],'' if ok else str(detail))
