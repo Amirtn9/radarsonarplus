@@ -48,9 +48,30 @@ SCHEMA = (
  """CREATE TABLE IF NOT EXISTS pro_preferences (
  owner_id BIGINT PRIMARY KEY,quiet_start SMALLINT,quiet_end SMALLINT,
  daily_digest BOOLEAN NOT NULL DEFAULT FALSE,multi_probe BOOLEAN NOT NULL DEFAULT FALSE,
- last_digest_date DATE, CHECK(quiet_start IS NULL OR quiet_start BETWEEN 0 AND 23),
+ last_digest_date DATE, timezone VARCHAR(64) NOT NULL DEFAULT 'UTC', CHECK(quiet_start IS NULL OR quiet_start BETWEEN 0 AND 23),
  CHECK(quiet_end IS NULL OR quiet_end BETWEEN 0 AND 23))""",
  """CREATE TABLE IF NOT EXISTS pro_migrations (version INTEGER PRIMARY KEY,applied_at TIMESTAMPTZ DEFAULT NOW())""",
+ "ALTER TABLE pro_preferences ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'UTC'",
+ """CREATE TABLE IF NOT EXISTS pro_server_monitor_state (
+ owner_id BIGINT NOT NULL, server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+ consecutive_failures INTEGER NOT NULL DEFAULT 0,
+ last_status VARCHAR(12) NOT NULL DEFAULT 'up',
+ generation BIGINT NOT NULL DEFAULT 0,
+ last_checked_at TIMESTAMPTZ, last_online_at TIMESTAMPTZ,
+ PRIMARY KEY(owner_id,server_id))""",
+ """CREATE TABLE IF NOT EXISTS pro_notification_outbox (
+ id BIGSERIAL PRIMARY KEY, owner_id BIGINT NOT NULL,
+ event_key VARCHAR(100) NOT NULL UNIQUE, event_type VARCHAR(32) NOT NULL,
+ message TEXT NOT NULL, attempts SMALLINT NOT NULL DEFAULT 0,
+ next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ claimed_until TIMESTAMPTZ,
+ sent_at TIMESTAMPTZ, skipped_at TIMESTAMPTZ, dead_at TIMESTAMPTZ,
+ last_error VARCHAR(100),created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+ """CREATE INDEX IF NOT EXISTS pro_outbox_pending ON pro_notification_outbox(next_attempt_at,id)
+ WHERE sent_at IS NULL AND skipped_at IS NULL AND dead_at IS NULL""",
+ """CREATE TABLE IF NOT EXISTS pro_job_cursors (
+ name VARCHAR(40) PRIMARY KEY, last_id BIGINT NOT NULL DEFAULT 0,
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
 )
 
 
@@ -61,8 +82,6 @@ def install_schema(db=None):
             cur.execute(stmt)
         cur.execute('INSERT INTO pro_migrations(version) VALUES (5) ON CONFLICT DO NOTHING')
         conn.commit()
-    from service_monitor import install_schema as install_service_schema
-    install_service_schema(db)
     from service_monitor import install_schema as install_service_schema
     install_service_schema(db)
 
@@ -213,6 +232,54 @@ class ProStore:
                             'status':r['last_status'],'region':r['region'] or 'legacy'})
         return sorted(results,key=lambda r:r['score'],reverse=True)[:max(1,min(30,int(limit)))]
 
+    def record_server_observation(self,owner,sid,online,threshold,name,detail='',notify=True):
+        """Single-transaction state/incident/outbox update survives restarts.
+
+        Keeps the existing DOWN_RETRY_LIMIT threshold; no remote commands.
+        Notification delivery is delegated to the same persistent outbox.
+        """
+        threshold=max(1,int(threshold))
+        with self.db.get_connection() as (conn,cur):
+            cur.execute('''INSERT INTO pro_server_monitor_state(owner_id,server_id)
+                VALUES(%s,%s) ON CONFLICT(owner_id,server_id) DO NOTHING''',(owner,sid))
+            cur.execute('''SELECT consecutive_failures,last_status,generation FROM pro_server_monitor_state
+                WHERE owner_id=%s AND server_id=%s FOR UPDATE''',(owner,sid))
+            previous=cur.fetchone()
+            if not previous:raise ValueError('Server monitor state unavailable')
+            previous_fail=int(previous['consecutive_failures'])
+            count=0 if online else min(2147483647,previous_fail+1)
+            was_down=previous['last_status']=='down'
+            event=('recovery' if online and was_down else
+                   'failure' if not online and count>=threshold and not was_down else None)
+            status='up' if online else 'down' if was_down or count>=threshold else 'up'
+            generation=int(previous['generation'])+(1 if event else 0)
+            cur.execute('''UPDATE pro_server_monitor_state
+                SET consecutive_failures=%s,last_status=%s,generation=%s,
+                    last_checked_at=NOW(),last_online_at=CASE WHEN %s THEN NOW() ELSE last_online_at END
+                WHERE owner_id=%s AND server_id=%s''',
+                (count,status,generation,bool(online),owner,sid))
+            if event=='failure':
+                cur.execute('''INSERT INTO pro_incidents(owner_id,resource_type,resource_id,kind,title,severity)
+                    VALUES(%s,'server',%s,'server_down',%s,'critical')
+                    ON CONFLICT(owner_id,resource_type,resource_id,kind) WHERE status<>'resolved'
+                    DO UPDATE SET occurrences=pro_incidents.occurrences+1,updated_at=NOW()''',
+                    (owner,sid,f'قطع ارتباط با {str(name)[:140]}'))
+            elif event=='recovery':
+                cur.execute('''UPDATE pro_incidents SET status='resolved',resolved_at=NOW(),updated_at=NOW()
+                    WHERE owner_id=%s AND resource_type='server' AND resource_id=%s
+                    AND kind='server_down' AND status<>'resolved' ''',(owner,sid))
+            if event and notify:
+                from logging_config import redact
+                message=(f'🚨 قطع ارتباط با سرور {str(name)[:120]}\n{redact(str(detail))[:160]}'
+                         if event=='failure' else
+                         f'✅ اتصال سرور {str(name)[:120]} دوباره برقرار شد.')
+                cur.execute('''INSERT INTO pro_notification_outbox(owner_id,event_key,event_type,message)
+                    VALUES(%s,%s,%s,%s) ON CONFLICT(event_key) DO NOTHING''',
+                    (owner,f'server:{sid}:{generation}',
+                     'server_down' if event=='failure' else 'recovery',message))
+            conn.commit()
+            return event,count
+
     def incident(self,owner,kind,rid,event,title,severity='warning',active=True):
         _resource_table(kind)
         if not self.resource(owner,kind,rid):return None
@@ -255,12 +322,18 @@ class ProStore:
     def preferences(self,actor,owner=None):
         owner=self.workspace(actor,owner)
         row=self.db.execute('SELECT * FROM pro_preferences WHERE owner_id=%s',(owner,),fetch='one')
-        return dict(row) if row else {'owner_id':owner,'daily_digest':False,'multi_probe':False,'quiet_start':None,'quiet_end':None}
+        return dict(row) if row else {'owner_id':owner,'daily_digest':False,'multi_probe':False,'quiet_start':None,'quiet_end':None,'timezone':'UTC'}
 
     def set_preference(self,actor,owner,key,val):
         self.require(actor,owner,write=True)
-        if key not in ('daily_digest','multi_probe','quiet_start','quiet_end'):raise ValueError('Unknown setting')
-        if key in ('quiet_start','quiet_end'):
+        if key not in ('daily_digest','multi_probe','quiet_start','quiet_end','timezone'):raise ValueError('Unknown setting')
+        if key == 'timezone':
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+            if not isinstance(val,str) or len(val)>64:
+                raise ValueError('Invalid timezone')
+            try: ZoneInfo(val)
+            except (ZoneInfoNotFoundError,ValueError): raise ValueError('Unknown timezone')
+        elif key in ('quiet_start','quiet_end'):
             if val is not None and not 0<=int(val)<=23:raise ValueError('Hour range: 0-23')
             val=None if val is None else int(val)
         else: val=bool(val)
@@ -334,6 +407,12 @@ class ProStore:
         with self.db.get_connection() as (conn,cur):
             cur.execute("DELETE FROM pro_metrics WHERE measured_at < NOW()-(%s*INTERVAL '1 day')",(metrics_days,))
             cur.execute("DELETE FROM pro_audit WHERE created_at < NOW()-(%s*INTERVAL '1 day')",(audit_days,))
+            # Keep recent delivery receipts for incident investigation;
+            # avoid unbounded growth after failed/blocked Telegram delivery.
+            cur.execute("""DELETE FROM pro_notification_outbox
+                WHERE (sent_at IS NOT NULL AND sent_at<NOW()-INTERVAL '30 days')
+                   OR (skipped_at IS NOT NULL AND skipped_at<NOW()-INTERVAL '30 days')
+                   OR (dead_at IS NOT NULL AND dead_at<NOW()-INTERVAL '90 days')""")
             cur.execute("DELETE FROM pro_favorites f WHERE (resource_type='server' AND NOT EXISTS(SELECT 1 FROM servers s WHERE s.id=f.resource_id AND s.owner_id=f.owner_id)) OR (resource_type='config' AND NOT EXISTS(SELECT 1 FROM tunnel_configs c WHERE c.id=f.resource_id AND c.owner_id=f.owner_id))")
             cur.execute("DELETE FROM pro_tags t WHERE (resource_type='server' AND NOT EXISTS(SELECT 1 FROM servers s WHERE s.id=t.resource_id AND s.owner_id=t.owner_id)) OR (resource_type='config' AND NOT EXISTS(SELECT 1 FROM tunnel_configs c WHERE c.id=t.resource_id AND c.owner_id=t.owner_id))")
             conn.commit()

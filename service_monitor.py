@@ -181,7 +181,17 @@ class ServiceStore:
                 WHERE id=%s AND owner_id=%s''',
                 (state,fail,success,result.latency_ms,result.detail[:180],row['id'],row['owner_id']))
             cur.execute('''INSERT INTO pro_service_history(owner_id,service_id,ok,latency_ms,detail)
-                VALUES(%s,%s,%s,%s,%s)''',(row['owner_id'],row['id'],result.ok,result.latency_ms,result.detail[:180]))
+                VALUES(%s,%s,%s,%s,%s) RETURNING id''',(row['owner_id'],row['id'],result.ok,result.latency_ms,result.detail[:180]))
+            history_id=cur.fetchone()['id']
+            if event in ('failure','recovery'):
+                glyph='🔴' if event=='failure' else '🟢'
+                state='قطع شد' if event=='failure' else 'بازیابی شد'
+                msg=(f'{glyph} رادار سونار · سرویس {str(previous["name"])[:120]} {state}\n'
+                     f'شناسه: {row["id"]} | {str(result.detail)[:180]}')
+                cur.execute('''INSERT INTO pro_notification_outbox(owner_id,event_key,event_type,message)
+                    VALUES(%s,%s,%s,%s) ON CONFLICT(event_key) DO NOTHING''',
+                    (row['owner_id'],f'service:{row["id"]}:{history_id}',
+                     'service_failure' if event=='failure' else 'service_recovery',msg))
             if event=='failure':
                 cur.execute('''INSERT INTO pro_incidents(owner_id,resource_type,resource_id,kind,title,severity)
                   VALUES(%s,'service',%s,'uptime',%s,'warning')

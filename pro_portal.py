@@ -24,7 +24,7 @@ from service_monitor import ServiceStore
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
-app=FastAPI(title='Sonar Radar Pro V6.5',docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='Sonar Radar Pro V6.5.3',docs_url=None,redoc_url=None,openapi_url=None)
 app.mount('/static',StaticFiles(directory=BASE/'pro_web'/'static'),name='static')
 store=ProStore()
 service_store=ServiceStore(store)
@@ -145,6 +145,21 @@ async def metrics(config_id:int,uid:int=Depends(actor),owner:int|None=None,days:
 async def incidents(uid:int=Depends(actor),owner:int|None=None,status:str='unresolved'):
     return await guarded(store.incidents,uid,owner,status)
 
+@app.get('/api/notifications/delivery')
+async def notification_delivery(uid:int=Depends(actor)):
+    """Tenant-scoped visibility into delayed/failed alerts; no message secrets."""
+    def read():
+        owner=store.workspace(uid)
+        row=store.db.execute("""SELECT
+            COUNT(*) FILTER(WHERE sent_at IS NULL AND skipped_at IS NULL AND dead_at IS NULL) AS pending,
+            COUNT(*) FILTER(WHERE sent_at IS NOT NULL) AS delivered,
+            COUNT(*) FILTER(WHERE dead_at IS NOT NULL) AS exhausted,
+            COUNT(*) FILTER(WHERE skipped_at IS NOT NULL) AS skipped
+            FROM pro_notification_outbox WHERE owner_id=%s""",(owner,),fetch='one')
+        return dict(row) if row else {'pending':0,'delivered':0,'exhausted':0,'skipped':0}
+    return await guarded(read)
+
+
 @app.get('/api/audit')
 async def audit(uid:int=Depends(actor),owner:int|None=None):return await guarded(store.audit_rows,uid,owner)
 
@@ -164,7 +179,7 @@ class IncidentAction(BaseModel):
     incident_id:int=Field(gt=0);owner:int|None=None
 
 class PreferencesUpdate(BaseModel):
-    owner:int|None=None;key:str;value:bool|int|None
+    owner:int|None=None;key:str;value:bool|int|str|None
 
 @app.post('/api/favorites')
 async def toggle_fav(body:Favorite,uid:int=Depends(actor)):
@@ -268,3 +283,7 @@ async def service_delete(sid:int,uid:int=Depends(actor),owner:int|None=None):
 async def service_history(sid:int,uid:int=Depends(actor),owner:int|None=None,days:int=Query(default=7,ge=1,le=30)):
     return await guarded(service_store.history,uid,shared_owner(uid,owner),sid,days)
 
+
+# Additive, read-only console features. Legacy transport and access control are unchanged.
+from console_api import make_router as _make_console_router
+app.include_router(_make_console_router(store,actor,guarded))

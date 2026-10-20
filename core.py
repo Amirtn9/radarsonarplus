@@ -224,7 +224,8 @@ class ServerMonitor:
                 token=dedicated_token,
                 payload=payload,
                 timeout=float(timeout),
-                retries=2,
+                # Only safe read-only commands may be replayed after a timeout.
+                retries=2 if payload.get('action') in ('get_stats','ping','get_info','health') else 0,
                 tls_certificate=tls_cert,
             )
         except Exception as e:

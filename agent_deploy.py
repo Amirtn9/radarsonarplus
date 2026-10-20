@@ -26,6 +26,50 @@ def privileged_script(command):
             'else echo "ADMIN_REQUIRED: SSH works; use root or passwordless sudo for agent installation" >&2; exit 77; fi')
 
 
+
+
+def agent_port_preflight(run, ws_port):
+    """Fail closed on occupied ports not owned by the managed sonar-agent unit.
+
+    Does not terminate, change ports, or interfere with other services.
+    """
+    check = r'''import os,re,subprocess,sys
+port=int(sys.argv[1])
+listener=subprocess.run(['ss','-H','-ltnp'],capture_output=True,text=True,timeout=8)
+if listener.returncode: raise SystemExit('AGENT_PORT_CHECK_FAILED: ss command failed')
+rows=[]
+for line in listener.stdout.splitlines():
+ fields=line.split()
+ if len(fields)<5:continue
+ local=fields[3]
+ if local.rsplit(':',1)[-1]!=str(port):continue
+ rows.append(line)
+if not rows:
+ print('SONAR_PORT_AVAILABLE')
+ raise SystemExit(0)
+managed=subprocess.run(['systemctl','show','sonar-agent.service','--property=MainPID','--value'],capture_output=True,text=True,timeout=8)
+pid=managed.stdout.strip() if managed.returncode==0 else ''
+if not pid.isdigit() or int(pid)<=0:
+ raise SystemExit('AGENT_PORT_CONFLICT: port is in use; no running managed Agent owns it')
+for line in rows:
+ pids=set(re.findall(r'pid=(\d+)',line))
+ if not pids or pids!={pid}:
+  raise SystemExit('AGENT_PORT_CONFLICT: another process is listening on the Agent port')
+print('SONAR_PORT_MANAGED_AGENT')
+'''
+    command = "python3 - " + str(int(ws_port)) + " <<'SONAR_PORT_PREFLIGHT'\n" + check + "\nSONAR_PORT_PREFLIGHT\n"
+    ok, result = run(command, 25)
+    if not ok:
+        # Do not disclose raw process arguments from remote ss output.
+        diagnostic = str(result)
+        for code in ('AGENT_PORT_CONFLICT', 'AGENT_PORT_CHECK_FAILED'):
+            if code in diagnostic:
+                return False, diagnostic[diagnostic.index(code):].splitlines()[0][:240]
+        return False, 'AGENT_PORT_CHECK_FAILED: unable to verify listener ownership safely'
+    if 'SONAR_PORT_AVAILABLE' in result or 'SONAR_PORT_MANAGED_AGENT' in result:
+        return True, result.strip()
+    return False, 'AGENT_PORT_CHECK_FAILED: unexpected preflight result'
+
 def deploy_agent(monitor, db, ip, port, user, password, ws_port, progress=None):
     ip, port, ws_port = normalize_host(ip), ssh_port(port), valid_agent_port(ws_port)
     with _LOCKS_GUARD:
@@ -45,7 +89,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
     root = Path(__file__).resolve().parent
     script = (root / 'monitor_agent.py').read_text()
     runtime_lock = json.loads((root / 'agent_runtime.lock.json').read_text())
-    from agent_bootstrap import install_agent_dependencies, rollback_venv, _emit
+    from agent_bootstrap import install_agent_dependencies, rollback_venv, commit_venv, _emit
     from agent_xray_bridge import install_xray_via_main
     token = db.get_or_create_agent_token(ip, port, ws_port)
 
@@ -79,6 +123,10 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
         _emit(progress, 'failed', message[:180])
         return False, message
 
+    _emit(progress, 'port_preflight', f'بررسی مالک پورت {ws_port} پیش از تغییر سرویس')
+    port_ok, port_status = agent_port_preflight(run, ws_port)
+    if not port_ok:
+        return False, (port_status + '; برای شناسایی مالک پورت دستور sudo ss -ltnp اجرا شود. هیچ فرایندی خودکار متوقف نشد.')
     ok, out = run('id -u', 25)
     if not ok:
         return False, out
@@ -239,7 +287,7 @@ WantedBy=multi-user.target
                'chmod 0644 /etc/systemd/system/sonar-agent.service\n'
                'systemd-analyze verify /etc/systemd/system/sonar-agent.service\n'
                'systemctl daemon-reload\nsystemctl enable sonar-agent\nsystemctl restart sonar-agent\n'
-               f"for n in $(seq 1 20); do if systemctl is-active --quiet sonar-agent && ss -H -lnt 'sport = :{ws_port}' | grep -q .; then exit 0; fi; sleep 0.5; done\n"
+               f"for n in $(seq 1 20); do if systemctl is-active --quiet sonar-agent && ss -H -lntp 'sport = :{ws_port}' | grep -Fq \"pid=$(systemctl show sonar-agent.service -p MainPID --value),\"; then exit 0; fi; sleep 0.5; done\n"
                'echo AGENT_LISTENER_FAILED >&2\nexit 6\n')
     _emit(progress, 'service', 'فعال‌سازی و تست سرویس systemd')
     ok, out = run(command, 45)
@@ -273,5 +321,8 @@ WantedBy=multi-user.target
         return fail(f'WSS_HEALTH_FAILED: از میزبان ربات اتصال TLS/توکن/Xray روی {ws_port} تأیید نشد؛ فایروال و سرویس را بررسی کنید.')
     db.store_agent_certificate(ip, port, cert.strip(), ws_port)
     _emit(progress, 'success', 'WSS، TLS و قابلیت Xray تأیید شدند')
+    # Only garbage collect prior venv generations AFTER successful WSS readiness.
+    # Retain exactly one verified previous environment for future manual rollback.
+    commit_venv(run,previous_venv,progress)
     if backup_path:run('rm -rf -- '+shlex.quote(backup_path), 35)
     return True, f'ایجنت و Xray نصب شدند؛ اتصال WSS:{ws_port} با TLS و توکن آزموده شد.\n{firewall}'

@@ -452,7 +452,7 @@ class Database:
     def remove_user(self, user_id):
         """Delete tenant data transactionally; preserve no orphan pro/team records."""
         owner = int(user_id)
-        tables = ('pro_metrics','pro_favorites','pro_tags','pro_incidents',
+        tables = ('pro_server_monitor_state','pro_notification_outbox','pro_services','pro_metrics','pro_favorites','pro_tags','pro_incidents',
                   'pro_audit','pro_rules','pro_preferences','pro_team',
                   'tunnel_configs','server_stats','settings',
                   'servers','groups','channels')
@@ -463,6 +463,9 @@ class Database:
                 raise ValueError('این کاربر مدیر فضای کاری مشترک است؛ حذف او بدون انتقال مدیریت مجاز نیست.')
             cur.execute('DELETE FROM sonar_workspaces WHERE member_id=%s', (owner,))
             cur.execute('DELETE FROM sonar_workspace_requests WHERE requester=%s OR target=%s', (owner,owner))
+            cur.execute("SELECT to_regclass('public.pro_job_cursors') AS relation")
+            if cur.fetchone()['relation']:
+                cur.execute('DELETE FROM pro_job_cursors WHERE name IN (%s,%s)',(f'multi_mon:{owner}',f'multi_cfg:{owner}'))
             for table in tables:
                 # Legacy installations may not yet have pro_* schema.
                 cur.execute('SELECT to_regclass(%s) AS relation', ('public.' + table,))

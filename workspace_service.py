@@ -140,7 +140,7 @@ class WorkspaceService:
             cur.execute('UPDATE channels SET owner_id=%s WHERE owner_id=%s',(root,actor))
             # Include related Pro and uptime resources, if the schemas exist.
             # User profiles, payment records and balances remain private.
-            for table in ('pro_metrics','pro_audit','pro_rules','pro_services',
+            for table in ('pro_metrics','pro_audit','pro_rules','pro_server_monitor_state','pro_notification_outbox','pro_services',
                           'pro_service_history'):
                 cur.execute('SELECT to_regclass(%s) AS relation',(f'public.{table}',))
                 if cur.fetchone()['relation']:
@@ -155,8 +155,8 @@ class WorkspaceService:
                     cur.execute(f'DELETE FROM {table} WHERE owner_id=%s',(actor,))
             cur.execute("SELECT to_regclass('public.pro_preferences') AS relation")
             if cur.fetchone()['relation']:
-                cur.execute('INSERT INTO pro_preferences (owner_id,quiet_start,quiet_end,daily_digest,multi_probe,last_digest_date) '
-                    'SELECT %s,quiet_start,quiet_end,daily_digest,multi_probe,last_digest_date '
+                cur.execute('INSERT INTO pro_preferences (owner_id,quiet_start,quiet_end,daily_digest,multi_probe,last_digest_date,timezone) '
+                    'SELECT %s,quiet_start,quiet_end,daily_digest,multi_probe,last_digest_date,timezone '
                     'FROM pro_preferences WHERE owner_id=%s ON CONFLICT(owner_id) DO NOTHING',(root,actor))
                 cur.execute('DELETE FROM pro_preferences WHERE owner_id=%s',(actor,))
             cur.execute("SELECT to_regclass('public.pro_incidents') AS relation")
@@ -220,29 +220,38 @@ DECLARE
   detail_text TEXT;
 BEGIN
   IF TG_OP = 'UPDATE' THEN
-    IF TG_TABLE_NAME = 'servers' AND
-       (NEW.name,NEW.ip,NEW.group_id,NEW.expiry_date,NEW.is_active,NEW.location_type)
-       IS NOT DISTINCT FROM
-       (OLD.name,OLD.ip,OLD.group_id,OLD.expiry_date,OLD.is_active,OLD.location_type) THEN
-       RETURN NEW;
-    ELSIF TG_TABLE_NAME = 'tunnel_configs' AND
-       (NEW.name,NEW.link,NEW.type,NEW.parent_sub_id) IS NOT DISTINCT FROM
-       (OLD.name,OLD.link,OLD.type,OLD.parent_sub_id) THEN
-       RETURN NEW;
-    ELSIF TG_TABLE_NAME = 'settings' AND
-       (NEW.value IS NOT DISTINCT FROM OLD.value OR NEW.key LIKE 'last_%') THEN
-       RETURN NEW;
-    ELSIF TG_TABLE_NAME = 'groups' AND NEW.name IS NOT DISTINCT FROM OLD.name THEN
-       RETURN NEW;
-    ELSIF TG_TABLE_NAME = 'channels' AND
-       (NEW.name,NEW.chat_id,NEW.usage_type,NEW.topic_id) IS NOT DISTINCT FROM
-       (OLD.name,OLD.chat_id,OLD.usage_type,OLD.topic_id) THEN
-       RETURN NEW;
+    -- Isolate each row type: PostgreSQL may not short-circuit SQL AND.
+    IF TG_TABLE_NAME = 'servers' THEN
+      IF (NEW.name,NEW.ip,NEW.group_id,NEW.expiry_date,NEW.is_active,NEW.location_type)
+         IS NOT DISTINCT FROM
+         (OLD.name,OLD.ip,OLD.group_id,OLD.expiry_date,OLD.is_active,OLD.location_type) THEN
+        RETURN NEW;
+      END IF;
+    ELSIF TG_TABLE_NAME = 'tunnel_configs' THEN
+      IF (NEW.name,NEW.link,NEW.type,NEW.parent_sub_id)
+         IS NOT DISTINCT FROM (OLD.name,OLD.link,OLD.type,OLD.parent_sub_id) THEN
+        RETURN NEW;
+      END IF;
+    ELSIF TG_TABLE_NAME = 'settings' THEN
+      IF NEW.value IS NOT DISTINCT FROM OLD.value THEN RETURN NEW; END IF;
+      IF NEW.key LIKE 'last_%' THEN RETURN NEW; END IF;
+    ELSIF TG_TABLE_NAME = 'groups' THEN
+      IF NEW.name IS NOT DISTINCT FROM OLD.name THEN RETURN NEW; END IF;
+    ELSIF TG_TABLE_NAME = 'channels' THEN
+      IF (NEW.name,NEW.chat_id,NEW.usage_type,NEW.topic_id)
+         IS NOT DISTINCT FROM (OLD.name,OLD.chat_id,OLD.usage_type,OLD.topic_id) THEN
+        RETURN NEW;
+      END IF;
     END IF;
   END IF;
-  IF TG_TABLE_NAME = 'settings' AND
-      COALESCE(CASE WHEN TG_OP='DELETE' THEN OLD.key ELSE NEW.key END,'') LIKE 'last_%' THEN
-      IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
+  -- The settings-only OLD.key/NEW.key must not be evaluated on other tables.
+  -- SQL boolean expressions need not short-circuit on all plans.
+  IF TG_TABLE_NAME = 'settings' THEN
+    IF TG_OP = 'DELETE' THEN
+      IF COALESCE(OLD.key,'') LIKE 'last_%' THEN RETURN OLD; END IF;
+    ELSE
+      IF COALESCE(NEW.key,'') LIKE 'last_%' THEN RETURN NEW; END IF;
+    END IF;
   END IF;
   owner := CASE WHEN TG_OP='DELETE' THEN OLD.owner_id ELSE NEW.owner_id END;
   -- Don't generate notifications on owner migration or solo workspaces.

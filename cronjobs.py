@@ -49,7 +49,6 @@ from runtime import SHARED_EXECUTOR, run_sync, spawn_background
 from notifications import send_notification
 EXECUTOR = SHARED_EXECUTOR
 
-SERVER_FAILURE_COUNTS = {}
 CPU_ALERT_TRACKER = {}
 DAILY_REPORT_USAGE = {}
 TUNNEL_FAIL_STREAKS = {}
@@ -86,19 +85,12 @@ async def check_single_server_resources(context, srv):
         down_enabled=settings.get('down_alert_enabled','1')=='1'
         from pro_store import ProStore
         store=ProStore()
-        if stats.get('status')!='Online':
-            failures=SERVER_FAILURE_COUNTS.get(sid,0)+1
-            SERVER_FAILURE_COUNTS[sid]=failures
-            if failures==DOWN_RETRY_LIMIT:
-                await run_sync(store.incident,owner,'server',sid,'server_down',f'قطع ارتباط با {srv["name"]}','critical',True)
-                if down_enabled and await run_sync(store.should_notify,owner,'server_down'):
-                    await send_notification(context,owner,f'🚨 قطع ارتباط با سرور {srv["name"]}\n{stats.get("error","Connection failed")}', 'down',db=db)
+        # Store transition and notification together; reboots cannot reset counters.
+        online=stats.get('status')=='Online'
+        await run_sync(store.record_server_observation,owner,sid,online,DOWN_RETRY_LIMIT,
+                       srv['name'],stats.get('error','Connection failed'),down_enabled)
+        if not online:
             return
-        previous=SERVER_FAILURE_COUNTS.pop(sid,0)
-        if previous>=DOWN_RETRY_LIMIT:
-            await run_sync(store.incident,owner,'server',sid,'server_down',f'بازیابی {srv["name"]}','critical',False)
-            if down_enabled and await run_sync(store.should_notify,owner,'recovery'):
-                await send_notification(context,owner,f'✅ اتصال سرور {srv["name"]} دوباره برقرار شد.','down',db=db)
         exceeded=[]
         for name,default in (('cpu',80),('ram',80),('disk',90)):
             value=stats.get(name)

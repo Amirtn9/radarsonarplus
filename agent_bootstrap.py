@@ -310,3 +310,32 @@ def rollback_venv(run, previous, progress=None):
     if not safe:raise ValueError('Invalid rollback marker')
     _emit(progress,'rollback','بازیابی وابستگی‌های قبلی')
     run(f'if test -d {shlex.quote(previous)}; then mv /opt/sonar-agent-venv /opt/sonar-agent-venv.failed-{previous[-12:]}; mv {shlex.quote(previous)} /opt/sonar-agent-venv; systemctl try-restart sonar-agent || :; fi',60)
+
+
+def commit_venv(run, previous, progress=None):
+    """Post-health garbage collection; retain one verified rollback environment.
+
+    This function does NOT operate during staging or failed installs. Older backup
+    directories are deleted only if systemd is running and the new venv exists.
+    """
+    if previous and not re.fullmatch(r'/opt/sonar-agent-venv\.previous-[a-f0-9]{12}',previous):
+        raise ValueError('Invalid venv marker')
+    script = r'''import pathlib,shutil,subprocess,sys
+keep=sys.argv[1]
+root=pathlib.Path('/opt')
+venv=root/'sonar-agent-venv'
+if not venv.is_dir() or venv.is_symlink():raise SystemExit('LIVE_VENV_INVALID')
+health=subprocess.run(['systemctl','is-active','--quiet','sonar-agent'],timeout=8)
+if health.returncode:raise SystemExit('AGENT_NOT_ACTIVE_NO_CLEANUP')
+for path in sorted(root.glob('sonar-agent-venv.previous-*')):
+ if str(path)==keep or path.is_symlink() or not path.is_dir():continue
+ if not __import__('re').fullmatch(r'sonar-agent-venv\.previous-[a-f0-9]{12}',path.name):continue
+ shutil.rmtree(path)
+print('SONAR_VENV_COMMITTED')
+'''
+    import shlex
+    command="python3 - " + shlex.quote(previous or '') + " <<'SONAR_COMMIT_VENV'\n" + script + "\nSONAR_COMMIT_VENV\n"
+    ok,details=run(command,60)
+    if not ok:
+        _emit(progress,'cleanup_warning','Agent فعال است؛ پاک‌سازی پشتیبان‌های قدیمی انجام نشد')
+    return ok

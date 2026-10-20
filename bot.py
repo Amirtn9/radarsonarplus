@@ -117,7 +117,7 @@ def main():
         logger.error("JobQueue not available.")
 
     app.run_polling(
-    drop_pending_updates=True, 
+    drop_pending_updates=os.getenv("SONAR_DROP_PENDING_UPDATES", "1") == "1", 
     close_loop=False,
     allowed_updates=None  # Telegram default update types; nothing excluded here
 )

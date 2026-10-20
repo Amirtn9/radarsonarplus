@@ -10,6 +10,8 @@ import zipfile
 import re
 import random
 import socket
+import threading
+import tempfile
 import math
 import shlex
 import shutil
@@ -69,11 +71,57 @@ def advanced_log(message, category="INFO"):
 # ==============================================================================
 # 🛠 UTILITIES (Common)
 # ==============================================================================
+_TEST_PORTS = set()
+_TEST_PORTS_LOCK = threading.Lock()
+
+
 def get_free_port():
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('', 0)); return s.getsockname()[1]
-    except: return random.randint(20000, 40000)
+    """Reserve a candidate within this Agent process until test cleanup.
+
+    The kernel socket is unbound before Xray binds; this does not guarantee
+    exclusion against unrelated processes. Bind errors remain visible.
+    """
+    with _TEST_PORTS_LOCK:
+        for _ in range(30):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind(('127.0.0.1', 0))
+                value=sock.getsockname()[1]
+            if value not in _TEST_PORTS:
+                _TEST_PORTS.add(value)
+                return value
+    raise RuntimeError('XRAY_TEST_PORT_UNAVAILABLE')
+
+
+def release_test_port(port):
+    with _TEST_PORTS_LOCK:
+        _TEST_PORTS.discard(port)
+
+
+def _curl_failure(exitcode, status=None):
+    if exitcode==6:return 'DNS_ERROR'
+    if exitcode==5:return 'SOCKS_PROXY_DNS_ERROR'
+    if exitcode==7:return 'TCP_ERROR'
+    if exitcode in (35,60):return 'TLS_ERROR'
+    if exitcode==28:return 'TIMEOUT'
+    if exitcode!=0:return 'HTTP_CONNECTION_ERROR'
+    return 'HTTP_UNEXPECTED' if status!='204' else None
+
+
+def _health_urls():
+    # Operator-configured endpoints; absence preserves the original default.
+    raw=os.getenv('SONAR_AGENT_HEALTH_URLS','')
+    if not raw:return (TEST_URL,)
+    urls=[]
+    for value in raw.split(',')[:4]:
+        try:
+            url=urllib.parse.urlsplit(value.strip())
+            if url.scheme not in ('http','https') or not url.hostname or url.username or url.password:
+                continue
+            if url.port is not None and url.port not in (80,443):continue
+            urls.append(value.strip())
+        except ValueError:
+            continue
+    return tuple(urls) if urls else (TEST_URL,)
 
 def check_port_open(port, timeout=5):
     start = time.time()
@@ -646,8 +694,13 @@ def test_config_logic(outbound, dl_size_mb=0.5):
     """لاجیک اصلی تست کانفیگ (Ping + optional Download Speed)."""
     if not os.path.isfile(XRAY_BIN) or not os.path.isfile(os.path.join(WORK_DIR,'geoip.dat')):
         return {"status":"Fail","msg":"XRAY_NOT_READY: install the pinned runtime and geodata","ping":0,"jitter":0,"down":None,"up":None}
-    local_port = get_free_port()
-    conf_file = os.path.join(WORK_DIR, f"config_{local_port}.json")
+    try:
+        local_port = get_free_port()
+    except (OSError,RuntimeError):
+        return {"status":"Fail","msg":"XRAY_TEST_PORT_UNAVAILABLE",
+                "error_code":"XRAY_TEST_PORT_UNAVAILABLE","ping":0,"jitter":0,
+                "down":None,"up":None,"score":0}
+    conf_file = os.path.join(WORK_DIR, f"config_{local_port}_{os.urandom(6).hex()}.json")
     full_conf = {
         "log": {"loglevel": "none"},
         "inbounds": [{"port": local_port, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
@@ -657,31 +710,45 @@ def test_config_logic(outbound, dl_size_mb=0.5):
 
     proc = None
     try:
-        with open(conf_file, 'w') as f:
+        fd=os.open(conf_file, os.O_CREAT|os.O_EXCL|os.O_WRONLY, 0o600)
+        with os.fdopen(fd,'w') as f:
             json.dump(full_conf, f)
 
         proc = subprocess.Popen(_lowprio_prefix() + [XRAY_BIN, "-c", conf_file], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if not check_port_open(local_port):
             return {"status": "Fail", "msg": "Core Start Fail", "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
 
-        prox = f"socks5://127.0.0.1:{local_port}"
+        # socks5h delegates hostname resolution to Xray/remote egress.
+        # socks5:// performed resolution locally, causing false failures.
+        prox = f"socks5h://127.0.0.1:{local_port}"
         pings = []
+        failure_codes=[]
 
         # Ping Test (3 tries)
         for _ in range(3):
-            try:
-                cmd = _lowprio_prefix() + ["curl", "--proxy", prox, "--silent", "--show-error",
-                                            "--output", "/dev/null", "--write-out", "%{http_code} %{time_total}",
-                                            "--max-time", "4", TEST_URL]
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
-                parts = res.stdout.split()
-                if res.returncode == 0 and len(parts) == 2 and parts[0] == "204":
-                    pings.append(float(parts[1]) * 1000)
-            except Exception:
-                pass
+            # Distinguish unreachable measurement targets from broken Xray.
+            for target_url in _health_urls():
+                try:
+                    cmd = _lowprio_prefix() + ["curl", "--proxy", prox, "--silent", "--show-error",
+                                                "--output", "/dev/null", "--write-out", "%{http_code} %{time_total}",
+                                                "--max-time", "4", target_url]
+                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
+                    parts = res.stdout.split()
+                    if res.returncode == 0 and len(parts) == 2 and parts[0] == "204":
+                        pings.append(float(parts[1]) * 1000)
+                        break
+                    failure_codes.append(_curl_failure(res.returncode,parts[0] if parts else None))
+                except subprocess.TimeoutExpired:
+                    failure_codes.append('TIMEOUT')
+                except (ValueError, OSError):
+                    failure_codes.append('HTTP_CONNECTION_ERROR')
 
         if not pings:
-            return {"status": "Fail", "msg": "Timeout", "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
+            code=('XRAY_ERROR' if proc.poll() is not None else
+                  next((c for c in failure_codes if c not in ('TIMEOUT','HTTP_UNEXPECTED')),None)
+                  or (failure_codes[-1] if failure_codes else 'TIMEOUT'))
+            return {"status": "Fail", "msg": code, "error_code": code,
+                    "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
 
         avg_ping = int(sum(pings) / len(pings))
         jitter = int(max(pings) - min(pings)) if len(pings) >= 2 else 0
@@ -728,6 +795,7 @@ def test_config_logic(outbound, dl_size_mb=0.5):
                     pass
         except Exception:
             pass
+        release_test_port(local_port)
         try:
             if os.path.exists(conf_file):
                 os.remove(conf_file)
