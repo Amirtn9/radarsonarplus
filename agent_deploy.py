@@ -8,10 +8,12 @@ import shlex
 import threading
 import time
 import secrets
+import logging
 
 from access_policy import valid_agent_port
 from ssh_support import normalize_host, ssh_port
 
+log = logging.getLogger(__name__)
 _LOCKS = {}
 _LOCKS_GUARD = threading.Lock()
 
@@ -24,14 +26,14 @@ def privileged_script(command):
             'else echo "ADMIN_REQUIRED: SSH works; use root or passwordless sudo for agent installation" >&2; exit 77; fi')
 
 
-def deploy_agent(monitor, db, ip, port, user, password, ws_port):
+def deploy_agent(monitor, db, ip, port, user, password, ws_port, progress=None):
     ip, port, ws_port = normalize_host(ip), ssh_port(port), valid_agent_port(ws_port)
     with _LOCKS_GUARD:
         lock = _LOCKS.setdefault((ip, port), threading.Lock())
     if not lock.acquire(blocking=False):
         return False, 'AGENT_INSTALL_BUSY: نصب دیگری روی همین سرور در حال اجراست.'
     try:
-        return _deploy(monitor, db, ip, port, user, password, ws_port)
+        return _deploy(monitor, db, ip, port, user, password, ws_port, progress)
     except Exception as exc:
         # Commands and secrets must not appear in installer exceptions.
         return False, f'AGENT_INSTALL_FAILED: {type(exc).__name__}'
@@ -39,18 +41,66 @@ def deploy_agent(monitor, db, ip, port, user, password, ws_port):
         lock.release()
 
 
-def _deploy(monitor, db, ip, port, user, password, ws_port):
+def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
     root = Path(__file__).resolve().parent
     script = (root / 'monitor_agent.py').read_text()
     runtime_lock = json.loads((root / 'agent_runtime.lock.json').read_text())
+    from agent_bootstrap import install_agent_dependencies, rollback_venv, _emit
+    from agent_xray_bridge import install_xray_via_main
     token = db.get_or_create_agent_token(ip, port, ws_port)
 
     def run(command, timeout=120):
         return monitor._run_ssh_command(ip, port, user, password, privileged_script(command), timeout)
 
+    previous_venv = None
+    backup_path = None
+    def fail(message):
+        from logging_config import redact
+        message=redact(str(message))[:600]
+        if backup_path:
+            # Restore all original identity/service files if installation failed.
+            try:
+                rollback_files = ("python3 - " + shlex.quote(backup_path) + " <<'SONAR_ROLLBACK'\n" +
+                    "import pathlib,shutil,sys,subprocess\n" +
+                    "folder=pathlib.Path(sys.argv[1])\n" +
+                    "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service']\n" +
+                    "for ix,path in enumerate(paths):\n" +
+                    " source=folder/str(ix); target=pathlib.Path(path)\n" +
+                    " if source.is_file():\n  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)\n" +
+                    " elif target.is_file():target.unlink()\n" +
+                    "subprocess.run(['systemctl','daemon-reload'],check=False)\n" +
+                    "subprocess.run(['systemctl','try-restart','sonar-agent'] if pathlib.Path(paths[-1]).exists() else ['systemctl','stop','sonar-agent'],check=False)\n" +
+                    "SONAR_ROLLBACK\n")
+                run(rollback_files, 80)
+            except Exception:log.error('Installer file rollback failed')
+        if previous_venv:
+            rollback_venv(run, previous_venv, progress)
+        log.warning('Agent installation failed: %s',message.split(':',1)[0])
+        _emit(progress, 'failed', message[:180])
+        return False, message
+
     ok, out = run('id -u', 25)
     if not ok:
         return False, out
+    backup_path='/var/lib/.sonar-install-backup-'+secrets.token_hex(7)
+    backup=("python3 - " + shlex.quote(backup_path) + " <<'SONAR_BACKUP'\n" +
+            "import pathlib,shutil,sys,os\n" +
+            "folder=pathlib.Path(sys.argv[1]);folder.mkdir(mode=0o700)\n" +
+            "os.chmod(folder,0o700)\n" +
+            "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service']\n" +
+            "for i,path in enumerate(paths):\n" +
+            " source=pathlib.Path(path)\n" +
+            " if source.is_symlink():raise SystemExit('REFUSING_SYMLINKED_IDENTITY')\n" +
+            " if source.is_file():shutil.copy2(source,folder/str(i))\n" +
+            "SONAR_BACKUP\n")
+    ok,out=run(backup,35)
+    if not ok:return False,'AGENT_BACKUP_FAILED: '+str(out)[-130:]
+    try:
+        previous_venv = install_agent_dependencies(run, ip, port, user, password, progress)
+    except Exception as exc:
+        # No TLS or WSS state was changed; keep the pre-existing service available.
+        return fail(str(exc)[:350])
+    _emit(progress, 'upload_agent', 'انتقال فایل‌های Agent روی SSH')
     # Upload as small SFTP chunks using an independently verified SSH host key.
     # Never embed the entire agent source in a single bash -c argument.
     from ssh_support import connect_ssh
@@ -74,9 +124,9 @@ def _deploy(monitor, db, ip, port, user, password, ws_port):
                 f'install -m 0644 {destination}/agent_runtime.lock.json /opt/sonar-agent/agent_runtime.lock.json\n'
                 'chown -R root:root /opt/sonar-agent\n')
         ok,out=run(upload,timeout=90)
-        if not ok:return False,'AGENT_UPLOAD_INSTALL_FAILED: '+str(out)[-400:]
+        if not ok:return fail('AGENT_UPLOAD_INSTALL_FAILED: '+str(out)[-400:])
     except Exception as exc:
-        return False,'AGENT_SFTP_FAILED: '+type(exc).__name__
+        return fail('AGENT_SFTP_FAILED: '+type(exc).__name__)
     finally:
         if ssh:
             try:
@@ -89,17 +139,8 @@ def _deploy(monitor, db, ip, port, user, password, ws_port):
                     sftp.close()
             except (OSError, AttributeError):pass
             ssh.close()
-    setup = '''apt-get update -y
-apt-get install -y python3 python3-venv ca-certificates curl openssl iproute2
-test -x /opt/sonar-agent-venv/bin/python || python3 -m venv /opt/sonar-agent-venv
-/opt/sonar-agent-venv/bin/python -m pip install --disable-pip-version-check 'websockets==13.1' 'psutil==6.1.1' 'PyYAML==6.0.2'
-chmod -R a+rX /opt/sonar-agent-venv
-id -u sonar-agent >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/sonar-agent --shell /usr/sbin/nologin sonar-agent
-install -d -m 0750 -o sonar-agent -g sonar-agent /var/lib/sonar-agent
-'''
-    ok, out = run(setup, 600)
-    if not ok:
-        return False, 'AGENT_DEPENDENCIES_FAILED: ' + out[-700:]
+    ok, out = run('id -u sonar-agent >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/sonar-agent --shell /usr/sbin/nologin sonar-agent; install -d -m 0750 -o sonar-agent -g sonar-agent /var/lib/sonar-agent; chmod -R a+rX /opt/sonar-agent-venv',75)
+    if not ok:return fail('AGENT_ACCOUNT_FAILED: '+str(out)[-250:])
     try:
         ipaddress.ip_address(ip)
         san, check = f'IP:{ip}', '-checkip'
@@ -112,9 +153,10 @@ fi
 chown root:sonar-agent /etc/sonar-agent/tls.key /etc/sonar-agent/tls.crt
 chmod 0640 /etc/sonar-agent/tls.key /etc/sonar-agent/tls.crt
 '''
+    _emit(progress, 'tls', 'بررسی گواهی TLS اختصاصی Agent')
     ok, out = run(cert_setup, 90)
     if not ok:
-        return False, 'AGENT_TLS_FAILED: ' + out[-700:]
+        return fail('AGENT_TLS_FAILED: ' + out[-700:])
     bind = '::' if ':' in ip else '0.0.0.0'
     managed = {'SONAR_AGENT_TOKEN': token, 'SONAR_AGENT_BIND': bind,
                'SONAR_AGENT_TLS_CERT': '/etc/sonar-agent/tls.crt',
@@ -124,7 +166,7 @@ chmod 0640 /etc/sonar-agent/tls.key /etc/sonar-agent/tls.crt
         if os.getenv(name):
             value = os.environ[name]
             if any(c in value for c in '\r\n\0'):
-                return False, 'Invalid Xray deployment setting'
+                return fail('Invalid Xray deployment setting')
             managed[name] = value
     # Merge managed values; keep manually configured pinned Xray/environment values.
     env_script = '''import json,os,pathlib,tempfile
@@ -140,7 +182,7 @@ os.chmod(tmp,0o600);os.replace(tmp,p)
 '''.replace('REPLACED_VALUES', repr(json.dumps(managed)))
     ok, out = run("python3 - <<'SONAR_ENV_PY'\n" + env_script + '\nSONAR_ENV_PY')
     if not ok:
-        return False, 'AGENT_ENV_FAILED: ' + out[-700:]
+        return fail('AGENT_ENV_FAILED: ' + out[-700:])
     runtime_script = '''import os,pathlib,subprocess
 env=os.environ.copy()
 for line in pathlib.Path('/etc/sonar-agent.env').read_text().splitlines():
@@ -148,12 +190,22 @@ for line in pathlib.Path('/etc/sonar-agent.env').read_text().splitlines():
  if sep and (k.startswith('SONAR_XRAY_') or k=='SONAR_AGENT_WORK_DIR'): env[k]=v
 subprocess.run(['runuser','-u','sonar-agent','--','/opt/sonar-agent-venv/bin/python','/opt/sonar-agent/monitor_agent.py','--install-runtime'],env=env,check=True,timeout=300)
 '''
+    _emit(progress, 'xray_direct', 'آماده‌سازی Xray با نسخه و هش پین‌شده')
     ok, out = run("python3 - <<'SONAR_RUNTIME_PY'\n" + runtime_script + '\nSONAR_RUNTIME_PY', 360)
     if not ok:
-        return False, 'XRAY_PROVISION_FAILED: ' + out[-700:]
+        try:
+            local_path, checksum = install_xray_via_main(run, ip, port, user, password, runtime_lock, progress)
+        except Exception as exc:
+            return fail('XRAY_PROVISION_FAILED: '+str(exc)[:240])
+        # Keep archive location out of persistent agent env. TLS enrollment stays per-Agent.
+        offline_runtime = runtime_script.replace(
+            "subprocess.run(['runuser'", "env['SONAR_XRAY_LOCAL_ARCHIVE']='"+local_path+"'\nsubprocess.run(['runuser'")
+        ok, out = run("python3 - <<'SONAR_RUNTIME_PY'\n" + offline_runtime + '\nSONAR_RUNTIME_PY', 360)
+        run('rm -f /var/lib/sonar-agent/.sonar-runtime.zip', 20)
+        if not ok:return fail('XRAY_OFFLINE_PROVISION_FAILED: '+str(out)[-320:])
     quota = os.getenv('SONAR_AGENT_CPU_QUOTA', '60%')
     if not __import__('re').fullmatch(r'[1-9][0-9]{0,3}%', quota):
-        return False, 'Invalid agent CPU quota'
+        return fail('Invalid agent CPU quota')
     unit = f'''[Unit]
 Description=Sonar Monitor Agent
 After=network-online.target
@@ -189,18 +241,20 @@ WantedBy=multi-user.target
                'systemctl daemon-reload\nsystemctl enable sonar-agent\nsystemctl restart sonar-agent\n'
                f"for n in $(seq 1 20); do if systemctl is-active --quiet sonar-agent && ss -H -lnt 'sport = :{ws_port}' | grep -q .; then exit 0; fi; sleep 0.5; done\n"
                'echo AGENT_LISTENER_FAILED >&2\nexit 6\n')
+    _emit(progress, 'service', 'فعال‌سازی و تست سرویس systemd')
     ok, out = run(command, 45)
     if not ok:
-        return False, 'AGENT_SERVICE_FAILED: ' + out[-700:]
+        return fail('AGENT_SERVICE_FAILED: ' + out[-700:])
     ok, cert = run('cat /etc/sonar-agent/tls.crt', 20)
     if not ok:
-        return False, 'AGENT_CERTIFICATE_READ_FAILED'
+        return fail('AGENT_CERTIFICATE_READ_FAILED')
     bot_ip = monitor.get_bot_public_ip()
     firewall = 'Bot public IP unavailable; check the agent firewall manually.'
     if bot_ip:
         allowed, firewall = monitor.whitelist_bot_ip(ip, port, user, password, bot_ip, ws_port)
         if not allowed:
-            return False, 'AGENT_FIREWALL_FAILED: ' + firewall[-500:]
+            return fail('AGENT_FIREWALL_FAILED: ' + firewall[-500:])
+    _emit(progress, 'wss', 'تست اتصال واقعی WSS و TLS با پنل')
     from ws_client import WebSocketPool
     async def probe():
         pool = WebSocketPool(max_per_key=1, open_timeout=6, acquire_timeout=8)
@@ -216,6 +270,8 @@ WantedBy=multi-user.target
         finally:
             await pool.close_all()
     if not asyncio.run(probe()):
-        return False, f'WSS_HEALTH_FAILED: از میزبان ربات اتصال TLS/توکن/Xray روی {ws_port} تأیید نشد؛ فایروال و سرویس را بررسی کنید.'
+        return fail(f'WSS_HEALTH_FAILED: از میزبان ربات اتصال TLS/توکن/Xray روی {ws_port} تأیید نشد؛ فایروال و سرویس را بررسی کنید.')
     db.store_agent_certificate(ip, port, cert.strip(), ws_port)
+    _emit(progress, 'success', 'WSS، TLS و قابلیت Xray تأیید شدند')
+    if backup_path:run('rm -rf -- '+shlex.quote(backup_path), 35)
     return True, f'ایجنت و Xray نصب شدند؛ اتصال WSS:{ws_port} با TLS و توکن آزموده شد.\n{firewall}'

@@ -376,6 +376,7 @@ def install_xray():
         except (OSError, ValueError, KeyError):
             logger.error('Xray runtime lock missing or architecture unsupported')
             return False
+    local_archive = os.getenv('SONAR_XRAY_LOCAL_ARCHIVE', '')
     if not url or not re.fullmatch(r'[a-f0-9]{64}', expected):
         logger.warning('Xray installation requires a pinned URL and SHA-256')
         return False
@@ -402,7 +403,15 @@ def install_xray():
     try:
         with tempfile.TemporaryDirectory(prefix='.xray-install-',dir=WORK_DIR) as temp:
             archive_path = str(Path(temp)/'runtime.zip')
-            result = subprocess.run(
+            if local_archive:
+                local_path = Path(local_archive)
+                if (not local_path.is_file() or local_path.is_symlink() or
+                    not str(local_path).startswith('/var/lib/sonar-agent/')):
+                    raise ValueError('Untrusted local Xray path')
+                shutil.copyfile(local_path, archive_path)
+                result = subprocess.CompletedProcess(['local-verified-archive'], 0)
+            else:
+                result = subprocess.run(
                 ['curl','--fail','--location','--show-error','--silent','--retry','2',
                  '--proto','=https','--proto-redir','=https','--connect-timeout','15',
                  '--max-time','180','--output',archive_path,url],

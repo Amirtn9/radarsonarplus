@@ -24,7 +24,7 @@ from service_monitor import ServiceStore
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
-app=FastAPI(title='Sonar Radar Pro V6.3',docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='Sonar Radar Pro V6.5',docs_url=None,redoc_url=None,openapi_url=None)
 app.mount('/static',StaticFiles(directory=BASE/'pro_web'/'static'),name='static')
 store=ProStore()
 service_store=ServiceStore(store)
@@ -86,6 +86,9 @@ async def headers(request:Request,call_next):
 
 @app.get('/')
 async def index():return FileResponse(BASE/'pro_web'/'index.html')
+
+@app.get('/guide')
+async def public_guide():return FileResponse(BASE/'pro_web'/'guide.html')
 
 @app.get('/healthz')
 async def health():return {'ok':True,'version':(BASE/'VERSION').read_text().strip()}

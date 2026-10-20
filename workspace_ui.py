@@ -113,6 +113,20 @@ async def decide(update,context):
         except Exception: pass
 
 
+def server_heading(server, title):
+    """Same high-level server identity across all submenus; no new SSH poll."""
+    def value(key, unit=''):
+        item=server.get(key)
+        return 'نامشخص' if item is None else html.escape(str(item))+unit
+    return (f'{title}\n'
+            f'🖥 <b>{html.escape(str(server.get("name") or "سرور"))}</b>\n'
+            f'🌐 IP: <code>{html.escape(str(server.get("ip") or "?"))}</code>\n'
+            f'📶 وضعیت: {html.escape(str(server.get("last_status") or "نامشخص"))}\n'
+            f'🧠 CPU: {value("last_cpu","٪")} | 💾 RAM: {value("last_ram","٪")}\n'
+            f'🛰 Agent: {html.escape(str(server.get("last_agent_status") or "نامشخص"))}\n'
+            '━━━━━━━━━━━━━━\n')
+
+
 async def server_tools(update,context):
     sid=int(update.callback_query.data.rsplit('_',1)[1])
     server=await run_sync(db.get_server_for_user,sid,update.effective_user.id)
@@ -121,11 +135,10 @@ async def server_tools(update,context):
     buttons=[
         [B('📊 گزارش کامل',callback_data=f'act_fullreport_{sid}')],
         [B('🌐 تست ارتباط ایران',callback_data=f'act_checkhost_{sid}_{server["ip"]}')],
-        [B('🚀 تست سرعت',callback_data=f'act_speedtest_{sid}')],
+        [B('🚀 تست سرعت',callback_data=f'act_speedtest_{sid}'),B('📉 نمودار مصرف',callback_data=f'act_chart_{sid}')],
         [B('🧹 پاکسازی RAM',callback_data=f'act_clearcache_{sid}')],
-        [B('📉 نمودار مصرف',callback_data=f'act_chart_{sid}')],
         [B('⬅️ جزئیات سرور',callback_data=f'detail_{sid}')]]
-    await show(update,f'🧰 <b>ابزارهای سرور: {html.escape(server["name"])}</b>\n\nابزار مورد نظر را انتخاب کنید.',M(buttons))
+    await show(update,server_heading(server,'🧰 <b>ابزارهای سرور</b>')+'ابزار مورد نظر را انتخاب کنید.',M(buttons))
 
 
 async def server_settings(update,context):
@@ -133,10 +146,8 @@ async def server_settings(update,context):
     server=await run_sync(db.get_server_for_user,sid,update.effective_user.id)
     if not server:
         await update.callback_query.answer('سرور در دسترس نیست.',show_alert=True);return
-    await show(update,f'⚙️ <b>تنظیمات سرور: {html.escape(server["name"])}</b>\n'
-         f'🌐 آدرس فعلی: <code>{html.escape(server["ip"])}</code>\n\nبرای تغییر هر مورد یک مرحله جدید باز می‌شود.',
-         M([[B('🌐 تغییر IP سرور',callback_data=f'ui_ip_start_{sid}')],
-            [B('📅 تنظیم انقضا',callback_data=f'act_editexpiry_{sid}')],
+    await show(update,server_heading(server,'⚙️ <b>تنظیمات سرور</b>')+'برای تغییر هر مورد یک مرحله جدید باز می‌شود.',
+         M([[B('🌐 تغییر IP',callback_data=f'ui_ip_start_{sid}'),B('📅 تنظیم انقضا',callback_data=f'act_editexpiry_{sid}')],
             [B('⚙️ DNS',callback_data=f'act_dns_{sid}')],
             [B('⚠️ حذف سرور',callback_data=f'ui_delete_{sid}')],
             [B('⬅️ بازگشت',callback_data=f'detail_{sid}')]]))
@@ -148,19 +159,15 @@ async def server_advanced(update,context):
     if not srv:
         await update.callback_query.answer('سرور در دسترس نیست.',show_alert=True);return
     kb=M([
-      [B('🏢 اطلاعات دیتاسنتر',callback_data=f'act_datacenter_{sid}')],
-      [B('📝 گزارش جهانی',callback_data=f'act_fullreport_{sid}')],
-      [B('📥 نصب ابزار سرعت',callback_data=f'act_installspeed_{sid}')],
-      [B('📦 بروزرسانی مخازن',callback_data=f'act_repoupdate_{sid}')],
-      [B('💎 ارتقای سیستم',callback_data=f'act_fullupdate_{sid}')],
-      [B('🧹 پاکسازی دیسک',callback_data=f'act_cleandisk_{sid}')],
-      [B('🛠 اجرای اسکریپت',callback_data=f'act_installscript_{sid}')],
-      [B('🧩 نصب/رفع ایجنت',callback_data=f'act_installagent_{sid}')],
+      [B('🏢 اطلاعات دیتاسنتر',callback_data=f'act_datacenter_{sid}'),B('📝 گزارش جهانی',callback_data=f'act_fullreport_{sid}')],
+      [B('📥 نصب ابزار سرعت',callback_data=f'act_installspeed_{sid}'),B('📦 بروزرسانی مخازن',callback_data=f'act_repoupdate_{sid}')],
+      [B('💎 ارتقای سیستم',callback_data=f'act_fullupdate_{sid}'),B('🧹 پاکسازی دیسک',callback_data=f'act_cleandisk_{sid}')],
+      [B('🛠 اجرای اسکریپت',callback_data=f'act_installscript_{sid}'),B('🧩 نصب/رفع ایجنت',callback_data=f'act_installagent_{sid}')],
       [B('📜 لاگ ایجنت',callback_data=f'act_agentlog_{sid}')],
       [B('⚠️ ریستارت سرور',callback_data=f'act_reboot_{sid}')],
       [B('⬅️ جزئیات سرور',callback_data=f'detail_{sid}')],
     ])
-    await show(update,f'🛠 <b>امکانات پیشرفته {html.escape(srv["name"])}</b>\n\nاین عملیات ممکن است تنظیمات سرور را تغییر دهند؛ با دقت انتخاب کنید.',kb)
+    await show(update,server_heading(srv,'🛠 <b>امکانات پیشرفته</b>')+'این عملیات ممکن است تنظیمات سرور را تغییر دهند؛ با دقت انتخاب کنید.',kb)
 
 
 async def delete_confirm(update,context):

@@ -312,11 +312,11 @@ class ServerMonitor:
     # 🛠 INSTALLATION & SETUP
     # ---------------------------------------------------------
     @staticmethod
-    def install_agent_service(ip, port_ssh, user, password, ws_port):
+    def install_agent_service(ip, port_ssh, user, password, ws_port, progress=None):
         from agent_deploy import deploy_agent
         from database import Database
         try:
-            return deploy_agent(ServerMonitor, Database(), ip, port_ssh, user, password, ws_port)
+            return deploy_agent(ServerMonitor, Database(), ip, port_ssh, user, password, ws_port, progress=progress)
         except (ValueError, LookupError) as exc:
             return False, str(exc)
 

@@ -142,10 +142,35 @@ async def diag_zip(update, context):
             except OSError:pass
 
 
+async def guide_menu(update, context):
+    """Accessible from Telegram, with a full public HTTPS mini-app if deployed."""
+    import os
+    from urllib.parse import urlsplit
+    from telegram import WebAppInfo
+    url=os.getenv('SONAR_WEBAPP_URL','').strip()
+    parsed=urlsplit(url)
+    buttons=[]
+    if parsed.scheme=='https' and parsed.hostname and not parsed.username and not parsed.password:
+        guide_url=url.rstrip('/').split('?',1)[0]+'/guide'
+        buttons.append([B('🌐 باز کردن راهنمای تصویری',web_app=WebAppInfo(url=guide_url))])
+    buttons.extend([[B('🖥 شروع افزودن سرور',callback_data='add_server')],
+                    [B('⚙️ تنظیم کانال‌ها',callback_data='channels_menu')],
+                    [B('⬅️ صفحه اصلی',callback_data='main_menu')]])
+    txt=('📚 <b>راهنمای کامل سونار رادار</b>\n\n'
+         '🖥 <b>سرورها:</b> از «سرورهای من ← افزودن سرور» نام، IP، پورت SSH، نام کاربری و رمز را مرحله‌به‌مرحله وارد کنید. اثر انگشت SSH را مستقل تأیید کنید.\n\n'
+         '🛰 <b>Agent:</b> از صفحه سرور، امکانات پیشرفته ← نصب/رفع ایجنت را بزنید؛ نصب مستقیم، در صورت لزوم بسته آفلاین و سپس صحت TLS/WSS بررسی می‌شود.\n\n'
+         '🧩 <b>کانفیگ‌ها:</b> افزودن، مشاهده، تست و رتبه‌بندی بر اساس آخرین داده‌های سنجش.\n\n'
+         '📢 <b>اعلان‌ها:</b> در تنظیمات، کانال را ثبت کنید؛ ربات باید مجوز ارسال پیام داشته باشد. سپس نوع هشدار و زمان‌بندی گزارش را انتخاب کنید.\n\n'
+         '👥 <b>هم‌گروهی:</b> درخواست با آیدی عددی فرستاده می‌شود و فقط بعد از تأیید همکار، اطلاعات فنی مشترک می‌شود.\n\n'
+         '💡 برای آموزش کامل و پرسش‌های متداول، نسخه وب راهنما را باز کنید.')
+    await show(update,txt,M(buttons))
+
+
 def register(app):
     from workspace_ui import register as register_workspace
     register_workspace(app)
     app.add_handler(SecureCommandHandler('menu',dashboard),group=0)
+    app.add_handler(SecureCallbackQueryHandler(guide_menu,pattern=r'^v6_guide$'),group=0)
     app.add_handler(SecureCommandHandler('doctor',diag_menu),group=0)
     app.add_handler(SecureCallbackQueryHandler(dashboard,pattern=r'^v6_home$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(return_to_section,pattern=r'^v6_return$'),group=0)

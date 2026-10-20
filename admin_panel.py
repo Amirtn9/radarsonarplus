@@ -1051,7 +1051,16 @@ async def _admin_install_many(servers, selected_port, message):
             failures.append(f'{srv["id"]}: سرور حذف شده است.');continue
         port=valid_agent_port(selected_port or current.get('ws_port') or AGENT_PORT)
         await message.edit_text(f'⏳ {index}/{len(servers)} | {current["name"]} | SSH:{current["port"]} | WSS:{port}')
-        ok,detail=await run_sync(ServerMonitor.install_agent_service,current['ip'],current['port'],current['username'],sec.decrypt(current['password']),port)
+        loop=asyncio.get_running_loop()
+        stamp=[0.0]
+        def progress(stage, detail):
+            import time as _time
+            if _time.monotonic()-stamp[0] < 2.0 and stage not in ('failed','success','fallback','transfer'):return
+            stamp[0]=_time.monotonic()
+            asyncio.run_coroutine_threadsafe(message.edit_text(
+                f'⏳ {index}/{len(servers)} | {current["name"]}\n'
+                f'🔹 {stage}: {detail[:200]}'),loop)
+        ok,detail=await run_sync(ServerMonitor.install_agent_service,current['ip'],current['port'],current['username'],sec.decrypt(current['password']),port, progress=progress)
         await run_sync(db.update_server_error,current['id'],'' if ok else detail)
         if ok:count+=1
         else:failures.append(f'{current["name"]}: {str(detail)[:500]}')

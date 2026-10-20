@@ -11,6 +11,8 @@ async def send_notification(context, owner, text, usage, *, parse_mode=None, db=
         from database import Database
         db = Database()
     channels = await run_sync(db.get_user_channels, int(owner))
+    # Both report schedulers share the user's single «گزارش‌ها» destination.
+    usage = 'report' if usage in ('config_report','server_report') else usage
     specific = [row for row in channels if row.get('usage_type') == usage]
     selected = specific or [row for row in channels if row.get('usage_type') == 'all']
     targets = {(int(row['chat_id']), int(row.get('topic_id') or 0)) for row in selected}

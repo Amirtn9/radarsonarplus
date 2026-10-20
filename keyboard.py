@@ -50,6 +50,7 @@ def main_menu_kb(user_id, is_monitor_ready, admin_id):
         [InlineKeyboardButton('⚙️ تنظیمات', callback_data='v6_settings'),
          InlineKeyboardButton('👤 حساب و همکاران', callback_data='v6_account')],
     ]
+    kb.append([InlineKeyboardButton('📚 آموزش و راهنمای ربات', callback_data='v6_guide')])
     if user_id == admin_id and admin_id:
         kb.append([InlineKeyboardButton('👑 مدیریت ربات', callback_data='v6_admin')])
     webapp=_webapp_button()

@@ -2,7 +2,7 @@ import os
 import logging
 import json
 
-PROJECT_VERSION = "6.4.0"
+PROJECT_VERSION = "6.5.0"
 
 # ==============================================================================
 # 📂 FILE PATHS CONFIGURATION

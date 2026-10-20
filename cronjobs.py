@@ -173,7 +173,20 @@ async def monitor_tunnels_job(context: ContextTypes.DEFAULT_TYPE):
                 size=size_setting('monitor_big_size',10.0) if heavy else size_setting('monitor_small_size',0.5)
                 if heavy:await run_sync(db.set_setting,uid,'last_big_test_at',now.isoformat())
                 result = await tunnel_manager.process_singles_async(configs, monitor, uid=uid,size=size)
-                await send_notification(context,uid,f'📡 گزارش دوره‌ای: {len(result)} کانفیگ سالم از {len(configs)} مورد'+('\n⚠️ برخی کانفیگ‌ها ناموفق هستند.' if len(result)<len(configs) else ''),'config_report',db=db)
+                report=f'📡 گزارش دوره‌ای: {len(result)} کانفیگ سالم از {len(configs)} مورد'
+                if len(result)<len(configs):report+='\n⚠️ برخی کانفیگ‌ها ناموفق هستند.'
+                try:
+                    from pro_store import ProStore
+                    ranks=await run_sync(ProStore().rankings,uid,None,1)
+                    if ranks:
+                        top=ranks[0]
+                        report+=f'\n🏆 رتبه اول براساس آخرین سنجش: {top["name"]} | امتیاز {top["score"]}/100'
+                        report+='\nℹ️ امتیاز فقط بر مبنای داده‌های موجود است؛ اگر سنجش تازه‌ای نباشد، نتیجه قطعی نیست.'
+                except Exception:
+                    logger.warning('Config ranking unavailable for scheduled report')
+                delivered=await send_notification(context,uid,report,'config_report',db=db)
+                if not delivered:
+                    logger.warning('Scheduled config report undelivered user=%s',uid)
             except Exception:
                 logger.exception('Config monitoring failed for %s', uid)
     finally:
@@ -453,6 +466,17 @@ async def server_report_job(context):
             active=[s for s in rows if s.get('is_active')]
             if not active:continue
             text='📊 گزارش دوره‌ای سرورها\n'+get_jalali_str()+'\n\n'
+            # Ranking uses only recorded CPU/RAM observations, not an invented ping or live test.
+            def load(row):
+                try:return (float(row['last_cpu'])+float(row['last_ram']))/2
+                except (ValueError,TypeError,KeyError):return None
+            candidates=[(load(row),row) for row in active if row.get('last_status')=='Online']
+            candidates=[(score,row) for score,row in candidates if score is not None]
+            if candidates:
+                least=min(candidates,key=lambda x:x[0])
+                text+=f'🏆 کم‌مصرف‌ترین سرور ثبت‌شده: {least[1]["name"]} | میانگین CPU/RAM: {least[0]:.1f}%\n'
+                text+='ℹ️ این رتبه‌بندی صرفاً براساس آخرین مصرف ثبت‌شده است، نه تست زنده سرعت.\n\n'
+
             for row in active:
                 cpu='?' if row.get('last_cpu') is None else f'{row["last_cpu"]:.1f}'
                 ram='?' if row.get('last_ram') is None else f'{row["last_ram"]:.1f}'
