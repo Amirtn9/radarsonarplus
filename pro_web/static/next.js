@@ -133,7 +133,7 @@
   const host=byId('fleet-installer');if(!host)return;
   try{const me=await request('/api/me');admin=!!me.admin;host.hidden=!admin;if(!admin)return;
    const candidates=await request('/api/fleet/candidates');const list=byId('fleet-candidates');list.replaceChildren();
-   if(!candidates.length)list.append(element('p','سرور ایران متعلق به مدیر ثبت نشده است.','muted'));
+   if(!candidates.length)list.append(element('p','سرور ایران فعالی ثبت نشده است.','muted'));
    for(const s of candidates){const label=element('label',null,'fleet-candidate');const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.value=String(s.id);
       label.append(checkbox,element('span',`${s.name} · ${s.ip} · پورت ${s.ws_port}`));list.append(label);}
    const jobs=await request('/api/fleet/install/jobs');const out=byId('fleet-jobs');out.replaceChildren();
@@ -151,4 +151,34 @@
  const parent=window.SonarNext?.loadFleet;
  if(parent){window.SonarNext.loadFleet=async()=>{await Promise.all([parent(),loadInstall()]);};}
  setInterval(()=>{if(state.tab==='fleet'&&admin)loadInstall();},30000);
+})();
+
+// Administrator-only measured WSS/SSH-relay traffic. No raw credentials exposed.
+(() => {
+ const byId=id=>document.getElementById(id);
+ const node=(tag,text,cls)=>{const el=document.createElement(tag);el.textContent=String(text??'');if(cls)el.className=cls;return el;};
+ const gb=value=>(Number(value||0)/1073741824).toFixed(3)+' GB';
+ async function loadTraffic(){
+   const panel=byId('fleet-traffic-panel');if(!panel)return;
+   try {
+     const me=await request('/api/me');panel.hidden=!me.admin;if(!me.admin)return;
+     const list=byId('fleet-traffic-rows');list.replaceChildren(node('p','در حال دریافت نمونه‌ها…','muted'));
+     const data=await request('/api/fleet/traffic');list.replaceChildren();
+     if(!(data.rows||[]).length)list.append(node('p','هنوز نمونه مصرف ثبت نشده است.','muted'));
+     for(const row of data.rows||[]){
+       const card=node('article','', 'fleet-result');
+       card.append(node('strong',`${row.name} · مالک ${row.owner_id} · Agent #${row.agent_id}`),
+         node('p',`کل از آخرین بازنشانی: ${gb(row.total)} | امروز: ${gb(row.today)} | ۷ روز: ${gb(row.week)} | ۳۰ روز: ${gb(row.month)}`),
+         node('small',`آخرین نمونه: ${row.sampled_at||'داده‌ای موجود نیست'}`));
+       if(row.sampled_at){const b=node('button','بازنشانی شمارنده');
+         b.onclick=async()=>{if(!confirm(`شمارنده Agent #${row.agent_id} ریست شود؟ تاریخچه قبلی حفظ می‌شود.`))return;
+           try{await jsonPost(`/api/fleet/traffic/${row.agent_id}/reset`,{confirmed:true});toast('شمارنده بازنشانی شد');await loadTraffic();}
+           catch(err){toast(err.message);}};card.append(b);}
+       list.append(card);
+     }
+   }catch(err){byId('fleet-traffic-rows')?.replaceChildren(node('p',err.message,'bad'));}
+ }
+ byId('fleet-traffic-refresh')?.addEventListener('click',loadTraffic);
+ const orig=window.SonarNext?.loadFleet;
+ if(orig)window.SonarNext.loadFleet=async()=>{await Promise.all([orig(),loadTraffic()]);};
 })();

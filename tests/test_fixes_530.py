@@ -551,7 +551,7 @@ def test_server_wizard_preserves_custom_port_for_background_install():
     update = types.SimpleNamespace(effective_user=types.SimpleNamespace(id=15),
         effective_message=types.SimpleNamespace(reply_text=AsyncMock(return_value=message)))
     context = types.SimpleNamespace(user_data={'srv': {'name': 'test', 'ip': '127.0.0.1', 'port': 22,
-        'username': 'audit', 'password': 'local-only', 'ws_port': 9090}, 'srv_group_id': 0})
+        'username': 'audit', 'password': 'local-only', 'ws_port': 9090, 'location_type':'ir'}, 'srv_group_id': 0})
     async def check():
         assert await fn(update, context) == -1
         assert 'srv' not in context.user_data

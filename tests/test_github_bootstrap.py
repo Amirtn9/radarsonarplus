@@ -31,7 +31,7 @@ def test_one_choice_installs_panel_and_bot():
 
 def test_version_matches():
     v = (ROOT / 'VERSION').read_text().strip()
-    assert v == '6.5.3'
+    assert v == '6.6.0-rc2'
     assert v in (ROOT / 'settings.py').read_text()
 
 

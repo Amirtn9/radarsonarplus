@@ -11,15 +11,11 @@ from access_policy import has_premium
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id in USER_ACTIVE_TASKS:
-        task = USER_ACTIVE_TASKS[user_id]
-        if not task.done():
-            task.cancel()
-            try: 
-                await task
-            except asyncio.CancelledError: 
-                pass
-        USER_ACTIVE_TASKS.pop(user_id, None)
+    # /start is navigation, not a cancellation command. A persisted fetch/test
+    # must finish even if the user changes menus during the operation.
+    task=USER_ACTIVE_TASKS.get(user_id)
+    if task is not None and task.done():
+        USER_ACTIVE_TASKS.pop(user_id,None)
     context.user_data.clear()
     await register_user_logic(update, context)
     if not cronjobs.IS_SYSTEM_INITIALIZED:
@@ -86,7 +82,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = keyboard.main_menu_kb(user_id, is_monitor_ready, SUPER_ADMIN_ID)
 
     # No network-bound statistics calls on the home screen: navigation must be immediate.
-    txt = ("📡 *SONAR RADAR | Pro 6.5.4*\n"
+    txt = ("📡 *SONAR RADAR | Pro 6.6.0-rc2*\n"
            "━━━━━━━━━━━━━━━━━\n"
            f"👤 اعتبار شما: `{remaining}`\n\n"
            "به کدام بخش نیاز دارید؟\n"
@@ -152,6 +148,8 @@ async def web_token_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     code=await run_sync(issue_code,db,uid)
     btn=_webapp_button()
     rows=[[btn]] if btn else []
+    rows.append([InlineKeyboardButton('🔄 بازنشانی کد ورود',callback_data='gen_web_token')])
+    rows.append([InlineKeyboardButton('🚪 خروج از تمام دستگاه‌های وب',callback_data='web_logout_all')])
     rows.append([InlineKeyboardButton('🔙 بازگشت',callback_data='main_menu')])
     await safe_edit_message(update,
          '🔐 **کد یک‌بارمصرف ورود به وب‌سایت**\n\n'
@@ -161,3 +159,14 @@ async def web_token_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
          f'🌐 {web_url}', reply_markup=InlineKeyboardMarkup(rows))
 
 # ==============================================================================
+
+
+async def web_logout_all_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Only the logged-in Telegram account can revoke its web sessions."""
+    from web_login import logout_all
+    if not update.effective_chat or update.effective_chat.type!='private':
+        await update.callback_query.answer('این گزینه فقط در گفت‌وگوی خصوصی فعال است.',show_alert=True)
+        return
+    await run_sync(logout_all,db,update.effective_user.id)
+    await update.callback_query.answer('تمام نشست‌های وب لغو شدند.',show_alert=True)
+    await safe_edit_message(update,'✅ تمام نشست‌های وب و کدهای استفاده‌نشده باطل شدند. برای ورود دوباره کد جدید بگیرید.',reply_markup=keyboard.back_btn())

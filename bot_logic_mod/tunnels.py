@@ -346,12 +346,17 @@ async def update_all_configs_status(update: Update, context: ContextTypes.DEFAUL
         configs = cur.fetchall()
         monitor = select_monitor_in_cursor(cur,uid,SUPER_ADMIN_ID)
 
+    # Subscription sources are records, not testable configs.
+    configs=[cfg for cfg in configs if cfg['type'] != 'sub_source']
+    if not configs:
+        await query.message.reply_text('✅ اطلاعات اشتراک‌ها ذخیره است، ولی هنوز کانفیگی برای تست استخراج نشده است.')
+        return
     if not monitor:
-        await query.message.reply_text("❌ سرور مانیتورینگ فعال نیست.")
+        await query.message.reply_text('✅ کانفیگ‌ها ذخیره‌اند؛ ولی Agent ایران آماده‌ای برای تست وجود ندارد.')
         return
 
     # اجرا در پس‌زمینه بدون معطل کردن کاربر
-    asyncio.create_task(background_update_all(context, uid, configs, monitor))
+    context.application.create_task(background_update_all(context, uid, configs, monitor),update=update)
     
     # بازگشت موقت به لیست
     await tunnel_list_menu(update, context)
@@ -464,7 +469,7 @@ async def handle_single_config_auto(update: Update, context: ContextTypes.DEFAUL
             try: await status_msg.edit_text(f"❌ خطا: {e}")
             except: pass
         finally:
-             if uid in USER_ACTIVE_TASKS: del USER_ACTIVE_TASKS[uid]
+             if USER_ACTIVE_TASKS.get(uid) is asyncio.current_task(): USER_ACTIVE_TASKS.pop(uid,None)
 
     # ثبت تسک و پایان
     task = asyncio.create_task(heavy_config_check_task())
@@ -610,8 +615,8 @@ async def handle_config_type_selection(update: Update, context: ContextTypes.DEF
                 await status_msg.edit_text(f"❌ خطای سیستم: {e}")
             finally:
                 # حذف تسک از لیست فعال‌ها
-                if uid in USER_ACTIVE_TASKS:
-                    del USER_ACTIVE_TASKS[uid]
+                if USER_ACTIVE_TASKS.get(uid) is asyncio.current_task():
+                    USER_ACTIVE_TASKS.pop(uid,None)
 
         # ✅ ایجاد و ثبت تسک
         task = asyncio.create_task(heavy_config_check())
@@ -1031,8 +1036,11 @@ async def manual_update_sub_action(update: Update, context: ContextTypes.DEFAULT
         cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, uid))
         sub = cur.fetchone()
         monitor = select_monitor_in_cursor(cur,uid,SUPER_ADMIN_ID)
-    if not sub or not monitor:
-        await query.answer("❌ اشتراک یا نود مانیتورینگ یافت نشد.", show_alert=True)
+    if not sub:
+        await query.answer("❌ اشتراک یافت نشد.", show_alert=True)
+        return
+    if not monitor:
+        await query.answer("✅ اشتراک موجود است؛ Agent آماده‌ای برای دریافت و تست نداریم.", show_alert=True)
         return
     await query.answer("⏳ درخواست آپدیت ثبت شد.")
     context.application.create_task(run_sub_update_background(context, uid, sub, monitor), update=update)

@@ -95,8 +95,10 @@ async def process_linear_data(update: Update, context: ContextTypes.DEFAULT_TYPE
     uid=update.effective_user.id
     async def worker():
         report=[]
+        from ssh_relay import eligible_relay_nodes
         for data in entries:
-            result=await run_sync(ServerMonitor.check_ssh_connection,data['ip'],data['port'],data['username'],sec.decrypt(data['password']))
+            nodes=await run_sync(eligible_relay_nodes,db,SUPER_ADMIN_ID,exclude_ip=data['ip'])
+            result=await run_sync(ServerMonitor.check_ssh_connection,data['ip'],data['port'],data['username'],sec.decrypt(data['password']),nodes)
             if result.get('status')!='Online':
                 report.append(f'❌ {data["name"]}: {result.get("error")}')
                 if str(result.get('error','')).startswith('HOST_KEY_UNKNOWN'):
@@ -584,10 +586,20 @@ async def server_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, cust
                     # اگر احراز هویت اشتباه باشد، وضعیت جداگانه ثبت شود
                     if err.lower().find('auth') != -1:
                         db.update_status(sid, "Auth Failed")
+                        label, marker = "🔐", "Auth Failed"
+                    elif err.startswith(('SSH_TIMEOUT', 'SSH_PORT_UNREACHABLE',
+                                         'SSH_CONNECTION_REFUSED', 'SSH_CONNECTION_FAILED',
+                                         'SSH_DNS_FAILED')):
+                        # An unresponsive SSH endpoint does not prove the VPS is down.
+                        db.update_status(sid, "Unknown")
+                        label, marker = "🟠", "SSH Unreachable"
                     else:
                         db.update_status(sid, "Offline")
+                        label, marker = "🔴", "Offline"
                     db.update_server_error(sid, err)
-                    txt = f"🔴 **{srv['name']}** `[Offline]`\n❌ خطا: `{err}`"
+                    txt = (f"{label} **{srv['name']}** `[{marker}]`\n❌ خطا: `{err}`"
+                           + ("\nℹ️ دسترسی SSH ممکن است از مسیر سرور مرکزی مسدود باشد؛ خاموشی سرور تأیید نشده است."
+                              if marker == "SSH Unreachable" else ""))
 
                 try: await msg.edit_text(txt, reply_markup=reply_markup, parse_mode='Markdown')
                 except: await context.bot.send_message(chat_id=update.effective_chat.id, text=txt, reply_markup=reply_markup, parse_mode='Markdown')
@@ -1219,13 +1231,25 @@ async def _complete_server_add(update, context):
         await update.effective_message.reply_text('❌ موقعیت سرور (ایران/خارج) باید مشخص شود.')
         return ConversationHandler.END
     data['ws_port']=valid_agent_port(data.get('ws_port') or AGENT_PORT)
-    status=await update.effective_message.reply_text('⏳ در حال بررسی اتصال SSH...')
-    result=await run_sync(ServerMonitor.check_ssh_connection,data['ip'],data['port'],data['username'],sec.decrypt(data['password']))
+    status=await update.effective_message.reply_text('⏳ ابتدا اتصال مستقیم SSH بررسی می‌شود؛ در صورت انسداد، Agentهای ایران آزمایش می‌شوند...')
+    from ssh_relay import eligible_relay_nodes
+    nodes=await run_sync(eligible_relay_nodes,db,SUPER_ADMIN_ID,exclude_ip=data['ip'])
+    result=await run_sync(ServerMonitor.check_ssh_connection,data['ip'],data['port'],data['username'],sec.decrypt(data['password']),nodes)
     if result.get('status')!='Online':
         error=str(result.get('error','SSH_CONNECTION_FAILED'))
         if error.startswith('HOST_KEY_UNKNOWN'):
             try:
-                candidate=await run_sync(scan_host_key,data['ip'],data['port'])
+                try:
+                    candidate=await run_sync(scan_host_key,data['ip'],data['port'])
+                except Exception:
+                    candidate=None
+                    for relay in nodes:
+                        try:
+                            candidate=await run_sync(scan_host_key,data['ip'],data['port'],relay)
+                            candidate['relay_node_id']=int(relay['id'])
+                            break
+                        except Exception:continue
+                    if candidate is None:raise
             except Exception as exc:
                 from ssh_support import describe_ssh_error
                 await status.edit_text(describe_ssh_error(exc))
@@ -1236,7 +1260,14 @@ async def _complete_server_add(update, context):
                 'از کنسول سرور یا پشتیبانی ارائه‌دهنده، اثرانگشت را مستقل بررسی کنید. '
                 'اثر انگشت SHA256 تأییدشده را اینجا بفرستید؛ برای لغو /cancel بزنید.')
             return CONFIRM_SSH_HOST
-        await status.edit_text('❌ اتصال SSH برقرار نشد.\n'+error+'\nپورت SSH و پورت ایجنت 8080 دو تنظیم جدا هستند.')
+        checkhost_label='بررسی نشده'
+        try:
+            from network_diagnostics import checkhost_ping
+            if not nodes or str(error).startswith(('SSH_TIMEOUT','SSH_PORT_UNREACHABLE','SSH_CONNECTION_FAILED')):
+                ping=await run_sync(checkhost_ping,data['ip'])
+                checkhost_label='✅ پاسخ پینگ از حداقل یک نقطه' if ping=='ping_reachable' else 'نامشخص (پینگ ملاک SSH نیست)'
+        except Exception:checkhost_label='در دسترس نیست'
+        await status.edit_text('⚠️ اتصال مدیریتی SSH برقرار نشد؛ این خطا لزوماً به معنی خاموش‌بودن سرور نیست.\n'+error+'\n🔎 Check-Host: '+checkhost_label+'\nمسیر مستقیم و Agentهای تأییدشده آزمایش شدند. SSH باید از داخل ایران روی پورت ثبت‌شده در دسترس باشد.')
         return ConversationHandler.END
     sid=await run_sync(db.add_server,uid,int(context.user_data.get('srv_group_id') or 0),data,SUPER_ADMIN_ID)
     if not isinstance(sid,int) or sid<=0:
@@ -1265,7 +1296,13 @@ async def confirm_ssh_host_input(update: Update, context: ContextTypes.DEFAULT_T
         return CONFIRM_SSH_HOST
     try:
         from ssh_support import authenticate_candidate
-        await run_sync(authenticate_candidate,candidate,expected,data['username'],sec.decrypt(data['password']))
+        relay_node=None
+        if candidate.get('relay_node_id'):
+            from ssh_relay import eligible_relay_nodes
+            nodes=await run_sync(eligible_relay_nodes,db,SUPER_ADMIN_ID,exclude_ip=data.get('ip'))
+            relay_node=next((r for r in nodes if int(r['id'])==int(candidate['relay_node_id'])),None)
+            if relay_node is None:raise PermissionError('Selected Agent no longer enrolled/healthy')
+        await run_sync(authenticate_candidate,candidate,expected,data['username'],sec.decrypt(data['password']),relay_node)
         await run_sync(trust_host_key,candidate,expected)
     except Exception as exc:
         from ssh_support import describe_ssh_error
