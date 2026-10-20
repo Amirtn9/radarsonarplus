@@ -10,6 +10,7 @@ import zipfile
 import re
 import random
 import socket
+import ipaddress
 import threading
 import tempfile
 import math
@@ -987,6 +988,29 @@ Protocol:
                 except Exception as exc:
                     logger.warning('fetch_sub failed: %s',type(exc).__name__)
                     await websocket.send(json.dumps({'error':'FETCH_INTERNAL_ERROR'}))
+
+            elif action == 'probe_public_tcp':
+                # Bounded, read-only reachability probe. Remote-shell remains
+                # disabled. Only publicly routable IPs and a small port list.
+                host = str(data.get('target') or '')
+                try:
+                    address=ipaddress.ip_address(host)
+                    port=int(data.get('port') or 443)
+                    if not address.is_global or port not in (22,80,443,8080,8443,2022,2222):
+                        raise ValueError('invalid_target')
+                except (ValueError,TypeError):
+                    await websocket.send(json.dumps({'error':'INVALID_PUBLIC_TCP_PROBE'}))
+                    continue
+                try:
+                    started=time.monotonic()
+                    async with _get_test_semaphore():
+                        reader, writer = await asyncio.wait_for(
+                            asyncio.open_connection(str(address),port),timeout=3.5)
+                        writer.close()
+                        await writer.wait_closed()
+                    await websocket.send(json.dumps({'reachable':True,'rtt_ms':round((time.monotonic()-started)*1000,1)}))
+                except (OSError,asyncio.TimeoutError):
+                    await websocket.send(json.dumps({'reachable':False,'error_code':'TCP_UNREACHABLE'}))
 
             elif action == 'run_cmd':
                 # Remote shell via WebSocket is deliberately disabled.

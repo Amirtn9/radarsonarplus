@@ -52,6 +52,12 @@ def main():
         # Pro schema migrations fail startup rather than leaving half-working controls.
         from pro_store import install_schema
         await asyncio.to_thread(install_schema)
+        from web_login import install_schema as web_schema
+        from monitor_fleet import install_schema as fleet_schema,install_job_schema
+        from database import Database
+        await asyncio.to_thread(web_schema,Database())
+        await asyncio.to_thread(fleet_schema,Database())
+        await asyncio.to_thread(install_job_schema,Database())
 
     async def _post_shutdown(application):
         try:
@@ -87,6 +93,8 @@ def main():
     register_all_handlers(app)
     from service_bot import register as register_service_handlers
     register_service_handlers(app)
+    from fleet_bot import register as register_fleet
+    register_fleet(app)
 
     # راه‌اندازی جاب‌ها (Job Queue)
     if app.job_queue:
@@ -110,6 +118,11 @@ def main():
         app.job_queue.run_repeating(digest_job, interval=3600, first=360,
                                     job_kwargs={'max_instances': 1, 'coalesce': True})
         app.job_queue.run_daily(cleanup_job, time=dt.time(hour=3, minute=0))
+        from monitor_fleet import fleet_heartbeat_job, fleet_install_job
+        app.job_queue.run_repeating(fleet_install_job, interval=35, first=50,
+                                    job_kwargs={'max_instances':1,'coalesce':True})
+        app.job_queue.run_repeating(fleet_heartbeat_job, interval=90, first=45,
+                                    job_kwargs={'max_instances':1,'coalesce':True})
         from service_jobs import service_check_job
         app.job_queue.run_repeating(service_check_job, interval=30, first=35,
                                     job_kwargs={'max_instances':1,'coalesce':True})

@@ -165,6 +165,7 @@ def register_all_handlers(app:  Application):
             GET_CUSTOM_WS_PORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, servers.get_custom_ws_port)],
             CONFIRM_SSH_HOST: [MessageHandler(text_filter, bot_logic.confirm_ssh_host_input)],
             GET_EXPIRY: [MessageHandler(text_filter, bot_logic.get_srv_expiry)],
+            GET_LOCATION: [CallbackQueryHandler(bot_logic.select_server_location,pattern=r'^srv_location_(ir|ext)$')],
             SELECT_GROUP: [CallbackQueryHandler(bot_logic.select_group)],
 
             GET_MANUAL_HOST: [MessageHandler(text_filter, bot_logic.perform_manual_ping)],

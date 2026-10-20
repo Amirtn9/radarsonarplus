@@ -36,3 +36,6 @@ ADMIN_AGENT_PORT_INPUT = 106
 GET_CUSTOM_WS_PORT = 107
 
 CONFIRM_SSH_HOST = 108
+
+# Explicit required geographic placement for new server wizards
+GET_LOCATION = 109

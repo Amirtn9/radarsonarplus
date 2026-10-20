@@ -198,10 +198,8 @@ class TunnelLogic:
 
     def _get_active_monitor(self, uid=None):
         from settings import SUPER_ADMIN_ID
-        owner=int(uid or SUPER_ADMIN_ID)
-        return self.db.execute("""SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1
-            AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1""",
-            (owner,SUPER_ADMIN_ID,owner),fetch='one')
+        from monitor_fleet import select_monitor_row
+        return select_monitor_row(self.db,int(uid or SUPER_ADMIN_ID),SUPER_ADMIN_ID)
 
     def _register_sub_source(self, uid, sub_link, sub_name):
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')

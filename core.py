@@ -253,6 +253,15 @@ class ServerMonitor:
     async def agent_request(monitor, link, size=0.5, timeout=60, uid=None):
         from tunnel_logic import tunnel_manager
         async with tunnel_manager._user_sem(uid or monitor.get('owner_id')), tunnel_manager.global_sem:
+            # Additive, consent-bound multi-agent scheduling; legacy monitor is
+            # retained whenever no recently healthy enrolled pool node exists.
+            if uid is not None:
+                from database import Database
+                from runtime import run_sync
+                from monitor_fleet import select_monitor_row
+                from settings import SUPER_ADMIN_ID
+                selected=await run_sync(select_monitor_row,Database(),int(uid),SUPER_ADMIN_ID)
+                if selected:monitor=selected
             port=int(monitor.get('ws_port') or AGENT_PORT)
             if str(link).startswith(('https://','http://')):
                 result=await ServerMonitor.ws_send_command(monitor['ip'],port,None,{'action':'fetch_sub','link':link},timeout)

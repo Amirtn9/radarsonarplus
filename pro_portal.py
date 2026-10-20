@@ -11,20 +11,23 @@ import os
 from pathlib import Path
 from datetime import timezone
 from functools import lru_cache
-from fastapi import FastAPI, Depends, HTTPException, Header, Query, Request
+from fastapi import FastAPI, Depends, HTTPException, Header, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 from settings import SUPER_ADMIN_ID
 from diagnostics import snapshot, build_bundle
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+import secrets
+from web_login import digest as session_digest, issue_code, redeem, identify, logout, install_schema as install_login_schema
+from monitor_fleet import install_schema as install_fleet_schema, install_job_schema
 from pro_auth import verify_init_data
 from pro_store import ProStore
 from service_monitor import ServiceStore
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
-app=FastAPI(title='Sonar Radar Pro V6.5.3',docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='Sonar Radar Pro V6.5.4',docs_url=None,redoc_url=None,openapi_url=None)
 app.mount('/static',StaticFiles(directory=BASE/'pro_web'/'static'),name='static')
 store=ProStore()
 service_store=ServiceStore(store)
@@ -41,11 +44,27 @@ def get_bot_token():
         return ''
 
 
-async def actor(authorization:str=Header(default='')):
-    if not authorization.startswith('tma '):raise HTTPException(status_code=401,detail='Telegram authentication required')
-    try:uid=verify_init_data(authorization[4:], get_bot_token(),
-                                  max_age=min(600,max(60,int(os.getenv('SONAR_MINIAPP_SESSION_MAX_AGE', '300')))))
-    except (PermissionError,ValueError,KeyError):raise HTTPException(status_code=401,detail='Invalid or expired Telegram authorization')
+async def actor(request:Request,authorization:str=Header(default='')):
+    cookie_auth=False
+    if authorization.startswith('tma '):
+        try:uid=verify_init_data(authorization[4:], get_bot_token(),
+                       max_age=min(600,max(60,int(os.getenv('SONAR_MINIAPP_SESSION_MAX_AGE','300')))))
+        except (PermissionError,ValueError,KeyError):raise HTTPException(status_code=401,detail='Invalid or expired Telegram authorization')
+    else:
+        session=request.cookies.get('sonar_web_session','')
+        try:session_data=await asyncio.to_thread(identify,store.db,session)
+        except Exception:raise HTTPException(status_code=503,detail='Session database unavailable')
+        if not session_data:raise HTTPException(status_code=401,detail='Please sign in with a one-time code from the Telegram bot')
+        uid=int(session_data['user_id'])
+        cookie_auth=True
+        if request.method not in ('GET','HEAD','OPTIONS'):
+            expected=os.getenv('SONAR_WEB_ORIGIN','').rstrip('/')
+            if not expected or request.headers.get('origin')!=expected:
+                raise HTTPException(status_code=403,detail='Origin check failed')
+            sent=request.headers.get('x-csrf-token','')
+            from web_login import valid_token
+            if not valid_token(sent) or not secrets.compare_digest(session_digest(sent),session_data['csrf_hash']):
+                raise HTTPException(status_code=403,detail='CSRF validation failed')
     try:
         allowed,_=await asyncio.to_thread(store.db.check_access,uid)
         if not allowed:raise HTTPException(status_code=403,detail='Inactive account')
@@ -89,6 +108,52 @@ async def index():return FileResponse(BASE/'pro_web'/'index.html')
 
 @app.get('/guide')
 async def public_guide():return FileResponse(BASE/'pro_web'/'guide.html')
+
+class WebCode(BaseModel):
+    code: str = Field(min_length=28,max_length=128)
+
+
+def require_web_origin(request):
+    expected=os.getenv('SONAR_WEB_ORIGIN','').rstrip('/')
+    if not expected or request.headers.get('origin')!=expected:
+        raise HTTPException(status_code=403,detail='Secure website origin is not configured')
+
+@app.post('/api/web/login')
+async def web_login_endpoint(body:WebCode,request:Request,response:Response):
+    require_web_origin(request)
+    result=await asyncio.to_thread(redeem,store.db,body.code)
+    if not result:raise HTTPException(status_code=401,detail='Code is invalid, expired or already used')
+    uid,session,csrf=result
+    allowed,_=await asyncio.to_thread(store.db.check_access,uid)
+    if not allowed:
+        await asyncio.to_thread(logout,store.db,session)
+        raise HTTPException(status_code=403,detail='Inactive account')
+    response.set_cookie('sonar_web_session',session,max_age=8*3600,secure=True,
+                         httponly=True,samesite='strict',path='/')
+    return {'ok':True,'csrf':csrf}
+
+@app.get('/api/web/csrf')
+async def refresh_csrf(request:Request,uid:int=Depends(actor)):
+    session=request.cookies.get('sonar_web_session','')
+    if not session:raise HTTPException(status_code=400,detail='Not a website session')
+    new=secrets.token_urlsafe(32)
+    await asyncio.to_thread(store.db.execute,
+      'UPDATE sonar_web_sessions SET csrf_hash=%s WHERE token_hash=%s AND user_id=%s',
+      (session_digest(new),session_digest(session),uid))
+    return {'csrf':new}
+
+@app.post('/api/web/logout')
+async def web_logout(request:Request,response:Response,uid:int=Depends(actor)):
+    await asyncio.to_thread(logout,store.db,request.cookies.get('sonar_web_session',''))
+    response.delete_cookie('sonar_web_session',path='/')
+    return {'ok':True}
+
+@app.on_event('startup')
+async def bootstrap_additive_schemas():
+    # Versioned, additive tables only; no changes to existing WSS identity.
+    await asyncio.to_thread(install_login_schema,store.db)
+    await asyncio.to_thread(install_fleet_schema,store.db)
+    await asyncio.to_thread(install_job_schema,store.db)
 
 @app.get('/healthz')
 async def health():return {'ok':True,'version':(BASE/'VERSION').read_text().strip()}
@@ -287,3 +352,12 @@ async def service_history(sid:int,uid:int=Depends(actor),owner:int|None=None,day
 # Additive, read-only console features. Legacy transport and access control are unchanged.
 from console_api import make_router as _make_console_router
 app.include_router(_make_console_router(store,actor,guarded))
+
+from fleet_api import make_router as _make_fleet_router
+app.include_router(_make_fleet_router(store, actor, guarded, SUPER_ADMIN_ID))
+
+# Writes are deliberately narrow: reuse Telegram's current database services.
+# Remote SSH actions, payment capture and TLS identity changes remain exclusive
+# to audited existing flows until separately tested in staging.
+from web_operations import make_router as _make_operations_router
+app.include_router(_make_operations_router(store, actor, guarded, SUPER_ADMIN_ID))

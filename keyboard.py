@@ -614,11 +614,13 @@ def monitor_node_kb(is_set):
     """منوی سرور مانیتورینگ ایران"""
     if not is_set:
         kb = [
-            [InlineKeyboardButton("🇮🇷 فعال‌سازی تست از ایران (نصب خودکار)", callback_data='set_iran_monitor_server')],
+            [InlineKeyboardButton("🛰 انتخاب چند سرور ایران / مدیریت Agentها", callback_data='fleet_manage')],
+            [InlineKeyboardButton("🇮🇷 افزودن سرور ایران جدید", callback_data='set_iran_monitor_server')],
             [InlineKeyboardButton("🔙 بازگشت", callback_data='v6_return')]
         ]
     else:
         kb = [
+            [InlineKeyboardButton("🛰 انتخاب چند سرور ایران / مدیریت Agentها", callback_data='fleet_manage')],
             [InlineKeyboardButton("🔄 بررسی بروزرسانی و تعمیر فایل‌ها", callback_data='update_monitor_node')],
             [InlineKeyboardButton("🗑 قطع ارتباط و حذف فایل‌ها", callback_data='delete_monitor_node')],
             [InlineKeyboardButton("🔙 بازگشت", callback_data='v6_return')]
