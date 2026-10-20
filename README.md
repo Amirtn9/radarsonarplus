@@ -1,12 +1,16 @@
-# Sonar Radar Pro v6.4.0
+# Sonar Radar Pro v6.6.0 RC2
 
-# 📡 Sonar Radar Pro V6.4.0
+# 📡 Sonar Radar Pro V6.6.0 RC2
 
-**Version:** `6.5.0` · **Telegram + VPS Agents + Web Panel** · **Status: Release Candidate (not production-certified)**
+**Version:** `6.6.0-rc2` · **Telegram + VPS Agents + Web Panel** · **Status: Release Candidate (not production-certified)**
 
 مدیریت VPS، نصب ایجنت رمزنگاری‌شده، تست کانفیگ‌های Xray، مدیریت سابسکریپشن، مانیتورینگ چندنقطه‌ای، هشدارها، بکاپ و عیب‌یابی از طریق تلگرام و پنل وب.
 
 > ⚠️ این کد هنوز روی یک VPS واقعی با Telegram، PostgreSQL و SSH/WSS انتهابه‌انتها آزمایش نشده است. «آمادهٔ نصب آزمایشی» به معنی «آمادهٔ استفاده در محیط تولید» نیست. ابتدا روی **سرور آزمایشی** نصب کنید و نتیجه `--doctor` و `--support` را بررسی کنید.
+
+## ◉ تغییرات نسخه ۶.۶ آزمایشی
+
+تغییرات کد، حدود تست و نکات ضروری نصب در `RELEASE_6_6_RC2_FA.md` و `DEPLOY_6_6_RC2_FA.md` آمده‌اند. سندهای RC1 برای سابقهٔ نسخهٔ قبلی در بسته باقی مانده‌اند.
 
 ## ◉ مسیر نصب مقاوم در برابر اختلال در 6.5.0
 
@@ -62,7 +66,7 @@ chmod +x install.sh
 
 ### نصب از فایل ZIP، بدون GitHub
 
-فایل ZIP منتشرشده را روی سرور تست استخراج و داخل پوشه `Sonar_Radar_Pro_v6.4.0` اجرا کنید:
+فایل ZIP منتشرشده را روی سرور تست استخراج و داخل پوشه استخراج‌شده نسخهٔ `6.6.0-rc2` اجرا کنید:
 
 ```bash
 bash install.sh --check

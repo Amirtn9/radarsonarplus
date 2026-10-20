@@ -153,13 +153,41 @@ class ServerMonitor:
     # 🔌 INTERNAL SSH HELPER (Fallback)
     # ---------------------------------------------------------
     @staticmethod
-    def get_ssh_client(ip, port, user, password):
-        """Create SSH connection"""
-        return connect_ssh(ip, port, user, password)
+    def get_ssh_client(ip, port, user, password, relay_nodes=None):
+        """Prefer direct SSH, fall back only for transport failures.
+
+        Auto-fallback only applies to a saved server and administrator-approved,
+        freshly verified WSS nodes. Unknown host keys and rejected credentials
+        are NEVER bypassed by a relay.
+        """
+        try:
+            return connect_ssh(ip, port, user, password)
+        except Exception as direct_error:
+            from ssh_relay import eligible_relay_nodes, retryable_direct_error
+            error_code=describe_ssh_error(direct_error)
+            if not retryable_direct_error(error_code):raise
+            if relay_nodes is None:
+                from database import Database
+                from settings import SUPER_ADMIN_ID
+                database=Database()
+                saved=database.execute('SELECT id FROM servers WHERE ip=%s AND port=%s AND is_active=1 LIMIT 1',
+                                       (str(ip),int(port)),fetch='one')
+                if not saved:raise
+                relay_nodes=eligible_relay_nodes(database,SUPER_ADMIN_ID,exclude_ip=str(ip))
+            for node in (relay_nodes or [])[:3]:
+                try:
+                    client=connect_ssh(ip,port,user,password,relay_node=node)
+                    logger.info('SSH via enrolled Agent id=%s after direct failure %s',node.get('id'),error_code.split(':',1)[0])
+                    return client
+                except Exception as relay_error:
+                    if not retryable_direct_error(describe_ssh_error(relay_error)):
+                        raise
+                    logger.warning('SSH relay unavailable; agent_id=%s; error_type=%s',node.get('id'),type(relay_error).__name__)
+            raise direct_error
 
     @staticmethod
-    def check_ssh_connection(ip, port, user, password):
-        ok, detail = ServerMonitor._run_ssh_command(ip,port,user,password,'printf SONAR_SSH_OK',20)
+    def check_ssh_connection(ip, port, user, password, relay_nodes=None):
+        ok, detail = ServerMonitor._run_ssh_command(ip,port,user,password,'printf SONAR_SSH_OK',20,relay_nodes=relay_nodes)
         return {'status':'Online'} if ok and 'SONAR_SSH_OK' in detail else {'status':'Offline','error':detail or 'SSH_CHECK_FAILED'}
 
     @staticmethod
@@ -174,11 +202,12 @@ class ServerMonitor:
             return None
 
     @staticmethod
-    def _run_ssh_command(ip, port, user, password, command, timeout=60):
+    def _run_ssh_command(ip, port, user, password, command, timeout=60, relay_nodes=None):
         """Raw SSH command execution"""
         client = None
         try:
-            client = ServerMonitor.get_ssh_client(ip, port, user, password)
+            client = (ServerMonitor.get_ssh_client(ip, port, user, password) if relay_nodes is None
+                      else ServerMonitor.get_ssh_client(ip, port, user, password, relay_nodes=relay_nodes))
             full_cmd = f"export DEBIAN_FRONTEND=noninteractive; {command}"
             _, stdout, stderr = client.exec_command(full_cmd, timeout=timeout)
             out = stdout.read().decode().strip()
@@ -255,20 +284,36 @@ class ServerMonitor:
         async with tunnel_manager._user_sem(uid or monitor.get('owner_id')), tunnel_manager.global_sem:
             # Additive, consent-bound multi-agent scheduling; legacy monitor is
             # retained whenever no recently healthy enrolled pool node exists.
+            lease=None
             if uid is not None:
                 from database import Database
                 from runtime import run_sync
-                from monitor_fleet import select_monitor_row
+                from monitor_fleet import claim_test_node, select_monitor_row, finish_test_node
                 from settings import SUPER_ADMIN_ID
-                selected=await run_sync(select_monitor_row,Database(),int(uid),SUPER_ADMIN_ID)
-                if selected:monitor=selected
-            port=int(monitor.get('ws_port') or AGENT_PORT)
-            if str(link).startswith(('https://','http://')):
-                result=await ServerMonitor.ws_send_command(monitor['ip'],port,None,{'action':'fetch_sub','link':link},timeout)
-                if result.get('error'): return False,json.dumps(result,ensure_ascii=False)
-                return True,json.dumps({'type':'sub','configs':result.get('links',[]),'sub_info':result.get('sub_info',{})},ensure_ascii=False)
-            ok,result=await ServerMonitor.ws_test_config(monitor['ip'],port,None,link,size=size,timeout=timeout)
-            return ok,json.dumps(result,ensure_ascii=False)
+                database=Database()
+                try:
+                    lease=await run_sync(claim_test_node,database,int(uid),SUPER_ADMIN_ID)
+                except Exception:
+                    logger.exception('Fleet lease unavailable, using legacy monitor')
+                if lease: monitor=lease
+                else:
+                    selected=await run_sync(select_monitor_row,database,int(uid),SUPER_ADMIN_ID)
+                    if selected:monitor=selected
+            successful=False
+            try:
+                port=int(monitor.get('ws_port') or AGENT_PORT)
+                if str(link).startswith(('https://','http://')):
+                    result=await ServerMonitor.ws_send_command(monitor['ip'],port,None,{'action':'fetch_sub','link':link},timeout)
+                    successful=isinstance(result,dict) and not result.get('error')
+                    if not successful:return False,json.dumps(result,ensure_ascii=False)
+                    return True,json.dumps({'type':'sub','configs':result.get('links',[]),'sub_info':result.get('sub_info',{})},ensure_ascii=False)
+                ok,result=await ServerMonitor.ws_test_config(monitor['ip'],port,None,link,size=size,timeout=timeout)
+                successful=bool(ok and isinstance(result,dict) and result.get('status')=='OK')
+                return ok,json.dumps(result,ensure_ascii=False)
+            finally:
+                if lease is not None:
+                    try: await run_sync(finish_test_node,database,lease['id'],successful,lease['lease_id'])
+                    except Exception:logger.exception('Failed to release Agent test reservation')
 
     @staticmethod
     async def run_remote_command(ip, port, user, password, command, timeout=60):

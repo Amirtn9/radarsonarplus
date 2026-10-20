@@ -88,6 +88,8 @@ def deploy_agent(monitor, db, ip, port, user, password, ws_port, progress=None):
 def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
     root = Path(__file__).resolve().parent
     script = (root / 'monitor_agent.py').read_text()
+    meter_script = (root / 'agent_metering.py').read_text()
+    relay_script = (root / 'ssh_relay.py').read_text()
     runtime_lock = json.loads((root / 'agent_runtime.lock.json').read_text())
     from agent_bootstrap import install_agent_dependencies, rollback_venv, commit_venv, _emit
     from agent_xray_bridge import install_xray_via_main
@@ -107,7 +109,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
                 rollback_files = ("python3 - " + shlex.quote(backup_path) + " <<'SONAR_ROLLBACK'\n" +
                     "import pathlib,shutil,sys,subprocess\n" +
                     "folder=pathlib.Path(sys.argv[1])\n" +
-                    "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service']\n" +
+                    "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service']\n" +
                     "for ix,path in enumerate(paths):\n" +
                     " source=folder/str(ix); target=pathlib.Path(path)\n" +
                     " if source.is_file():\n  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)\n" +
@@ -135,7 +137,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
             "import pathlib,shutil,sys,os\n" +
             "folder=pathlib.Path(sys.argv[1]);folder.mkdir(mode=0o700)\n" +
             "os.chmod(folder,0o700)\n" +
-            "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service']\n" +
+            "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service']\n" +
             "for i,path in enumerate(paths):\n" +
             " source=pathlib.Path(path)\n" +
             " if source.is_symlink():raise SystemExit('REFUSING_SYMLINKED_IDENTITY')\n" +
@@ -144,7 +146,12 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
     ok,out=run(backup,35)
     if not ok:return False,'AGENT_BACKUP_FAILED: '+str(out)[-130:]
     try:
-        previous_venv = install_agent_dependencies(run, ip, port, user, password, progress)
+        if hasattr(monitor, 'get_ssh_client'):
+            previous_venv = install_agent_dependencies(
+                run, ip, port, user, password, progress,
+                connector=monitor.get_ssh_client)
+        else:
+            previous_venv = install_agent_dependencies(run, ip, port, user, password, progress)
     except Exception as exc:
         # No TLS or WSS state was changed; keep the pre-existing service available.
         return fail(str(exc)[:350])
@@ -156,12 +163,15 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
     sftp=None
     remote_dir=None
     try:
-        ssh=connect_ssh(ip,port,user,password)
+        ssh=(monitor.get_ssh_client(ip,port,user,password) if hasattr(monitor,"get_ssh_client")
+             else connect_ssh(ip,port,user,password))
         sftp=ssh.open_sftp()
         remote_dir=sftp.normalize('.')+'/.'+'sonar-upload-'+secrets.token_hex(8)
         sftp.mkdir(remote_dir,mode=0o700)
         for name,payload in (
             ('monitor_agent.py',script.encode('utf-8')),
+            ('agent_metering.py',meter_script.encode('utf-8')),
+            ('ssh_relay.py',relay_script.encode('utf-8')),
             ('agent_runtime.lock.json',json.dumps(runtime_lock).encode('utf-8'))):
             with sftp.open(remote_dir+'/'+name,'wb') as target:
                 target.write(payload)
@@ -169,6 +179,8 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
         destination=shlex.quote(remote_dir)
         upload=(f'install -d -m 0755 /opt/sonar-agent\n'
                 f'install -m 0644 {destination}/monitor_agent.py /opt/sonar-agent/monitor_agent.py\n'
+                f'install -m 0644 {destination}/agent_metering.py /opt/sonar-agent/agent_metering.py\n'
+                f'install -m 0644 {destination}/ssh_relay.py /opt/sonar-agent/ssh_relay.py\n'
                 f'install -m 0644 {destination}/agent_runtime.lock.json /opt/sonar-agent/agent_runtime.lock.json\n'
                 'chown -R root:root /opt/sonar-agent\n')
         ok,out=run(upload,timeout=90)
@@ -179,7 +191,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
         if ssh:
             try:
                 if remote_dir:
-                    for name in ('monitor_agent.py','agent_runtime.lock.json'):
+                    for name in ('monitor_agent.py','agent_metering.py','ssh_relay.py','agent_runtime.lock.json'):
                         try:sftp.remove(remote_dir+'/'+name)
                         except OSError:pass
                     sftp.rmdir(remote_dir)

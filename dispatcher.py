@@ -80,6 +80,7 @@ def register_all_handlers(app:  Application):
             # --- User & Reports ---
             CallbackQueryHandler(bot_logic.user_profile_menu, pattern='^user_profile$'),
             CallbackQueryHandler(bot_logic.web_token_action, pattern='^gen_web_token$'),
+            CallbackQueryHandler(bot_logic.web_logout_all_action, pattern='^web_logout_all$'),
             CallbackQueryHandler(bot_logic.send_general_report_action, pattern='^act_global_full_report$'),
 
             # --- Auto Reboot ---

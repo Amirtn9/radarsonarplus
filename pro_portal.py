@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import hashlib
+import hmac
 import os
 from pathlib import Path
 from datetime import timezone
@@ -19,15 +21,16 @@ from diagnostics import snapshot, build_bundle
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import secrets
-from web_login import digest as session_digest, issue_code, redeem, identify, logout, install_schema as install_login_schema
+from web_login import digest as session_digest, redeem, identify, logout, logout_all, allow_login_attempt, install_schema as install_login_schema
 from monitor_fleet import install_schema as install_fleet_schema, install_job_schema
+from subscription_health import install_schema as install_subscription_schema, summaries as subscription_summaries
 from pro_auth import verify_init_data
 from pro_store import ProStore
 from service_monitor import ServiceStore
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
-app=FastAPI(title='Sonar Radar Pro V6.5.4',docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='Sonar Radar Pro V6.6',docs_url=None,redoc_url=None,openapi_url=None)
 app.mount('/static',StaticFiles(directory=BASE/'pro_web'/'static'),name='static')
 store=ProStore()
 service_store=ServiceStore(store)
@@ -121,6 +124,14 @@ def require_web_origin(request):
 @app.post('/api/web/login')
 async def web_login_endpoint(body:WebCode,request:Request,response:Response):
     require_web_origin(request)
+    secret=get_bot_token()
+    if not secret:raise HTTPException(status_code=503,detail='Login secret unavailable')
+    # request.client is populated by trusted reverse-proxy configuration;
+    # never take a caller-controlled X-Forwarded-For header directly.
+    client_ip=request.client.host if request.client else 'unknown'
+    client_hash=hmac.new(secret.encode(),client_ip.encode(),hashlib.sha256).hexdigest()
+    if not await asyncio.to_thread(allow_login_attempt,store.db,client_hash):
+        raise HTTPException(status_code=429,detail='Too many login attempts; retry later')
     result=await asyncio.to_thread(redeem,store.db,body.code)
     if not result:raise HTTPException(status_code=401,detail='Code is invalid, expired or already used')
     uid,session,csrf=result
@@ -148,11 +159,20 @@ async def web_logout(request:Request,response:Response,uid:int=Depends(actor)):
     response.delete_cookie('sonar_web_session',path='/')
     return {'ok':True}
 
+@app.post('/api/web/logout-all')
+async def web_logout_all(response:Response,uid:int=Depends(actor)):
+    await asyncio.to_thread(logout_all,store.db,uid)
+    response.delete_cookie('sonar_web_session',path='/')
+    return {'ok':True}
+
 @app.on_event('startup')
 async def bootstrap_additive_schemas():
     # Versioned, additive tables only; no changes to existing WSS identity.
+    await asyncio.to_thread(install_subscription_schema,store.db)
     await asyncio.to_thread(install_login_schema,store.db)
     await asyncio.to_thread(install_fleet_schema,store.db)
+    from agent_traffic import install_schema as install_meter_schema
+    await asyncio.to_thread(install_meter_schema,store.db)
     await asyncio.to_thread(install_job_schema,store.db)
 
 @app.get('/healthz')
@@ -197,6 +217,16 @@ async def server_resources(server_id:int,uid:int=Depends(actor),owner:int|None=N
         rows=store.db.execute("SELECT cpu,ram,created_at FROM server_stats WHERE server_id=%s AND created_at >= NOW()-INTERVAL '24 hours' ORDER BY created_at DESC LIMIT 288",(server_id,),fetch='all')
         return {'server':dict(server),'samples':[{'cpu':r['cpu'],'ram':r['ram'],'time':(r['created_at'].replace(tzinfo=timezone.utc) if r['created_at'].tzinfo is None else r['created_at']).isoformat() if r['created_at'] else None} for r in reversed(rows)],'temperature':None,'network':None, 'retention_hours':24}
     return await guarded(read)
+
+@app.get('/api/subscriptions')
+async def subscription_overview(uid:int=Depends(actor)):
+    # Authenticated owners only. Never include the subscription link itself.
+    owner=await guarded(store.db.workspace_owner,uid)
+    rows=await guarded(subscription_summaries,store.db,owner)
+    return {'subscriptions':[{
+        **{k:v for k,v in item.items() if k not in ('started_at','completed_at','last_success_at')},
+        **{k:item[k].isoformat() if item[k] else None for k in ('started_at','completed_at','last_success_at')}
+    } for item in rows]}
 
 @app.get('/api/rankings')
 async def rankings(uid:int=Depends(actor),owner:int|None=None):return await guarded(store.rankings,uid,owner,30)

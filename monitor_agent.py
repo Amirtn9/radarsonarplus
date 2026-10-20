@@ -23,7 +23,7 @@ import ssl
 from datetime import datetime, timedelta
 import logging
 
-AGENT_VERSION = '6.1.0-rc.1'
+AGENT_VERSION = '6.6.0-rc2'
 AGENT_PROTOCOL = 2
 
 logger = logging.getLogger('sonar.agent')  # ✅ خودکار به سیستم متصل می‌شه
@@ -760,11 +760,14 @@ def test_config_logic(outbound, dl_size_mb=0.5):
             try:
                 url = f"https://speed.cloudflare.com/__down?bytes={int(dl_size_mb * 1024 * 1024)}"
                 cmd = _lowprio_prefix() + ["curl", "--proxy", prox, "--fail", "--silent", "--show-error",
-                                            "--write-out", "%{speed_download}", "--output", "/dev/null",
+                                            "--write-out", "%{speed_download} %{size_download}", "--output", "/dev/null",
                                             "--max-time", "12", url]
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=False)
                 if res.returncode == 0:
-                    dl_spd = round(float(res.stdout) * 8 / 1_000_000, 2)
+                    parts=res.stdout.split()
+                    if len(parts)==2:
+                        dl_spd=round(float(parts[0])*8/1_000_000,2)
+                        record_download(max(0,int(float(parts[1]))))
             except Exception:
                 dl_spd = None
 
@@ -851,12 +854,76 @@ async def get_stats():
         return {'status':'Online','cpu':cpu,'ram':psutil.virtual_memory().percent,
             'disk':psutil.disk_usage('/').percent,
             'traffic_gb':round((net.bytes_sent+net.bytes_recv)/(1024**3),2),
+            'agent_usage':agent_usage_snapshot(),
             'agent_version':AGENT_VERSION,'agent_protocol':AGENT_PROTOCOL,
             'uptime_sec':uptime,'uptime_str':str(timedelta(seconds=uptime)),
-            'capabilities':{'xray_ready':os.path.isfile(XRAY_BIN) and os.path.isfile(os.path.join(WORK_DIR,'geoip.dat')),
+            'capabilities':{'ssh_relay':True, 'xray_ready':os.path.isfile(XRAY_BIN) and os.path.isfile(os.path.join(WORK_DIR,'geoip.dat')),
                             'formats':['plain','base64','clash_yaml','singbox_json'],
                             'proxies':['vmess','vless','trojan','shadowsocks']}}
     return await asyncio.get_running_loop().run_in_executor(_get_test_executor(),snapshot)
+
+
+from agent_metering import snapshot as agent_usage_snapshot, CountingWS, record_download
+
+# Only read-only network checks and WSS-mediated SSH can use these resources.
+_RELAY_SEMAPHORE = None
+
+
+def _relay_semaphore():
+    global _RELAY_SEMAPHORE
+    if _RELAY_SEMAPHORE is None:
+        _RELAY_SEMAPHORE = asyncio.Semaphore(2)
+    return _RELAY_SEMAPHORE
+
+
+async def _serve_ssh_relay(websocket, request):
+    """Forward SSH ciphertext only; Agent never receives SSH passwords.
+
+    Destination is a global numeric IP on an operator allowlisted SSH port.
+    The client authenticates with the existing per-Agent token and pinned TLS.
+    """
+    from ssh_relay import valid_relay_destination
+    try:
+        target, port = valid_relay_destination(request.get('target'), request.get('port'))
+    except (ValueError, TypeError):
+        await websocket.send(json.dumps({'error': 'RELAY_DESTINATION_NOT_ALLOWED'}))
+        return
+    async with _relay_semaphore():
+        try:
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(target, port),timeout=5)
+        except (OSError, asyncio.TimeoutError):
+            await websocket.send(json.dumps({'error': 'RELAY_TARGET_UNREACHABLE'}))
+            return
+        await websocket.send(json.dumps({'status': 'relay_ready'}))
+        async def upstream():
+            while True:
+                chunk = await asyncio.wait_for(reader.read(32768), timeout=300)
+                if not chunk:break
+                await websocket.send(chunk)
+        task = asyncio.create_task(upstream())
+        try:
+            while not task.done():
+                incoming = asyncio.create_task(websocket.recv())
+                done, _ = await asyncio.wait({incoming,task},timeout=300,
+                                             return_when=asyncio.FIRST_COMPLETED)
+                if incoming not in done:
+                    incoming.cancel()
+                    await asyncio.gather(incoming,return_exceptions=True)
+                    break
+                try:chunk=incoming.result()
+                except Exception:break
+                if not isinstance(chunk,bytes) or len(chunk)>65536:break
+                if not chunk:continue
+                writer.write(chunk)
+                await asyncio.wait_for(writer.drain(),timeout=20)
+        except (OSError, asyncio.TimeoutError):
+            pass
+        finally:
+            task.cancel()
+            await asyncio.gather(task,return_exceptions=True)
+            writer.close()
+            try:await asyncio.wait_for(writer.wait_closed(),timeout=2)
+            except (OSError,asyncio.TimeoutError):pass
 
 
 AGENT_TOKEN = os.environ.get("SONAR_AGENT_TOKEN", "")  # Required in server mode.
@@ -909,6 +976,8 @@ Protocol:
                 pass
             return
 
+        # Count Agent application payloads rather than claiming total NIC traffic.
+        websocket = CountingWS(websocket)
         # 2) Handle requests
         async for message in websocket:
             try:
@@ -966,6 +1035,8 @@ Protocol:
 
                 def _fetch():
                     raw=fetch_url(sub_link,timeout=25,raise_errors=True)
+                    if isinstance(raw,(str,bytes)):
+                        record_download(len(raw.encode('utf-8') if isinstance(raw,str) else raw))
                     text=normalize_subscription_text(raw)
                     if not text:raise SubscriptionFetchError('EMPTY_SUBSCRIPTION')
                     results=parse_subscription_links(text,limit=601)
@@ -988,6 +1059,11 @@ Protocol:
                 except Exception as exc:
                     logger.warning('fetch_sub failed: %s',type(exc).__name__)
                     await websocket.send(json.dumps({'error':'FETCH_INTERNAL_ERROR'}))
+
+            elif action == 'ssh_relay_open':
+                # Dedicated WSS connection is consumed until this SSH session ends.
+                await asyncio.wait_for(_serve_ssh_relay(websocket, data), timeout=3600)
+                return
 
             elif action == 'probe_public_tcp':
                 # Bounded, read-only reachability probe. Remote-shell remains

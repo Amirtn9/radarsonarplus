@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from typing import Literal
 
-from monitor_fleet import available, offer, approve, policy, set_policy, record_probe, choose, queue_installs
+from monitor_fleet import available, offer, approve, policy, set_policy, record_probe, choose, queue_installs, valid_agent_stats
 
 class PoolOffer(BaseModel):
     server_id:int=Field(gt=0)
@@ -26,6 +26,9 @@ class PoolPolicy(BaseModel):
 class FleetInstall(BaseModel):
     server_ids:list[int]=Field(min_length=1,max_length=12)
     port_mode:Literal['stored','automatic']='stored'
+    confirmed:bool=False
+
+class ResetTraffic(BaseModel):
     confirmed:bool=False
 
 class ScanPorts(BaseModel):
@@ -47,8 +50,8 @@ def make_router(store,actor,guarded,admin_id):
         ensure_admin(uid)
         def read():
             rows=store.db.execute("""SELECT id,name,ip,ws_port,location_type,last_agent_status
-                 FROM servers WHERE owner_id=%s AND is_active=1 AND location_type='ir'
-                 ORDER BY id LIMIT 300""",(uid,),fetch='all')
+                 FROM servers WHERE is_active=1 AND location_type='ir'
+                 ORDER BY id LIMIT 300""",fetch='all')
             return [dict(row) for row in rows]
         return await guarded(read)
 
@@ -102,6 +105,21 @@ def make_router(store,actor,guarded,admin_id):
         await guarded(set_policy,store.db,data.strategy)
         return {'ok':True,'strategy':data.strategy}
 
+    @r.get('/traffic')
+    async def agent_traffic(uid:int=Depends(actor)):
+        ensure_admin(uid)
+        from agent_traffic import admin_report
+        return {'scope':'measured Agent WSS frame + SSH relay bytes; excludes Xray/host NIC traffic',
+                'rows':await guarded(admin_report,store.db,uid)}
+
+    @r.post('/traffic/{agent_id}/reset')
+    async def reset_traffic(agent_id:int,body:ResetTraffic,uid:int=Depends(actor)):
+        ensure_admin(uid)
+        if not body.confirmed or agent_id<1:raise HTTPException(status_code=400,detail='Explicit reset confirmation required')
+        from agent_traffic import reset_meter
+        epoch=await guarded(reset_meter,store.db,uid,agent_id)
+        return {'ok':True,'agent_id':agent_id,'new_epoch':epoch,'note':'Previous measurement epochs retained for audit'}
+
     @r.get('/choice')
     async def choice(uid:int=Depends(actor)):
         # Private diagnostics: only nodes owned by administrator or this workspace.
@@ -117,6 +135,9 @@ def make_router(store,actor,guarded,admin_id):
         row=await guarded(store.db.execute,
             'SELECT id,name,ip,port FROM servers WHERE id=%s AND owner_id=%s',
             (server_id,owner),'one')
+        if not row and int(uid)==int(admin_id):
+            row=await guarded(store.db.execute,'SELECT id,name,ip,port FROM servers WHERE id=%s AND is_active=1',
+                              (server_id,),'one')
         if not row:raise HTTPException(status_code=404,detail='Server not found')
         try:
             address=ipaddress.ip_address(str(row['ip']))
@@ -164,9 +185,8 @@ def make_router(store,actor,guarded,admin_id):
             row=store.db.execute('''SELECT id,ip,ws_port,owner_id FROM servers
               WHERE id=%s AND owner_id=%s''',(data.server_id,workspace),fetch='one')
             if not row and int(uid)==int(admin_id):
-                row=store.db.execute('''SELECT s.id,s.ip,s.ws_port,s.owner_id FROM servers s
-                     JOIN monitor_fleet_nodes f ON f.server_id=s.id
-                     WHERE s.id=%s AND f.offered_by=s.owner_id''',(data.server_id,),fetch='one')
+                row=store.db.execute('''SELECT id,ip,ws_port,owner_id FROM servers
+                     WHERE id=%s AND is_active=1''',(data.server_id,),fetch='one')
             if not row:raise PermissionError('Target is outside your workspace')
             return dict(row)
         target=await guarded(get_target)
@@ -194,7 +214,7 @@ def make_router(store,actor,guarded,admin_id):
             started=time.monotonic()
             try:
                 outcome=await asyncio.wait_for(ServerMonitor.ws_send_command(target['ip'],stored,None,{'action':'get_stats'},timeout=7),timeout=11)
-                ok=isinstance(outcome,dict) and not outcome.get('error')
+                ok=valid_agent_stats(outcome)
                 enrolled['wss']='verified' if ok else 'failed'
                 if ok:
                     enrolled['rtt_ms']=round((time.monotonic()-started)*1000,1)

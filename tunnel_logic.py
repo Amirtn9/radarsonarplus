@@ -217,16 +217,25 @@ class TunnelLogic:
     # ==================================================================
     # 🔄 PROCESSING
     # ==================================================================
+    async def _refresh_state(self,uid,sub_id,status,**counts):
+        try:
+            from subscription_health import mark
+            await run_sync(mark,self.db,uid,sub_id,status,**counts)
+        except Exception:
+            logger.exception('Subscription status write failed (source membership remains intact)')
+
     async def process_sub_async(self, uid, sub, monitor: dict):
         """پردازش یک اشتراک: دریافت لینک‌ها، تست موازی، ذخیره یک‌جا."""
         sub_name = sub['name']
         sub_link = sub['link']
         sub_id = sub['id']
-
+        await self._refresh_state(uid,sub_id,'fetching')
         ok, links, sub_info = await self._fetch_sub_links(monitor, sub_link)
         if not ok:
-            return [f"❌ خطا در اتصال به نود مانیتورینگ: {links}"]
+            await self._refresh_state(uid,sub_id,'failed',error='SUB_FETCH_FAILED')
+            return [f"❌ خطا در دریافت اشتراک از نود مانیتورینگ: {links}"]
         if not links:
+            await self._refresh_state(uid,sub_id,'failed',error='SUB_EMPTY')
             return ["❌ اشتراک خالی دریافت شد؛ کانفیگ‌های قبلی حفظ شدند."]
 
         # Membership comes exclusively from the fetched subscription, before tests.
@@ -235,10 +244,13 @@ class TunnelLogic:
              not isinstance(item.get('link'),str) or not
              item['link'].startswith(('vmess://','vless://','trojan://','ss://'))
              for item in links)):
+            await self._refresh_state(uid,sub_id,'failed',error='SUB_MALFORMED')
             return ['❌ SUB_MALFORMED: ساختار پاسخ ایجنت معتبر نیست؛ داده قبلی حفظ شد.']
         unique = {item['link']: item for item in links}
         if not unique:
+            await self._refresh_state(uid,sub_id,'failed',error='SUB_EMPTY')
             return ['❌ سابسکریپشن معتبر خالی بود؛ داده‌های قبلی محفوظ است.']
+        await self._refresh_state(uid,sub_id,'testing',extracted=len(unique))
         authoritative = bool(sub_info.get('complete') is True and len(unique) < 600) if isinstance(sub_info,dict) else False
         async def _one(item):
             try:
@@ -272,7 +284,9 @@ class TunnelLogic:
                                     f"└ ⭐ Score: <code>{score}/10</code>")
         diff = await run_sync(self._bulk_save_sub_items, uid, sub_id, rows, allow_delete=authoritative)
         if not diff:
+            await self._refresh_state(uid,sub_id,'failed',error='SUB_SAVE_FAILED')
             return ['❌ ذخیره کانفیگ‌ها ناموفق بود؛ داده قبلی حفظ شد.']
+        await self._refresh_state(uid,sub_id,'ready',extracted=len(unique),healthy=counts['OK'])
         report_lines.insert(0, f"🔄 همگام‌سازی: {diff['added']} جدید | {diff['removed']} حذف‌شده | {diff['kept']} بدون تغییر\n"
                                f"✅ سالم: {counts['OK']} | ❌ خراب: {counts['Fail']} | ⚪ نامشخص: {counts['Unknown']}")
         if not authoritative:
@@ -392,16 +406,20 @@ class TunnelLogic:
             "⏳ <b>در حال دریافت کانفیگ‌ها...</b>\n(لطفاً صبر کنید)", parse_mode='HTML'
         )
 
-        monitor = await run_sync(self._get_active_monitor)
-        if not monitor:
-            await status_msg.edit_text(
-                "❌ سرور مانیتورینگ فعال نیست (لطفا یک سرور را به عنوان نود مانیتورینگ تنظیم کنید)."
-            )
-            return ConversationHandler.END
-
+        # Register the source first. Lack of an Iran Agent must never be
+        # confused with lack of a subscription in subsequent screens.
         sub_id = await run_sync(self._register_sub_source, uid, temp_sub_link, sub_name)
         if not sub_id:
             await status_msg.edit_text("❌ ثبت اشتراک در دیتابیس ناموفق بود.")
+            return ConversationHandler.END
+
+        monitor = await run_sync(self._get_active_monitor,uid)
+        if not monitor:
+            await self._refresh_state(uid,sub_id,'waiting_agent')
+            await status_msg.edit_text(
+                "✅ اشتراک ذخیره شد؛ اما هنوز Agent سالمی برای دریافت و تست کانفیگ‌ها آماده نیست. "
+                "پس از فعال‌کردن Agent، از مدیریت اشتراک گزینه به‌روزرسانی را بزنید."
+            )
             return ConversationHandler.END
 
         report_lines = await self.process_sub_async(

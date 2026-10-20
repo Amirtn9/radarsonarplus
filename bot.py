@@ -52,12 +52,16 @@ def main():
         # Pro schema migrations fail startup rather than leaving half-working controls.
         from pro_store import install_schema
         await asyncio.to_thread(install_schema)
+        from subscription_health import install_schema as subscription_schema
         from web_login import install_schema as web_schema
         from monitor_fleet import install_schema as fleet_schema,install_job_schema
         from database import Database
+        await asyncio.to_thread(subscription_schema,Database())
         await asyncio.to_thread(web_schema,Database())
         await asyncio.to_thread(fleet_schema,Database())
         await asyncio.to_thread(install_job_schema,Database())
+        from agent_traffic import install_schema as install_meter
+        await asyncio.to_thread(install_meter,Database())
 
     async def _post_shutdown(application):
         try:

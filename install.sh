@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sonar Radar Pro 6.5.4 | resilient GitHub deployment manager
+# Sonar Radar Pro 6.6.0-rc2 | resilient GitHub deployment manager
 # Supported: Ubuntu/Debian with systemd. Never execute remotely piped scripts as root.
 set -Eeuo pipefail
 umask 077
@@ -312,7 +312,7 @@ read_env() {
 set_env() {
   local key="$1" val="$2" out
   case "$key" in
-    SONAR_STATE_DIR|SONAR_DB_PASSWORD|SONAR_WEBAPP_URL|SONAR_WS_POOL_MAX|SONAR_GLOBAL_TEST_LIMIT|SONAR_USER_TEST_LIMIT|SONAR_DB_POOL_MAX|SONAR_EXECUTOR_WORKERS|SONAR_WEB_PORT|SONAR_AGENT_BIND|SONAR_LOG_LEVEL|SONAR_MINIAPP_SESSION_MAX_AGE) ;;
+    SONAR_STATE_DIR|SONAR_DB_PASSWORD|SONAR_WEBAPP_URL|SONAR_WEB_ORIGIN|SONAR_WS_POOL_MAX|SONAR_GLOBAL_TEST_LIMIT|SONAR_USER_TEST_LIMIT|SONAR_DB_POOL_MAX|SONAR_EXECUTOR_WORKERS|SONAR_WEB_PORT|SONAR_AGENT_BIND|SONAR_LOG_LEVEL|SONAR_MINIAPP_SESSION_MAX_AGE) ;;
     *) die 'Environment key not permitted';;
   esac
   [[ "$val" != *$'\n'* && "$val" != *$'\r'* ]] || die 'Newline in setting not allowed'
@@ -753,7 +753,10 @@ install_web() {
   valid_port "$port" || die 'Invalid configured web API port.'
   say "Installing Mini App API (loopback port $port)"
   runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import fastapi, uvicorn' >> "$INSTALL_LOG" 2>&1 || die 'Mini App dependencies missing. Run full installer repair/update.'
+  # Regenerate even when a legacy installed service contains a malformed
+  # '>StandardOutput=journal' token appended to ExecStart.
   create_web_unit "$port";systemctl daemon-reload
+  systemd-analyze verify "$WEB_UNIT" >> "$INSTALL_LOG" 2>&1 || warn 'systemd unit verification emitted warnings; review installer log.'
   systemctl enable "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1 || die 'Could not enable Web service.'
   # enable --now does not restart an already-active old process on upgrades.
   systemctl restart "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1 || die 'Web service failed.'
@@ -834,9 +837,59 @@ issue_tls() {
   [[ -s "/etc/letsencrypt/live/$domain/fullchain.pem" ]] || die 'TLS certificate missing.'
   nginx -t && systemctl reload nginx || die 'nginx reload failed.'
   set_env SONAR_WEBAPP_URL "https://$domain/"
+  set_env SONAR_WEB_ORIGIN "https://$domain"
   systemctl restart "$SERVICE" || die 'Bot restart after web URL change failed.'
+  systemctl restart "$WEB_SERVICE" || die 'Web restart after origin update failed.'
   ok "HTTPS provisioned and Mini App URL enabled: https://$domain/"
 }
+
+configure_domain_https() (
+  # Run inside subshell so EXIT trap always restores operator configuration on
+  # failed DNS/TLS/nginx/warmup steps; no automatic deletion of ACME certs.
+  require_root;require_install
+  local domain="$1" email="${2:-}" oldsite=0 oldlink=0 oldenv=0
+  valid_domain "$domain" || die 'Invalid domain.'
+  local backup
+  backup="$(mktemp -d "$BACKUP_DIR/web-wizard.XXXXXXXX")" || die 'Cannot create wizard backup'
+  chmod 0700 "$backup"
+  if [[ -f "$NGINX_SITE" ]];then cp -p "$NGINX_SITE" "$backup/nginx.conf";oldsite=1;fi
+  [[ ! -L "$NGINX_SITE" ]] || die 'Refusing symlinked Sonar nginx site.'
+  if [[ -e "$NGINX_LINK" || -L "$NGINX_LINK" ]];then
+    oldlink=1
+    cp -a --no-dereference "$NGINX_LINK" "$backup/nginx.link"
+  fi
+  if [[ -f "$ENV_FILE" ]];then cp -p "$ENV_FILE" "$backup/env";oldenv=1;fi
+  restore_wizard() {
+    local result=$?
+    if ((result!=0));then
+      warn 'Domain wizard failed; restoring previous Sonar nginx/env and restarting original services.'
+      if ((oldsite));then cp -p "$backup/nginx.conf" "$NGINX_SITE";else rm -f "$NGINX_SITE";fi
+      rm -f -- "$NGINX_LINK"
+      if ((oldlink));then cp -a --no-dereference "$backup/nginx.link" "$NGINX_LINK";fi
+      if ((oldenv));then cp -p "$backup/env" "$ENV_FILE";else rm -f "$ENV_FILE";fi
+      if command -v nginx >/dev/null;then nginx -t >> "$INSTALL_LOG" 2>&1 && systemctl reload nginx || true;fi
+      systemctl try-restart "$SERVICE" "$WEB_SERVICE" >/dev/null 2>&1 || true
+    fi
+    rm -rf -- "$backup"
+  }
+  trap restore_wizard EXIT
+  local resolved
+  resolved="$(getent ahosts "$domain" 2>/dev/null | head -1 || true)"
+  [[ -n "$resolved" ]] || die 'DNS_NOT_RESOLVED: create an A/AAAA record before HTTPS provisioning.'
+  if [[ -f "$NGINX_SITE" ]] && grep -qE '^[[:space:]]*listen[[:space:]]+443' "$NGINX_SITE";then
+    grep -Fq "server_name $domain;" "$NGINX_SITE" || die 'DOMAIN_MIGRATION_REQUIRED: existing TLS site uses a different domain.'
+    say 'Existing HTTPS site for same domain detected; verifying and renewing TLS only.'
+  else
+    set_domain "$domain"
+  fi
+  issue_tls "$domain" "$email"
+  local api_port="$(read_env SONAR_WEB_PORT)"
+  api_port="${api_port:-8090}"
+  curl --fail --silent --show-error --max-time 8 "http://127.0.0.1:$api_port/healthz" >/dev/null || die 'LOCAL_WEB_HEALTH_FAILED'
+  curl --fail --silent --show-error --max-time 15 "https://$domain/healthz" >/dev/null || die 'HTTPS_WEB_HEALTH_FAILED: verify public DNS, firewall, reverse proxy and certificate.'
+  ok "HTTPS, nginx, bot URL, website origin and health check verified: https://$domain/"
+)
+
 set_telegram_credentials() {
   require_root;require_install
   local token admin
@@ -1026,14 +1079,14 @@ menu() {
     clear 2>/dev/null || true
     printf '\n%b  ╭────────────────────────────────────────────────────────╮%b\n' "$C_BLUE" "$C_RESET"
     printf '%b  │%b    /\  /\        SONAR  /  RADAR                  %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
-    printf '%b  │%b   ( \__/ )       PRO 6.5.4 Control      %b│%b\n' "$C_BLUE" "$C_DIM" "$C_BLUE" "$C_RESET"
+    printf '%b  │%b   ( \__/ )       PRO 6.6 Control      %b│%b\n' "$C_BLUE" "$C_DIM" "$C_BLUE" "$C_RESET"
     printf '%b  ╰────────────────────────────────────────────────────────╯%b\n' "$C_BLUE" "$C_RESET"
     printf '  ─────── DEPLOY ────────────────────────────────────────\n  01  Install Full Stack (Bot + DB + Mini App)\n  02  Update application safely\n  03  Install / repair Mini App panel\n  04  Configure domain + HTTPS\n  05  Settings & credentials\n  06  Service management\n  07  Professional logs (live/filter/JSON)\n  08  Create verified backup\n  09  Restore database from .dump\n  10  Diagnostics / health\n  11  Preflight source check\n  12  Uninstall (archive only)\n  13  Repair installed services\n  14  Clean reset + reinstall (includes Sonar database)\n  00  Exit\n\n'
     local choice s a d e p
     read -r -p '  SONAR › ' choice || break
     case "$choice" in
       1|01) run --install;;2|02) run --update;;3|03) run --panel;;
-      4|04) read -r -p '  FQDN: ' d;run --domain "$d";read -r -p '  Request TLS certificate now? [y/N]: ' a;if [[ "$a" =~ ^[Yy]$ ]];then read -r -p '  Email (optional): ' e;run --tls "$d" "$e";fi;;
+      4|04) read -r -p '  FQDN: ' d;read -r -p '  ACME email (optional): ' e;run --wizard "$d" "$e";;
       5|05) settings_menu;;
       6|06) read -r -p '  Service [bot/web]: ' s;read -r -p '  Action [start/stop/restart/status]: ' a;case "$s" in bot) s="$SERVICE";;web) s="$WEB_SERVICE";;esac;run --service "$s" "$a";;
       7|07) printf '  Logs [bot/web/all/errors/json/install]: ';read -r s
@@ -1056,6 +1109,8 @@ case "${1:-}" in
   --clean-install) require_root;require_service_host;reset_project_components;install_app new;;
   --inventory) require_root;require_service_host;existing_components || true;;
   --panel) require_root;require_service_host;ensure_directories;install_web;;
+  --font) require_root;require_service_host;require_install;bash "$SOURCE_DIR/scripts/install_persian_font.sh";;
+  --wizard) require_root;require_service_host;ensure_directories;configure_domain_https "${2:-}" "${3:-}";;
   --domain) require_root;require_service_host;ensure_directories;set_domain "${2:-}";;
   --tls) require_root;require_service_host;ensure_directories;issue_tls "${2:-}" "${3:-}";;
   --credentials) set_telegram_credentials;;
@@ -1071,7 +1126,7 @@ case "${1:-}" in
   --logs) require_root;shift;bash "$SOURCE_DIR/scripts/logs.sh" "${1:-bot}" "${@:2}";;
   --uninstall) uninstall_app;;
   --help|-h) cat <<'USAGE'
-Sonar Radar Pro 6.5.4 | Deployment Manager
+Sonar Radar Pro 6.6.0-rc2 | Deployment Manager
   sudo bash install.sh                 Interactive Apple-inspired terminal UI
   sudo bash install.sh --check         Offline source and OS checks
   sudo bash install.sh --install       Fresh FULL installation: Bot + DB + Mini App
@@ -1079,6 +1134,8 @@ Sonar Radar Pro 6.5.4 | Deployment Manager
   sudo bash install.sh --inventory     Detect leftover application services and database
   sudo bash install.sh --clean-install Archive and reset Sonar data+DB with explicit typed approval, then install
   sudo bash install.sh --panel         Install local Telegram Mini App API
+  sudo bash install.sh --wizard DOMAIN EMAIL  Configure DNS, nginx, HTTPS, origin and web health
+  sudo bash install.sh --font          Install licensed Vazirmatn font on VPS
   sudo bash install.sh --domain NAME   Configure nginx HTTP vhost
   sudo bash install.sh --tls NAME EMAIL  Obtain Let's Encrypt certificate
   sudo bash install.sh --set KEY VALUE  Change allow-listed setting

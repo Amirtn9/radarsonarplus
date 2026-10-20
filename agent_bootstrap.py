@@ -157,13 +157,14 @@ def cached_wheelhouse(target, dest):
         return json.loads((folder/'manifest.json').read_text())
 
 
-def _sftp_bundle(host, port, username, password, dest, path=None):
+def _sftp_bundle(host, port, username, password, dest, path=None, connector=None):
     """Transfer to a private SSH folder; reuse intact files, retry damaged ones.
 
     Existing ssh_support enforces administrator-confirmed known_hosts fingerprints.
     """
     from ssh_support import connect_ssh
-    ssh=connect_ssh(host,port,username,password)
+    ssh=(connector(host,port,username,password) if connector else
+         connect_ssh(host,port,username,password))
     try:
         sftp=ssh.open_sftp()
         if path is None:
@@ -254,7 +255,7 @@ if out.returncode:raise SystemExit('IMPORT_CHECK_FAILED')
 print('SONAR_OFFLINE_OK')
 '''
 
-def install_agent_dependencies(run, host, port, username, password, progress=None):
+def install_agent_dependencies(run, host, port, username, password, progress=None, connector=None):
     """Set up staged venv; return rollback marker. Call commit_venv *after* WSS health.
 
     An existing live venv is never deleted; moves to .previous for rollback.
@@ -280,7 +281,7 @@ def install_agent_dependencies(run, host, port, username, password, progress=Non
             _emit(progress,'prepare_bundle','تهیه wheel سازگار با معماری و Python مقصد')
             manifest=cached_wheelhouse(target,tmp)
             _emit(progress,'transfer','ارسال امن بسته با SSH/SFTP')
-            remote=_sftp_bundle(host,port,username,password,tmp)
+            remote=_sftp_bundle(host,port,username,password,tmp,connector=connector)
             _emit(progress,'verify_bundle','بررسی SHA-256 و نصب کاملاً آفلاین')
             # Remote installer verifies target metadata on disk too.
             command=(f'python3 - {shlex.quote(remote)} {shlex.quote(staged+"/bin/python")} <<\'SONAR_VERIFY\'\n'

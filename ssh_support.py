@@ -68,7 +68,7 @@ def describe_ssh_error(exc):
     return f'SSH_CONNECTION_FAILED: {type(exc).__name__}; ارتباط یا سازگاری سرویس SSH را بررسی کنید.'
 
 
-def connect_ssh(host, port, username, password):
+def connect_ssh(host, port, username, password, relay_node=None):
     host, port = normalize_host(host), ssh_port(port)
     client = paramiko.SSHClient()
     try:
@@ -79,19 +79,31 @@ def connect_ssh(host, port, username, password):
             except FileNotFoundError:
                 pass
         client.set_missing_host_key_policy(paramiko.RejectPolicy())
-        client.connect(host, port=port, username=str(username).strip(), password=password,
-                       timeout=10, banner_timeout=15, auth_timeout=15,
-                       allow_agent=False, look_for_keys=False)
+        relay_sock = None
+        try:
+            if relay_node is not None:
+                from ssh_relay import RelaySocket
+                relay_sock = RelaySocket.connect(relay_node,host,port)
+            client.connect(host, port=port, username=str(username).strip(), password=password,
+                           sock=relay_sock, timeout=10, banner_timeout=15, auth_timeout=15,
+                           allow_agent=False, look_for_keys=False)
+        except BaseException:
+            if relay_sock is not None: relay_sock.close()
+            raise
         return client
     except BaseException:
         client.close()
         raise
 
 
-def scan_host_key(host, port):
+def scan_host_key(host, port, relay_node=None):
     """Get a candidate key without sending credentials; caller must verify its SHA256."""
     host, port = normalize_host(host), ssh_port(port)
-    sock = socket.create_connection((host, port), timeout=10)
+    if relay_node is not None:
+        from ssh_relay import RelaySocket
+        sock = RelaySocket.connect(relay_node,host,port)
+    else:
+        sock = socket.create_connection((host, port), timeout=10)
     transport = paramiko.Transport(sock)
     try:
         transport.start_client(timeout=15)
@@ -138,7 +150,7 @@ def trust_host_key(candidate, expected):
     return actual
 
 
-def authenticate_candidate(candidate, expected, username, password):
+def authenticate_candidate(candidate, expected, username, password, relay_node=None):
     key=paramiko.PKey.from_type_string(candidate['type'],base64.b64decode(candidate['key'],validate=True))
     if not __import__('hmac').compare_digest(fingerprint(key),str(expected).strip()):
         raise ValueError('Fingerprint mismatch')
@@ -146,7 +158,14 @@ def authenticate_candidate(candidate, expected, username, password):
     try:
         client.get_host_keys().add(host_label(candidate['host'],candidate['port']),key.get_name(),key)
         client.set_missing_host_key_policy(paramiko.RejectPolicy())
-        client.connect(candidate['host'],port=ssh_port(candidate['port']),username=str(username).strip(),password=password,
-            timeout=10,banner_timeout=15,auth_timeout=15,allow_agent=False,look_for_keys=False)
+        relay_sock = None
+        try:
+            if relay_node is not None:
+                from ssh_relay import RelaySocket
+                relay_sock = RelaySocket.connect(relay_node,candidate['host'],candidate['port'])
+            client.connect(candidate['host'],port=ssh_port(candidate['port']),username=str(username).strip(),password=password,
+                sock=relay_sock,timeout=10,banner_timeout=15,auth_timeout=15,allow_agent=False,look_for_keys=False)
+        finally:
+            if relay_sock is not None: relay_sock.close()
     finally:
         client.close()
