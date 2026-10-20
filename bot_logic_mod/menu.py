@@ -86,7 +86,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = keyboard.main_menu_kb(user_id, is_monitor_ready, SUPER_ADMIN_ID)
 
     # No network-bound statistics calls on the home screen: navigation must be immediate.
-    txt = ("📡 *SONAR RADAR | Pro 6.5.3*\n"
+    txt = ("📡 *SONAR RADAR | Pro 6.5.4*\n"
            "━━━━━━━━━━━━━━━━━\n"
            f"👤 اعتبار شما: `{remaining}`\n\n"
            "به کدام بخش نیاز دارید؟\n"
@@ -137,12 +137,27 @@ async def user_profile_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_edit_message(update, txt, reply_markup=reply_markup)
 
 async def web_token_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Issue a single-use, short-lived website code only in the user's DM."""
     from keyboard import _webapp_button
-    btn = _webapp_button()
-    if btn:
-        markup = InlineKeyboardMarkup([[btn], [InlineKeyboardButton('🔙 بازگشت',callback_data='main_menu')]])
-        await safe_edit_message(update, '📱 **پنل گرافیکی Sonar Radar**\nبا دکمه زیر وارد پنل شوید. ورود تنها با امضای معتبر تلگرام مجاز است.',reply_markup=markup)
-    else:
-        await safe_edit_message(update, '📱 **پنل گرافیکی آماده نصب است.**\nمدیر سرور باید Web API را با HTTPS فعال کند و متغیر SONAR_WEBAPP_URL را تنظیم کند.\nتوکن ساده یا لینک ورود بدون احراز هویت صادر نمی‌شود.',reply_markup=keyboard.back_btn())
+    from web_login import issue_code, install_schema
+    uid=update.effective_user.id
+    web_url=os.environ.get('SONAR_WEB_ORIGIN','').rstrip('/')
+    if update.effective_chat.type != 'private':
+        await update.callback_query.answer('برای دریافت کد ورود، ربات را در پیام خصوصی باز کنید.',show_alert=True)
+        return
+    if not web_url.startswith('https://'):
+        await safe_edit_message(update,'ابتدا مدیر باید SONAR_WEB_ORIGIN را با آدرس HTTPS معتبر تنظیم کند.',reply_markup=keyboard.back_btn())
+        return
+    await run_sync(install_schema,db)
+    code=await run_sync(issue_code,db,uid)
+    btn=_webapp_button()
+    rows=[[btn]] if btn else []
+    rows.append([InlineKeyboardButton('🔙 بازگشت',callback_data='main_menu')])
+    await safe_edit_message(update,
+         '🔐 **کد یک‌بارمصرف ورود به وب‌سایت**\n\n'
+         f'`{code}`\n\n'
+         'اعتبار: ۸ دقیقه • پس از اولین استفاده باطل می‌شود.\n'
+         'این کد را در صفحه ورود وب‌سایت وارد کنید و با کسی به اشتراک نگذارید.\n'
+         f'🌐 {web_url}', reply_markup=InlineKeyboardMarkup(rows))
 
 # ==============================================================================

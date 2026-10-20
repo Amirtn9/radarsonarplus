@@ -4,6 +4,7 @@ Section: tunnels
 """
 
 from bot_logic_mod.base import *  # noqa
+from monitor_fleet import select_monitor_in_cursor
 from access_policy import valid_subscription_url, monitoring_setting
 
 # 🚇 TUNNEL CONFIG MANAGER (ADVANCED)
@@ -60,8 +61,7 @@ async def perform_fast_scan(context, uid, mode):
     # گرفتن کانفیگ‌های کاربر
     with db.get_connection() as (conn, cur):
         # FIX: psycopg2 cursor.execute() returns None; use cursor.fetchone()
-        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
-        monitor = cur.fetchone()
+        monitor = select_monitor_in_cursor(cur,uid,SUPER_ADMIN_ID)
         # فقط ۵۰ کانفیگ آخر را برای سرعت بیشتر چک می‌کنیم (یا همه را بسته به نیاز)
         # FIX: psycopg2 cursor.execute() returns None; use cursor.fetchall()
         cur.execute(f"SELECT * FROM tunnel_configs WHERE owner_id=%s {query_filter} ORDER BY id DESC LIMIT 30", (uid,))
@@ -344,8 +344,7 @@ async def update_all_configs_status(update: Update, context: ContextTypes.DEFAUL
     with db.get_connection() as (conn, cur):
         cur.execute("SELECT * FROM tunnel_configs WHERE owner_id=%s", (uid,))
         configs = cur.fetchall()
-        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
-        monitor = cur.fetchone()
+        monitor = select_monitor_in_cursor(cur,uid,SUPER_ADMIN_ID)
 
     if not monitor:
         await query.message.reply_text("❌ سرور مانیتورینگ فعال نیست.")
@@ -414,8 +413,7 @@ async def handle_single_config_auto(update: Update, context: ContextTypes.DEFAUL
             
             # 1. دریافت اطلاعات سرور مانیتورینگ
             with db.get_connection() as (conn, cur):
-                cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
-                monitor = cur.fetchone()
+                monitor = select_monitor_in_cursor(cur,uid,SUPER_ADMIN_ID)
             
             if not monitor:
                 await status_msg.edit_text("❌ سرور مانیتورینگ (Iran Node) فعال نیست.")
@@ -545,8 +543,7 @@ async def handle_config_type_selection(update: Update, context: ContextTypes.DEF
                 
                 # 1. دریافت اطلاعات سرور مانیتورینگ
                 with db.get_connection() as (conn, cur):
-                    cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
-                    monitor = cur.fetchone()
+                    monitor = select_monitor_in_cursor(cur,uid,SUPER_ADMIN_ID)
                 
                 if not monitor:
                     await status_msg.edit_text("❌ سرور مانیتورینگ فعال نیست.")
@@ -648,8 +645,7 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
     with db.get_connection() as (conn, cur):
         cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s", (cid,shared_uid(update)))
         cfg = cur.fetchone()
-        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
-        monitor_node = cur.fetchone()
+        monitor_node = select_monitor_in_cursor(cur,uid,SUPER_ADMIN_ID)
     
     # 2. بررسی موجود بودن
     if not cfg:
@@ -1034,8 +1030,7 @@ async def manual_update_sub_action(update: Update, context: ContextTypes.DEFAULT
     with db.get_connection() as (conn, cur):
         cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, uid))
         sub = cur.fetchone()
-        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
-        monitor = cur.fetchone()
+        monitor = select_monitor_in_cursor(cur,uid,SUPER_ADMIN_ID)
     if not sub or not monitor:
         await query.answer("❌ اشتراک یا نود مانیتورینگ یافت نشد.", show_alert=True)
         return
@@ -1129,8 +1124,7 @@ async def mass_update_test_start(update: Update, context: ContextTypes.DEFAULT_T
             cur.execute("SELECT * FROM tunnel_configs WHERE owner_id=%s AND type='single'", (uid,))
             singles = cur.fetchall()
             # دریافت سرور مانیتورینگ
-            cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
-            monitor = cur.fetchone()
+            monitor = select_monitor_in_cursor(cur,uid,SUPER_ADMIN_ID)
 
         # بررسی اینکه آیا اصلا چیزی برای تست هست؟
         if not subs and not singles:
@@ -1256,8 +1250,7 @@ async def refresh_conf_dash_action(update: Update, context: ContextTypes.DEFAULT
     with db.get_connection() as (conn, cur):
         cur.execute("SELECT * FROM tunnel_configs WHERE owner_id=%s", (uid,))
         configs = cur.fetchall()
-        cur.execute("SELECT * FROM servers WHERE is_monitor_node=1 AND is_active=1 AND owner_id IN (%s,%s) ORDER BY (owner_id=%s) DESC,id LIMIT 1", (uid,SUPER_ADMIN_ID,uid))
-        monitor = cur.fetchone()
+        monitor = select_monitor_in_cursor(cur,uid,SUPER_ADMIN_ID)
 
     if not monitor:
         await status_msg.edit_text("❌ سرور مانیتورینگ فعال نیست.")

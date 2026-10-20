@@ -3,17 +3,26 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#f6f8fc"><meta name="description" content="Sonar Radar Pro V6">
-  <title>Sonar Radar 6.5.3 | مرکز کنترل</title>
+  <title>Sonar Radar 6.5.4 | مرکز کنترل</title>
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/console.css">
+  <link rel="stylesheet" href="/static/next.css">
+  <script defer src="/static/web_ops.js"></script>
   <script defer src="https://telegram.org/js/telegram-web-app.js"></script>
   <script defer src="/static/app.js"></script>
   <script defer src="/static/console.js"></script>
+  <script defer src="/static/next.js"></script>
 </head>
 <body>
+<div id="web-auth" class="web-auth" hidden><section class="auth-card">
+  <div class="auth-emblem">◉</div><h1>سونار رادار</h1>
+  <p>ورود امن به پنل وب</p><p class="muted">از داخل پیام خصوصی ربات، گزینه «پنل گرافیکی» را بزنید و کد یک‌بارمصرف را اینجا وارد کنید.</p>
+  <form id="login-form" class="auth-form"><label for="login-code">کد ورود</label><input id="login-code" required autocomplete="one-time-code" placeholder="کد صادرشده در تلگرام" dir="ltr" minlength="28" maxlength="128"><button class="primary" type="submit">ورود به پنل</button></form><p id="login-error" class="bad"></p>
+  <a href="/guide">📚 راهنمای ورود و کار با ربات</a>
+</section></div>
 <div class="shell">
-  <aside class="sidebar" aria-label="منوی پنل">
-    <div class="brand"><div class="brandmark" aria-hidden="true">◉</div><div><b>SONAR <span>RADAR</span></b><small>PRO VERSION 6.5.3</small></div></div>
+  <aside id="side-navigation" class="sidebar" aria-label="منوی پنل">
+    <div class="brand"><div class="brandmark" aria-hidden="true">◉</div><div><b>SONAR <span>RADAR</span></b><small>PRO VERSION 6.5.4</small></div></div>
     <p class="navtitle">دسترسی سریع</p>
     <nav id="navigation" aria-label="بخش‌ها">
       <button class="navbtn active" data-tab="overview">⌂ <span>خانه</span></button>
@@ -25,13 +34,17 @@
       <button class="navbtn" data-tab="team">♧ <span>اعضای تیم</span></button>
       <button class="navbtn" data-tab="audit">≡ <span>تاریخچه</span></button>
       <button class="navbtn" data-tab="channels">📣 <span>کانال‌ها</span></button>
+      <button class="navbtn" data-tab="web-create">✚ <span>افزودن منبع</span></button>
+      <button class="navbtn" data-tab="fleet">🛰 <span>ایجنت‌های مانیتورینگ</span></button>
       <button class="navbtn" data-tab="settings">⚙ <span>تنظیمات</span></button>
+      <a class="navbtn" href="/guide">📚 <span>آموزش صفر تا صد</span></a>
       <button class="navbtn" data-tab="support" id="admin-tab" hidden>✚ <span>عیب‌یابی مدیر</span></button>
     </nav>
+    <button class="navbtn" type="button" id="web-logout" hidden>⏻ <span>خروج از وب‌سایت</span></button>
     <div class="sidefoot"><span class="statusdot"></span><span id="side-state">در حال اتصال</span><small>مدیریت امن با Telegram</small></div>
   </aside>
   <div class="workspace">
-    <header class="topbar"><div><small class="eyebrow">SONAR / YOUR WORKSPACE</small><h1 id="page-title">خانه</h1></div><div class="topactions"><span class="version">v6.5.3</span><button id="refresh" type="button" class="iconbtn" aria-label="تازه‌سازی">↻</button></div></header>
+    <header class="topbar"><div class="nav-heading"><button type="button" id="menu-trigger" class="iconbtn" aria-label="باز کردن منوی کامل">☰</button><div><small class="eyebrow">SONAR / YOUR WORKSPACE</small><h1 id="page-title">خانه</h1></div></div><div class="topactions"><button type="button" class="iconbtn" id="theme-switch" aria-label="تغییر حالت روشن و تاریک">☀︎</button><span class="version">v6.5.4</span><button id="refresh" type="button" class="iconbtn" aria-label="تازه‌سازی">↻</button></div></header>
     <main id="main" aria-live="polite"><p id="session-warning" class="session-warning" role="alert" hidden>نشست امن تلگرام منقضی شده است. پنل را ببندید و دوباره از داخل ربات باز کنید.</p>
       <section id="overview" class="view active"><div class="welcome"><span class="eyebrow"><span class="live-indicator"></span> NETWORK AT A GLANCE</span><h2>سلام، خوش اومدی 👋</h2><p>از همین‌جا وضعیت سرورها و اتصال‌هات رو ببین. برای جزئیات بیشتر، فقط سرور موردنظر رو انتخاب کن.</p><div class="welcome-hint">وضعیت‌ها بر اساس آخرین داده ثبت‌شده هستند، نه تست زنده.</div></div>
         <div class="metricgrid"><article class="metric"><div class="metric-head">سرورها <span>🖥</span></div><b id="srv">—</b><small>فعال / مجموع</small></article><article class="metric"><div class="metric-head">کانفیگ‌های سالم <span>◈</span></div><b id="cfg">—</b><small>سالم / مجموع</small></article><article class="metric"><div class="metric-head">مانیتورهای آنلاین <span>◉</span></div><b id="service-up">—</b><small>Up / کل مانیتورها</small></article><article class="metric"><div class="metric-head">رخدادهای باز <span>⚑</span></div><b id="inc">—</b><small>نیازمند بررسی</small></article></div>
@@ -43,6 +56,15 @@
       <section id="server-detail" class="view" aria-label="جزئیات سرور">
         <div class="detail-header"><button type="button" class="btn-back" data-go="servers">→ برگشت به سرورها</button><span class="soft-tag">اطلاعات واقعی از دیتابیس</span></div>
         <div id="server-details" class="panel"><p class="muted">سروری انتخاب نشده است.</p></div>
+        <section class="panel sensor-panel"><div class="resource-head"><h3>🎛 داشبورد لحظه‌ای سرور</h3><span class="live-label" id="sensor-freshness">آخرین نمونه ثبت‌شده؛ در حال دریافت…</span></div>
+  <div class="dial-grid"><div class="dial" data-dial="cpu"><span class="dial-title">CPU</span><div class="dial-face"><span class="needle"></span><span class="pin"></span></div><strong class="dial-number">—</strong></div>
+  <div class="dial" data-dial="ram"><span class="dial-title">RAM</span><div class="dial-face"><span class="needle"></span><span class="pin"></span></div><strong class="dial-number">—</strong></div>
+  <div class="dial" data-dial="disk"><span class="dial-title">Hard / Disk</span><div class="dial-face"><span class="needle"></span><span class="pin"></span></div><strong class="dial-number">—</strong></div>
+  <div class="dial" data-dial="swap"><span class="dial-title">Swap</span><div class="dial-face"><span class="needle"></span><span class="pin"></span></div><strong class="dial-number">—</strong></div></div>
+  <div class="bat-signature"><svg viewBox="0 0 240 100" role="img" aria-label="نشان خفاش رادار"><path fill="currentColor" d="M120 24 104 7 100 34C85 23 69 15 55 21L42 33 21 29 4 51 34 56 44 80 64 70 88 92 105 73 120 88 135 73 152 92 176 70 196 80 206 56 236 51 219 29 198 33 185 21C171 15 155 23 140 34L136 7Z"/></svg><span>SONAR RADAR · AGENT TELEMETRY</span></div>
+  <p class="muted">نمایش داده‌های واقعیِ آخرین نمونه؛ با تأخیر شبکه یا قطع Agent، عقربه‌ها به‌روزرسانی نمی‌شوند. مقدار Swap در نسخه فعلی Agent اندازه‌گیری نمی‌شود.</p>
+</section>
+        <section class="panel"><h3>🌐 بررسی دسترسی از داخل و خارج</h3><p class="muted">این آزمایش فقط اتصال TCP از مسیرهای موجود را بررسی می‌کند و تشخیص قطع کامل اینترنت نیست.</p><button type="button" id="reachability-run">شروع تشخیص چندمسیره</button><div id="reachability-results" class="listitems" role="status"></div></section>
         <section class="panel"><div class="resource-head"><h3>📊 روند مصرف منابع</h3><small class="muted">آخرین نمونه‌های ۲۴ ساعت</small></div><canvas id="detail-chart" width="900" height="260" aria-label="نمودار پردازنده و حافظه" role="img"></canvas><div id="detail-chart-status" class="muted"></div></section>
       </section>
       <section id="config-detail" class="view" aria-label="جزئیات کانفیگ">
@@ -55,6 +77,29 @@
         <p class="info-strip">ثبت کانال، مدیریت کرون‌جاب و ارسال آزمایشی در همان بخش تلگرام انجام می‌شود. این صفحه فقط وضعیت ثبت‌شده را نمایش می‌دهد.</p></section>
       </section>
       <section id="listing" class="view"><div class="panel"><div class="listbar"><div><h2 id="list-title">سرورها</h2><p id="list-subtitle">فهرست مرتب و ساده</p></div><label class="search">⌕ <input id="search" type="search" placeholder="جست‌وجوی نام یا IP" autocomplete="off" aria-label="جست‌وجو"></label></div><div class="filter-tools"><label><input type="checkbox" id="only-favorites"> فقط علاقه‌مندی‌ها ★</label><small class="muted">برای جست‌وجوی برچسب، # را قبل از نام آن وارد کنید</small></div><div id="list-content" class="listitems"><p class="muted">در حال بارگیری...</p></div><div class="pager"><button id="prev" type="button">← قبلی</button><span id="page-number">۱</span><button id="next" type="button">بعدی →</button></div></div></section>
+      <section id="web-create" class="view" aria-label="ثبت سرور و کانفیگ">
+        <section class="panel"><h2>➕ ثبت منبع جدید</h2><p>همان دیتابیس ربات استفاده می‌شود؛ داده‌ها به فضای کاری مجاز شما تعلق دارند. عملیات حساس پس از تأیید جداگانه انجام می‌شوند.</p>
+        <div class="fleet-actions"><button id="web-show-server">🖥 افزودن سرور</button><button id="web-show-config">🔗 افزودن کانفیگ</button></div>
+        <form class="web-wizard" id="web-server-form"><h3>مرحله ۱ · معرفی سرور</h3>
+          <label>نام سرور<input id="new-server-name" required minlength="2" maxlength="100" autocomplete="off" placeholder="سرور ایران شماره ۱"></label>
+          <label>آدرس IP عمومی<input id="new-server-ip" required maxlength="45" dir="ltr" placeholder="203.0.113.10"></label>
+          <label>موقعیت سرور<select id="new-server-location" required><option value="">انتخاب کنید</option><option value="ir">🇮🇷 داخل ایران</option><option value="ext">🌐 خارج از ایران</option></select></label>
+          <h3>مرحله ۲ · اتصال امن SSH</h3>
+          <label>پورت SSH<input id="new-server-port" type="number" min="1" max="65535" value="22" required></label>
+          <label>نام کاربری<input id="new-server-user" required maxlength="64" autocomplete="off" dir="ltr" placeholder="root"></label>
+          <label>رمز SSH<input id="new-server-password" required type="password" minlength="1" maxlength="2048" autocomplete="new-password" dir="ltr"></label>
+          <label>پورت Agent (قابل تغییر)<input id="new-server-ws" type="number" min="1024" max="65535" value="8080" required></label>
+          <p class="muted">رمز SSH در سایت ذخیره نمی‌شود؛ فقط از اتصال HTTPS به API ارسال و توسط سرویس ذخیره‌سازی اصلی ربات رمزنگاری می‌شود. Agent به‌صورت خودکار نصب نمی‌شود.</p>
+          <button class="primary" type="submit">ثبت سرور در فضای کاری</button>
+        </form>
+        <form class="web-wizard" id="web-config-form" hidden><h3>ثبت کانفیگ یا لینک اشتراک</h3>
+          <label>نام کانفیگ<input id="new-config-name" minlength="2" maxlength="128" required placeholder="کانفیگ شخصی"></label>
+          <label>نوع ورودی<select id="new-config-kind"><option value="single">کانفیگ تکی</option><option value="sub_source">لینک اشتراک HTTPS</option></select></label>
+          <label>لینک<input id="new-config-link" required minlength="10" maxlength="8192" dir="ltr" placeholder="vless://..."></label>
+          <p class="muted">کانفیگ در وضعیت «منتظر آزمون» ذخیره می‌شود؛ هیچ نتیجه تست فرضی به شما نشان داده نمی‌شود.</p>
+          <button class="primary" type="submit">ثبت کانفیگ</button>
+        </form><p id="web-ops-result" role="status" class="muted"></p></section>
+      </section>
       <section id="services" class="view">
         <section class="panel">
           <div class="resource-head"><div><h2>◉ مانیتورینگ سرویس‌ها</h2>
@@ -81,11 +126,25 @@
       <section id="team" class="view"><section class="panel"><h2>👥 اعضای تیم</h2><p class="muted">برای تغییر اعضای فضای کاری، باید مالک آن باشید.</p><div id="team-list" class="listitems"></div><p class="info-strip">🔐 برای دعوت، تأیید یا ادغام فضای کاری از ویزارد هم‌گروهی در ربات تلگرام استفاده کنید. این بخش اعضای تأییدشده را نشان می‌دهد.</p><form id="team-form" class="formline" hidden><label>شناسه عددی تلگرام<input id="member-id" type="number" min="1" required placeholder="123456789"></label><label>سطح دسترسی<select id="member-role"><option value="viewer">مشاهده‌گر</option><option value="manager">مدیر</option><option value="remove">حذف دسترسی</option></select></label><button type="submit" class="primary">ثبت تغییر</button></form></section></section>
       <section id="audit" class="view"><section class="panel"><h2>📜 گزارش فعالیت‌ها</h2><p class="muted">آخرین اقدامات ثبت‌شده.</p><div id="audit-list" class="listitems"></div></section></section>
       <section id="settings" class="view"><section class="panel"><h2>⚙ تنظیمات مانیتورینگ</h2><p class="muted">تغییرات برای فضای کاری شما ثبت می‌شود.</p><div class="setting"><div><b>گزارش روزانه</b><small>ارسال خلاصه دوره‌ای</small></div><input type="checkbox" id="daily_digest" aria-label="گزارش روزانه"></div><div class="setting"><div><b>تست چندنقطه‌ای</b><small>در صورت داشتن نود واجد شرایط</small></div><input type="checkbox" id="multi_probe" aria-label="تست چندنقطه‌ای"></div><h3>قوانین هشدار</h3><p class="muted">تنظیمات جدید از همان موتور اعلان ربات استفاده می‌کنند.</p><form id="rule-form" class="formline"><label>رویداد<select id="rule-event"><option value="server_down">قطع شدن سرور</option><option value="recovery">بازیابی</option><option value="probe_failure">شکست تست اتصال</option></select></label><label>واکنش<select id="rule-action"><option value="notify">اعلان فوری</option><option value="digest">گزارش دوره‌ای</option></select></label><label>وضعیت<select id="rule-enabled"><option value="true">فعال</option><option value="false">غیرفعال</option></select></label><button type="submit" class="primary">ثبت قانون</button></form><div id="rule-list" class="listitems"></div></section></section>
-      <section id="support" class="view"><section class="panel"><h2>🩺 مرکز عیب‌یابی مدیر</h2><p class="muted">گزارش‌های سیستم فقط برای مدیر اصلی در دسترس‌اند. خروجی اطلاعات حساس رایج را حذف می‌کند، اما قبل از اشتراک‌گذاری آن را بررسی کنید.</p><div class="quicklinks"><button class="primary" id="health-btn">بررسی سلامت</button><button id="download-btn">📦 دریافت ZIP امن</button></div><pre id="health-output" class="healthlog">برای بررسی سلامت دکمه بالا را بزنید.</pre></section></section>
+      <section id="fleet" class="view" aria-label="ایجنت‌های مانیتورینگ">
+  <section class="panel"><h2>🛰 استخر Agentهای ایران</h2><p>سرورهای ایران ثبت‌شده می‌توانند پس از رضایت مالک و تأیید مدیر، نود تست شوند. پورت باز به‌تنهایی به معنی Agent سالم نیست؛ WSS، گواهی و توکن جدا بررسی می‌شوند.</p>
+  <div class="fleet-actions"><label>روش انتخاب Agent<select id="fleet-strategy"><option value="balanced">⚖️ ترکیبی (پینگ و CPU)</option><option value="latency">📶 کمترین تأخیر</option><option value="load">🧠 کمترین مصرف CPU</option></select></label><button type="button" id="fleet-refresh">↻ تازه‌سازی</button><button class="primary" type="button" id="fleet-save" hidden>ذخیره تنظیمات مدیر</button></div>
+  <div id="fleet-list" class="fleet-list"><p class="muted">در حال بارگذاری Agentها…</p></div>
+  <button id="fleet-approve" class="primary" hidden>✅ تأیید نودهای انتخاب‌شده</button><p id="fleet-choice" class="muted"></p>
+  <div class="panel fleet-install" id="fleet-installer" hidden><h3>🧩 نصب چندتایی Agent</h3>
+   <p>فقط برای سرورهای ایران متعلق به مدیر. سرورها را انتخاب کنید، روش تعیین پورت را مشخص کنید و نصب را تأیید کنید.</p>
+   <div id="fleet-candidates" class="fleet-list"></div><label>پورت Agent<select id="fleet-port-mode"><option value="stored">پورت ثبت‌شده هر سرور</option><option value="automatic">🎲 انتخاب تصادفی از ۲۰۰۰۰ تا ۵۹۹۹۹</option></select></label>
+   <button class="primary" id="fleet-install-run">شروع نصب سرورهای تیک‌خورده</button><h4>آخرین عملیات نصب</h4><div id="fleet-jobs" class="listitems"></div>
+  </div><div class="panel fleet-diagnostics"><h3>🔌 آزمایش اتصال چند پورت</h3><label>سرور ثبت‌شده <select id="fleet-target"></select></label><button id="fleet-diagnose" type="button">شروع بررسی امن</button><div id="fleet-results" class="listitems" role="status"></div><p class="muted">پورت‌های رایج و پورت ثبت‌شده همان سرور بررسی می‌شوند؛ این کار پورت یا Agent را تغییر نمی‌دهد.</p></div>
+  </section>
+</section>
+<section id="support" class="view"><section class="panel"><h2>🩺 مرکز عیب‌یابی مدیر</h2><p class="muted">گزارش‌های سیستم فقط برای مدیر اصلی در دسترس‌اند. خروجی اطلاعات حساس رایج را حذف می‌کند، اما قبل از اشتراک‌گذاری آن را بررسی کنید.</p><div class="quicklinks"><button class="primary" id="health-btn">بررسی سلامت</button><button id="download-btn">📦 دریافت ZIP امن</button></div><pre id="health-output" class="healthlog">برای بررسی سلامت دکمه بالا را بزنید.</pre></section></section>
     </main>
-    <footer class="footer">SONAR RADAR PRO · 6.5.3 <span>•</span> ساخته‌شده برای مدیریت ساده‌تر</footer>
+    <footer class="footer">SONAR RADAR PRO · 6.5.4 <span>•</span> ساخته‌شده برای مدیریت ساده‌تر</footer>
   </div>
 </div>
+<nav id="bottom-nav" class="bottom-nav" aria-label="پنج بخش اصلی"><button data-mobile-tab="overview"><span>⌂</span>خانه</button><button data-mobile-tab="servers"><span>▦</span>سرورها</button><button data-mobile-tab="configs"><span>◇</span>کانفیگ‌ها</button><button data-mobile-tab="services"><span>◉</span>مانیتورینگ</button><button data-mobile-tab="more"><span>☷</span>بیشتر</button></nav>
+<div id="nav-scrim" hidden></div>
 <dialog id="trend"><div class="dialoghead"><h2 id="trend-title">تاریخچه عملکرد</h2><button type="button" id="trend-close" aria-label="بستن">✕</button></div><canvas id="trend-canvas" width="620" height="260"></canvas><p id="trend-info" class="muted"></p></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 </body>

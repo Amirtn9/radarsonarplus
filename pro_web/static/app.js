@@ -1,16 +1,17 @@
 'use strict';
 // Only use Telegram-signed initData; never store credentials in URL or browser storage.
 const tg=window.Telegram?.WebApp;
-const auth=tg?.initData||'';
+let auth=tg?.initData||'';
+let csrfToken='';
 const $=id=>document.getElementById(id);
 const state={tab:'overview',index:1,search:'',admin:false,listingRequest:0,resourceRequest:0,onlyFavorites:false};
-const titles={overview:'داشبورد',servers:'مدیریت سرورها',configs:'کانفیگ و اشتراک',rankings:'رتبه‌بندی کیفیت',incidents:'مرکز رخدادها',team:'اعضای تیم',audit:'فعالیت‌ها',settings:'تنظیمات',support:'مرکز عیب‌یابی',services:'مانیتورینگ سرویس‌ها',channels:'کانال‌های اعلان', 'server-detail':'جزئیات سرور','config-detail':'جزئیات کانفیگ'};
+const titles={overview:'داشبورد',servers:'مدیریت سرورها',configs:'کانفیگ و اشتراک',rankings:'رتبه‌بندی کیفیت',incidents:'مرکز رخدادها',team:'اعضای تیم',audit:'فعالیت‌ها',settings:'تنظیمات',support:'مرکز عیب‌یابی',fleet:'استخر Agentهای ایران',services:'مانیتورینگ سرویس‌ها',channels:'کانال‌های اعلان', 'server-detail':'جزئیات سرور','config-detail':'جزئیات کانفیگ','web-create':'افزودن منبع جدید'};
 const elem=(tag,text,cl)=>{const el=document.createElement(tag);if(text!=null)el.textContent=String(text);if(cl)el.className=cl;return el;};
 function toast(text){$('toast').textContent=text;$('toast').classList.add('visible');clearTimeout(toast.delay);toast.delay=setTimeout(()=>$('toast').classList.remove('visible'),4000);}
 async function request(path,options={}){
-  if(!auth)throw Error('لطفاً پنل را از داخل تلگرام و با دکمه پنل وب باز کنید.');
-  const response=await fetch(path,{...options,cache:'no-store',headers:{Authorization:'tma '+auth,...options.headers}});
-  if(response.status===401){const banner=$('session-warning');if(banner)banner.hidden=false;}
+  // If no Telegram initData is present, HttpOnly cookie authenticates web sessions.
+  const response=await fetch(path,{...options,cache:'no-store',headers:{...(auth?{Authorization:'tma '+auth}:{}),...(!auth&&options.method&&options.method!=='GET'?{'X-CSRF-Token':csrfToken}:{}),...options.headers}});
+  if(response.status===401){if(!auth){$('web-auth').hidden=false;}else{const banner=$('session-warning');if(banner)banner.hidden=false;}}
   if(!response.ok){let message=`خطای ارتباط (${response.status})`;try{const d=await response.json();message=d.detail||message;}catch{}throw Error(message);}
   if(options.raw)return response;
   return response.json();
@@ -34,6 +35,7 @@ function tabClick(name){if(!Object.prototype.hasOwnProperty.call(titles,name)||(
   if(name==='settings')loadPreferences();
   if(name==='support')loadHealth();
   if(name==='channels')window.SonarConsole?.loadChannels();
+  if(name==='fleet')window.SonarNext?.loadFleet?.();
   if(name==='server-detail')window.SonarConsole?.loadServer();
   if(name==='config-detail')window.SonarConsole?.loadConfig();
 }
@@ -89,7 +91,7 @@ if($('team-form'))$('team-form').onsubmit=async e=>{e.preventDefault();try{await
 for(const key of ['daily_digest','multi_probe'])$(key).onchange=async e=>{try{await jsonPost('/api/preferences',{key,value:e.target.checked});toast('تنظیمات ذخیره شد');}catch(err){e.target.checked=!e.target.checked;toast(err.message);}};
 $('rule-form')?.addEventListener('submit',async e=>{e.preventDefault();const btn=e.submitter;if(btn)btn.disabled=true;try{await jsonPost('/api/console/rules',{event:$('rule-event').value,action:$('rule-action').value,enabled:$('rule-enabled').value==='true'});toast('قانون ثبت شد');await loadPreferences();}catch(err){toast(err.message);}finally{if(btn)btn.disabled=false;}});
 $('health-btn').onclick=loadHealth;$('download-btn').onclick=supportZip;$('trend-close').onclick=()=>$('trend').close();
-async function boot(){if(tg){tg.ready();tg.expand();if(document.documentElement?.dataset)document.documentElement.dataset.theme=tg.colorScheme==='light'?'light':'dark';tg.onEvent?.('themeChanged',()=>{if(document.documentElement?.dataset)document.documentElement.dataset.theme=tg.colorScheme==='light'?'light':'dark';});}try{const me=await request('/api/me');state.admin=!!me.admin;$('admin-tab').hidden=!me.admin;setStatus('متصل');tabClick('overview');}catch(e){setStatus('اتصال ناموفق',false);toast(e.message);$('last-test').textContent=e.message;}}
+async function boot(){if(tg){tg.ready();tg.expand();if(document.documentElement?.dataset)document.documentElement.dataset.theme=tg.colorScheme==='light'?'light':'dark';tg.onEvent?.('themeChanged',()=>{if(document.documentElement?.dataset)document.documentElement.dataset.theme=tg.colorScheme==='light'?'light':'dark';});}try{const me=await request('/api/me');state.admin=!!me.admin;$('admin-tab').hidden=!me.admin;setStatus('متصل');tabClick('overview');}catch(e){setStatus('اتصال ناموفق',false);if(!auth)$('web-auth').hidden=false;else toast(e.message);$('last-test').textContent=e.message;}}
 boot();
 
 // Resource telemetry: historical samples only; no synthetic sensor values.

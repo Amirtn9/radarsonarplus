@@ -65,7 +65,7 @@ async def add_server_step_start(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def add_server_linear_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    txt = "⚡️ **افزودن سریع سرورها**\n\nلطفاً مشخصات سرورها را به صورت **5 خطی** ارسال کنید.\nهر سرور باید دقیقاً در 5 خط زیر هم باشد:\n1. نام سرور\n2. آی‌پی\n3. پورت\n4. یوزرنیم\n5. پسورد\n\n⚠️ **نکته:** اگر چند سرور دارید، بلافاصله بعد از پسورد اولی، اطلاعات سرور دوم را شروع کنید.\n\n💡 **مثال:**\n`Server A`\n`192.168.1.1`\n`22`\n`root`\n`Pass123`\n`Server B`\n`45.33.22.11`\n`2244`\n`admin`\n`Secr3t`\n\n👇 اطلاعات را ارسال کنید:"
+    txt = "⚡️ **افزودن سریع سرورها**\n\nلطفاً مشخصات سرورها را به صورت **6 خطی** ارسال کنید.\nهر سرور باید دقیقاً در 6 خط زیر هم باشد:\n1. نام سرور\n2. آی‌پی\n3. پورت\n4. یوزرنیم\n5. پسورد\n6. موقعیت (ir برای ایران / ext برای خارج)\n\n⚠️ **نکته:** اگر چند سرور دارید، بلافاصله بعد از پسورد اولی، اطلاعات سرور دوم را شروع کنید.\n\n💡 **مثال:**\n`Server A`\n`192.168.1.1`\n`22`\n`root`\n`Pass123`\n`ir`\n`Server B`\n`45.33.22.11`\n`2244`\n`admin`\n`Secr3t`\n`ext`\n\n👇 اطلاعات را ارسال کنید:"
     await update.callback_query.message.reply_text(txt, reply_markup=keyboard.get_cancel_markup(), parse_mode='Markdown')
     return GET_LINEAR_DATA
 async def process_linear_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -75,17 +75,19 @@ async def process_linear_data(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception:
         pass  # Chat permissions or Telegram restrictions can prevent removal.
     while lines and not lines[-1].strip(): lines.pop()
-    if not lines or len(lines)%5 or len(lines)>250:
-        await update.message.reply_text('❌ هر سرور باید ۵ خط داشته باشد: نام، IP، پورت SSH، کاربر، رمز. حداکثر ۵۰ سرور.')
+    if not lines or len(lines)%6 or len(lines)>300:
+        await update.message.reply_text('❌ هر سرور باید ۶ خط داشته باشد: نام، IP، پورت SSH، کاربر، رمز، موقعیت ir یا ext. حداکثر ۵۰ سرور.')
         return GET_LINEAR_DATA
     entries=[]
     try:
-        for n in range(0,len(lines),5):
-            name,host,port,user,password=lines[n:n+5]
+        for n in range(0,len(lines),6):
+            name,host,port,user,password,location=lines[n:n+6]
+            if location.strip().lower() not in ('ir','ext'):
+                raise ValueError('موقعیت باید ir یا ext باشد.')
             if not name.strip() or not user.strip() or not password:
                 raise ValueError('نام، کاربر و رمز نباید خالی باشند.')
             entries.append({'name':name.strip(),'ip':normalize_host(host),'port':ssh_port(port.strip()),
-                'username':user.strip(),'password':sec.encrypt(password),'expiry_date':None,'ws_port':int(AGENT_PORT)})
+                'username':user.strip(),'password':sec.encrypt(password),'expiry_date':None,'ws_port':int(AGENT_PORT), 'location_type':location.strip().lower()})
     except ValueError as exc:
         await update.message.reply_text('❌ ورودی نامعتبر: '+str(exc))
         return GET_LINEAR_DATA
@@ -204,12 +206,27 @@ async def get_srv_expiry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ لطفاً فقط عدد وارد کنید (مثلا 30).")
         return GET_EXPIRY
 
-    # استفاده از ماژول کیبورد (برای select_group_kb که لیست برمی‌گرداند)
-    group_kb_list = await get_group_keyboard(update.effective_user.id)
-    
-    await update.message.reply_text(f"{msg}\n\n📂 **حالا سرور در کدام پوشه ذخیره شود؟**",
-                                    reply_markup=InlineKeyboardMarkup(group_kb_list),
-                                    parse_mode='Markdown')
+    await update.message.reply_text(
+        f"{msg}\n\n🌍 **موقعیت سرور را انتخاب کنید.**\nاین مرحله اجباری است.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('🇮🇷 داخل ایران',callback_data='srv_location_ir'),
+             InlineKeyboardButton('🌐 خارج از ایران',callback_data='srv_location_ext')],
+            [InlineKeyboardButton('🔙 انصراف',callback_data='cancel_flow')]
+        ]),parse_mode='Markdown')
+    return GET_LOCATION
+
+
+async def select_server_location(update: Update,context: ContextTypes.DEFAULT_TYPE):
+    query=update.callback_query
+    await query.answer()
+    location=query.data.removeprefix('srv_location_')
+    if location not in ('ir','ext') or not context.user_data.get('srv'):
+        await query.edit_message_text('❌ موقعیت نامعتبر است؛ افزودن را از ابتدا شروع کنید.')
+        return ConversationHandler.END
+    context.user_data['srv']['location_type']=location
+    groups=await get_group_keyboard(update.effective_user.id)
+    await query.edit_message_text('📂 **حالا پوشه سرور را انتخاب کنید:**',
+        reply_markup=InlineKeyboardMarkup(groups),parse_mode='Markdown')
     return SELECT_GROUP
 
 
@@ -1197,6 +1214,9 @@ async def _complete_server_add(update, context):
     data=dict(context.user_data.get('srv') or {})
     if not all(data.get(k) for k in ('name','ip','port','username','password')):
         await update.effective_message.reply_text('❌ اطلاعات افزودن سرور کامل نیست؛ دوباره شروع کنید.')
+        return ConversationHandler.END
+    if data.get('location_type') not in ('ir','ext'):
+        await update.effective_message.reply_text('❌ موقعیت سرور (ایران/خارج) باید مشخص شود.')
         return ConversationHandler.END
     data['ws_port']=valid_agent_port(data.get('ws_port') or AGENT_PORT)
     status=await update.effective_message.reply_text('⏳ در حال بررسی اتصال SSH...')
