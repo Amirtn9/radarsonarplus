@@ -1,5 +1,14 @@
 # Changelog
 
+## 6.6.0-rc3 · Domain wizard readiness and recovery
+
+- Domain/HTTPS wizard now verifies and repairs the local Mini App service before changing nginx or requesting TLS.
+- Local `/healthz` validation waits for service readiness instead of issuing a single immediate curl after a systemd restart.
+- On timeout, the installer prints the effective configured port, systemd unit port, service status, recent journal, and listening sockets.
+- Wizard rollback now also restores the previous `sonar-web.service` unit, then reloads systemd before restarting original services.
+- Added regression tests for readiness polling, port mismatch diagnostics, and rollback of the web unit.
+- This patch addresses the installer failure mode `LOCAL_WEB_HEALTH_FAILED`; it does not claim the user's live service is repaired until RC3 is installed and the wizard is rerun successfully.
+
 ## 6.3.0 · Service uptime integration
 
 - Added opt-in per-workspace HTTP/HTTPS and TCP monitoring, durable incident history, probe hysteresis, tenant-safe REST API, Telegram commands and Mini App controls.

@@ -23,7 +23,7 @@ import ssl
 from datetime import datetime, timedelta
 import logging
 
-AGENT_VERSION = '6.6.0-rc2'
+AGENT_VERSION = '6.6.0-rc3'
 AGENT_PROTOCOL = 2
 
 logger = logging.getLogger('sonar.agent')  # ✅ خودکار به سیستم متصل می‌شه

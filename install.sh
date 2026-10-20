@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sonar Radar Pro 6.6.0-rc2 | resilient GitHub deployment manager
+# Sonar Radar Pro 6.6.0-rc3 | resilient GitHub deployment manager
 # Supported: Ubuntu/Debian with systemd. Never execute remotely piped scripts as root.
 set -Eeuo pipefail
 umask 077
@@ -747,6 +747,26 @@ WantedBy=multi-user.target
 EOF
   chmod 0644 "$WEB_UNIT"
 }
+wait_for_web_health() {
+  local port="$1" timeout="${2:-30}" attempt unit_port='unknown'
+  valid_port "$port" || { warn "Invalid local Web API port: $port"; return 1; }
+  for ((attempt=1; attempt<=timeout; attempt++)); do
+    if systemctl is-active --quiet "$WEB_SERVICE" && \
+       curl --fail --silent --connect-timeout 1 --max-time 3 "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  if [[ -f "$WEB_UNIT" ]]; then
+    unit_port="$(sed -nE '/^ExecStart=.*--port[[:space:]]+[0-9]+/s/.*--port[[:space:]]+([0-9]+).*/\1/p' "$WEB_UNIT" | head -1)"
+    unit_port="${unit_port:-unknown}"
+  fi
+  warn "LOCAL_WEB_HEALTH_FAILED: configured port=$port; systemd unit port=$unit_port; waited ${timeout}s."
+  systemctl status "$WEB_SERVICE" --no-pager -l >&2 || true
+  journalctl -u "$WEB_SERVICE" -n 80 --no-pager >&2 || true
+  if command -v ss >/dev/null 2>&1; then ss -ltnp >&2 || true; fi
+  return 1
+}
 install_web() {
   require_root;require_install
   local port; port="$(read_env SONAR_WEB_PORT)";port="${port:-8090}"
@@ -759,16 +779,12 @@ install_web() {
   systemd-analyze verify "$WEB_UNIT" >> "$INSTALL_LOG" 2>&1 || warn 'systemd unit verification emitted warnings; review installer log.'
   systemctl enable "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1 || die 'Could not enable Web service.'
   # enable --now does not restart an already-active old process on upgrades.
-  systemctl restart "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1 || die 'Web service failed.'
-  local attempts=0
-  until curl --fail --silent --max-time 3 "http://127.0.0.1:${port}/healthz" >/dev/null; do
-    ((attempts+=1))
-    if ((attempts >= 12)); then
-      journalctl -u "$WEB_SERVICE" -n 30 --no-pager >&2 || true
-      die 'Web API failed its HTTP health check.'
-    fi
-    sleep 1
-  done
+  if ! systemctl restart "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1; then
+    systemctl status "$WEB_SERVICE" --no-pager -l >&2 || true
+    journalctl -u "$WEB_SERVICE" -n 80 --no-pager >&2 || true
+    die 'Web service restart failed; service diagnostics are shown above.'
+  fi
+  wait_for_web_health "$port" 20 || die 'Web API failed its HTTP health check; inspect the service status and journal above.'
   ok "Mini App API active on http://127.0.0.1:$port"
   say 'To publish: configure domain + HTTPS. Never expose this port publicly.'
 }
@@ -839,7 +855,11 @@ issue_tls() {
   set_env SONAR_WEBAPP_URL "https://$domain/"
   set_env SONAR_WEB_ORIGIN "https://$domain"
   systemctl restart "$SERVICE" || die 'Bot restart after web URL change failed.'
-  systemctl restart "$WEB_SERVICE" || die 'Web restart after origin update failed.'
+  if ! systemctl restart "$WEB_SERVICE"; then
+    systemctl status "$WEB_SERVICE" --no-pager -l >&2 || true
+    journalctl -u "$WEB_SERVICE" -n 80 --no-pager >&2 || true
+    die 'Web restart after origin update failed; service diagnostics are shown above.'
+  fi
   ok "HTTPS provisioned and Mini App URL enabled: https://$domain/"
 }
 
@@ -847,28 +867,35 @@ configure_domain_https() (
   # Run inside subshell so EXIT trap always restores operator configuration on
   # failed DNS/TLS/nginx/warmup steps; no automatic deletion of ACME certs.
   require_root;require_install
-  local domain="$1" email="${2:-}" oldsite=0 oldlink=0 oldenv=0
+  local domain="$1" email="${2:-}" oldsite=0 oldlink=0 oldenv=0 oldunit=0 oldbotactive=0 oldwebactive=0 api_port=''
   valid_domain "$domain" || die 'Invalid domain.'
+  [[ ! -L "$NGINX_SITE" ]] || die 'Refusing symlinked Sonar nginx site.'
+  [[ ! -L "$WEB_UNIT" ]] || die 'Refusing symlinked Sonar web systemd unit.'
   local backup
   backup="$(mktemp -d "$BACKUP_DIR/web-wizard.XXXXXXXX")" || die 'Cannot create wizard backup'
   chmod 0700 "$backup"
   if [[ -f "$NGINX_SITE" ]];then cp -p "$NGINX_SITE" "$backup/nginx.conf";oldsite=1;fi
-  [[ ! -L "$NGINX_SITE" ]] || die 'Refusing symlinked Sonar nginx site.'
   if [[ -e "$NGINX_LINK" || -L "$NGINX_LINK" ]];then
     oldlink=1
     cp -a --no-dereference "$NGINX_LINK" "$backup/nginx.link"
   fi
   if [[ -f "$ENV_FILE" ]];then cp -p "$ENV_FILE" "$backup/env";oldenv=1;fi
+  if [[ -f "$WEB_UNIT" ]];then cp -p "$WEB_UNIT" "$backup/sonar-web.service";oldunit=1;fi
+  systemctl is-active --quiet "$SERVICE" && oldbotactive=1 || true
+  systemctl is-active --quiet "$WEB_SERVICE" && oldwebactive=1 || true
   restore_wizard() {
     local result=$?
     if ((result!=0));then
-      warn 'Domain wizard failed; restoring previous Sonar nginx/env and restarting original services.'
+      warn 'Domain wizard failed; restoring previous Sonar nginx/env/systemd unit and restarting original services.'
       if ((oldsite));then cp -p "$backup/nginx.conf" "$NGINX_SITE";else rm -f "$NGINX_SITE";fi
       rm -f -- "$NGINX_LINK"
       if ((oldlink));then cp -a --no-dereference "$backup/nginx.link" "$NGINX_LINK";fi
       if ((oldenv));then cp -p "$backup/env" "$ENV_FILE";else rm -f "$ENV_FILE";fi
+      if ((oldunit));then cp -p "$backup/sonar-web.service" "$WEB_UNIT";else rm -f "$WEB_UNIT";fi
+      systemctl daemon-reload >/dev/null 2>&1 || true
       if command -v nginx >/dev/null;then nginx -t >> "$INSTALL_LOG" 2>&1 && systemctl reload nginx || true;fi
-      systemctl try-restart "$SERVICE" "$WEB_SERVICE" >/dev/null 2>&1 || true
+      if ((oldbotactive));then systemctl restart "$SERVICE" >/dev/null 2>&1 || systemctl start "$SERVICE" >/dev/null 2>&1 || true;else systemctl stop "$SERVICE" >/dev/null 2>&1 || true;fi
+      if ((oldwebactive));then systemctl restart "$WEB_SERVICE" >/dev/null 2>&1 || systemctl start "$WEB_SERVICE" >/dev/null 2>&1 || true;else systemctl stop "$WEB_SERVICE" >/dev/null 2>&1 || true;fi
     fi
     rm -rf -- "$backup"
   }
@@ -876,6 +903,10 @@ configure_domain_https() (
   local resolved
   resolved="$(getent ahosts "$domain" 2>/dev/null | head -1 || true)"
   [[ -n "$resolved" ]] || die 'DNS_NOT_RESOLVED: create an A/AAAA record before HTTPS provisioning.'
+  # Repair/canonicalize the local API before touching nginx or requesting TLS.
+  # This keeps SONAR_WEB_PORT, ExecStart and reverse-proxy upstream in sync.
+  install_web
+  api_port="$(read_env SONAR_WEB_PORT)";api_port="${api_port:-8090}"
   if [[ -f "$NGINX_SITE" ]] && grep -qE '^[[:space:]]*listen[[:space:]]+443' "$NGINX_SITE";then
     grep -Fq "server_name $domain;" "$NGINX_SITE" || die 'DOMAIN_MIGRATION_REQUIRED: existing TLS site uses a different domain.'
     say 'Existing HTTPS site for same domain detected; verifying and renewing TLS only.'
@@ -883,10 +914,8 @@ configure_domain_https() (
     set_domain "$domain"
   fi
   issue_tls "$domain" "$email"
-  local api_port="$(read_env SONAR_WEB_PORT)"
-  api_port="${api_port:-8090}"
-  curl --fail --silent --show-error --max-time 8 "http://127.0.0.1:$api_port/healthz" >/dev/null || die 'LOCAL_WEB_HEALTH_FAILED'
-  curl --fail --silent --show-error --max-time 15 "https://$domain/healthz" >/dev/null || die 'HTTPS_WEB_HEALTH_FAILED: verify public DNS, firewall, reverse proxy and certificate.'
+  wait_for_web_health "$api_port" 30 || die 'LOCAL_WEB_HEALTH_FAILED: local API did not become healthy after TLS/environment restart; service diagnostics are shown above.'
+  curl --fail --silent --show-error --connect-timeout 3 --max-time 15 "https://$domain/healthz" >/dev/null || die 'HTTPS_WEB_HEALTH_FAILED: verify public DNS, firewall, reverse proxy and certificate.'
   ok "HTTPS, nginx, bot URL, website origin and health check verified: https://$domain/"
 )
 
@@ -1126,7 +1155,7 @@ case "${1:-}" in
   --logs) require_root;shift;bash "$SOURCE_DIR/scripts/logs.sh" "${1:-bot}" "${@:2}";;
   --uninstall) uninstall_app;;
   --help|-h) cat <<'USAGE'
-Sonar Radar Pro 6.6.0-rc2 | Deployment Manager
+Sonar Radar Pro 6.6.0-rc3 | Deployment Manager
   sudo bash install.sh                 Interactive Apple-inspired terminal UI
   sudo bash install.sh --check         Offline source and OS checks
   sudo bash install.sh --install       Fresh FULL installation: Bot + DB + Mini App
