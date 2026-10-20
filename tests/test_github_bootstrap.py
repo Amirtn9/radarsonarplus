@@ -26,12 +26,14 @@ def test_one_choice_installs_panel_and_bot():
     assert re.search(r'\n  install_web\n  STATE_SWITCH=0', body)
     web = INSTALL.split('install_web() {',1)[1].split('set_domain()',1)[0]
     assert 'systemctl restart "$WEB_SERVICE"' in web
-    assert '/healthz' in web
+    assert 'wait_for_web_health' in web
+    health = INSTALL.split('wait_for_web_health() {', 1)[1].split('install_web() {', 1)[0]
+    assert '/healthz' in health
 
 
 def test_version_matches():
     v = (ROOT / 'VERSION').read_text().strip()
-    assert v == '6.6.0-rc2'
+    assert v == '6.6.0-rc3'
     assert v in (ROOT / 'settings.py').read_text()
 
 

@@ -82,7 +82,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = keyboard.main_menu_kb(user_id, is_monitor_ready, SUPER_ADMIN_ID)
 
     # No network-bound statistics calls on the home screen: navigation must be immediate.
-    txt = ("📡 *SONAR RADAR | Pro 6.6.0-rc2*\n"
+    txt = ("📡 *SONAR RADAR | Pro 6.6.0-rc3*\n"
            "━━━━━━━━━━━━━━━━━\n"
            f"👤 اعتبار شما: `{remaining}`\n\n"
            "به کدام بخش نیاز دارید؟\n"
