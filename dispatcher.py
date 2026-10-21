@@ -63,6 +63,7 @@ def register_all_handlers(app:  Application):
             # --- Group & Server ---
             CallbackQueryHandler(bot_logic.add_group_start, pattern='^add_group$'),
             CallbackQueryHandler(bot_logic.add_server_start_menu, pattern='^add_server$'),
+            CallbackQueryHandler(bot_logic.existing_ssh_host_start, pattern=r'^ssh_existing_[1-9][0-9]*$'),
 
             # --- Tools & Settings ---
             CallbackQueryHandler(bot_logic.manual_ping_start, pattern='^manual_ping_start$'),
@@ -165,6 +166,7 @@ def register_all_handlers(app:  Application):
             CONFIRM_WS_PORT: [CallbackQueryHandler(bot_logic.confirm_ws_port, pattern='^ws_port_(ok|no)$')],
             GET_CUSTOM_WS_PORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, servers.get_custom_ws_port)],
             CONFIRM_SSH_HOST: [MessageHandler(text_filter, bot_logic.confirm_ssh_host_input)],
+            CONFIRM_EXISTING_SSH_HOST: [MessageHandler(text_filter, bot_logic.existing_ssh_host_confirm)],
             GET_EXPIRY: [MessageHandler(text_filter, bot_logic.get_srv_expiry)],
             GET_LOCATION: [CallbackQueryHandler(bot_logic.select_server_location,pattern=r'^srv_location_(ir|ext)$')],
             SELECT_GROUP: [CallbackQueryHandler(bot_logic.select_group)],

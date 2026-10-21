@@ -135,6 +135,7 @@ async def server_tools(update,context):
     buttons=[
         [B('📊 گزارش کامل',callback_data=f'act_fullreport_{sid}')],
         [B('🌐 تست ارتباط ایران',callback_data=f'act_checkhost_{sid}_{server["ip"]}')],
+        [B('🔐 بررسی و تأیید کلید SSH',callback_data=f'ssh_existing_{sid}')],
         [B('🚀 تست سرعت',callback_data=f'act_speedtest_{sid}'),B('📉 نمودار مصرف',callback_data=f'act_chart_{sid}')],
         [B('🧹 پاکسازی RAM',callback_data=f'act_clearcache_{sid}')],
         [B('⬅️ جزئیات سرور',callback_data=f'detail_{sid}')]]

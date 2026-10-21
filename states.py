@@ -39,3 +39,4 @@ CONFIRM_SSH_HOST = 108
 
 # Explicit required geographic placement for new server wizards
 GET_LOCATION = 109
+CONFIRM_EXISTING_SSH_HOST = 110

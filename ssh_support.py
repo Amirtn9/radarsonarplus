@@ -14,6 +14,10 @@ import paramiko
 from settings import KNOWN_HOSTS_FILE
 
 
+class HostKeyRotationError(PermissionError):
+    """Existing trusted key differs: refuse replacement without offline recovery."""
+
+
 def normalize_host(value):
     value = str(value or '').strip()
     if value.startswith('[') and value.endswith(']'):
@@ -49,7 +53,7 @@ def fingerprint(key):
 
 
 def describe_ssh_error(exc):
-    if isinstance(exc, paramiko.BadHostKeyException):
+    if isinstance(exc, (paramiko.BadHostKeyException, HostKeyRotationError)):
         return 'HOST_KEY_CHANGED: کلید SSH سرور تغییر کرده است؛ اثرانگشت را از کنسول سرور بررسی کنید.'
     if isinstance(exc, paramiko.AuthenticationException):
         return 'AUTH_FAILED: نام کاربری، رمز یا روش ورود SSH پذیرفته نشد.'
@@ -136,7 +140,7 @@ def trust_host_key(candidate, expected):
         label = host_label(host, port)
         existing = keys.lookup(label)
         if existing and not keys.check(label, key):
-            raise PermissionError('Existing host key differs; verify rotation from the server console')
+            raise HostKeyRotationError('Existing host key differs; verify rotation from the server console')
         keys.add(label, key.get_name(), key)
         fd, temp = tempfile.mkstemp(prefix='.known-hosts-', dir=path.parent)
         os.close(fd)

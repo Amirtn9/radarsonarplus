@@ -75,3 +75,32 @@ def confirm_and_connect(db, admin_id, ip, port, username, password, expected):
     if result.get('status') != 'Online':
         raise ConnectionError('SSH_VERIFICATION_FAILED: '+str(result.get('error') or 'unknown')[:120])
     return {'route': 'agent' if relay_id is not None else 'direct', 'agent_id': relay_id}
+
+
+def probe_saved_server(db, admin_id, server):
+    """Read a candidate key for an authorized, already-saved server.
+
+    Callers must resolve the server with get_server_for_user before invoking.
+    Never persist or automatically trust a key obtained by network scanning.
+    """
+    candidate, relay_id = scan_direct_first(db, admin_id, server['ip'], server['port'])
+    return {
+        'fingerprint': candidate['fingerprint'],
+        'key_type': candidate['type'],
+        'route': 'agent' if relay_id is not None else 'direct',
+        'agent_id': relay_id,
+        'verified': False,
+    }
+
+
+def confirm_saved_server(db, admin_id, server, expected):
+    """Enroll host key after operator approval and SSH authentication.
+
+    No modification to the existing server record, group, or credentials.
+    The shared onboarding process re-scans the key to prevent stale approval.
+    """
+    from core import sec
+    return confirm_and_connect(
+        db, admin_id, server['ip'], server['port'], server['username'],
+        sec.decrypt(server['password']), expected,
+    )

@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from typing import Literal
 from access_policy import valid_agent_port, valid_subscription_url
-from server_onboarding import public_destination, scan_direct_first, confirm_and_connect
+from server_onboarding import (public_destination, scan_direct_first, confirm_and_connect,
+                               probe_saved_server, confirm_saved_server)
 from web_agent_jobs import queue as queue_install, list_for_server
 
 class NewServer(BaseModel):
@@ -26,6 +27,9 @@ class NewServer(BaseModel):
 class ServerProbe(BaseModel):
     ip:str=Field(min_length=3,max_length=45)
     port:int=Field(ge=1,le=65535)
+
+class ExistingHostConfirm(BaseModel):
+    expected_fingerprint:str=Field(min_length=50,max_length=60)
 
 class EnableServer(BaseModel):
     enabled:bool
@@ -150,6 +154,42 @@ def make_router(store,actor,guarded,admin_id):
             return queue_install(store.db,uid,server_id,int(saved['ws_port']),admin_id)
         job_id=await guarded(enqueue)
         return {'job_id':job_id,'state':'pending'}
+
+    @r.post('/server/{server_id}/ssh-host/probe')
+    async def probe_existing_host(server_id:int,uid:int=Depends(actor)):
+        def scan():
+            server=store.db.get_server_for_user(server_id,uid,admin_id)
+            if not server:raise PermissionError('Server is not in your workspace')
+            return probe_saved_server(store.db,admin_id,server)
+        try:return await __import__('asyncio').to_thread(scan)
+        except PermissionError:
+            raise HTTPException(status_code=403,detail='Not authorized')
+        except ValueError:
+            raise HTTPException(status_code=400,detail='SSH_HOST_ADDRESS_INVALID')
+        except Exception as exc:
+            raise HTTPException(status_code=502,detail='SSH_HOST_SCAN_FAILED: '+type(exc).__name__)
+
+    @r.post('/server/{server_id}/ssh-host/confirm')
+    async def confirm_existing_host(server_id:int,body:ExistingHostConfirm,uid:int=Depends(actor)):
+        def confirm():
+            server=store.db.get_server_for_user(server_id,uid,admin_id)
+            if not server:raise PermissionError('Server is not in your workspace')
+            result=confirm_saved_server(store.db,admin_id,server,body.expected_fingerprint)
+            return {'ok':True,'server_id':server_id,'status':'ssh_verified',**result}
+        try:return await __import__('asyncio').to_thread(confirm)
+        except PermissionError as exc:
+            if 'HOST_FINGERPRINT_MISMATCH' in str(exc):
+                raise HTTPException(status_code=409,detail='HOST_FINGERPRINT_MISMATCH')
+            if 'Existing host key differs' in str(exc):
+                raise HTTPException(status_code=409,detail='HOST_KEY_CHANGED: verify rotation out-of-band')
+            raise HTTPException(status_code=403,detail='Not authorized')
+        except ValueError:
+            raise HTTPException(status_code=400,detail='SSH_FINGERPRINT_INVALID')
+        except Exception as exc:
+            from ssh_support import describe_ssh_error
+            error=describe_ssh_error(exc)
+            # Do not disclose credentials, raw exception detail or internal relay IPs.
+            raise HTTPException(status_code=502,detail=error.split(':',1)[0])
 
     @r.post('/server/{server_id}/check-ssh')
     async def check_server_ssh(server_id:int,uid:int=Depends(actor)):

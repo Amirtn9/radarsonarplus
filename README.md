@@ -214,3 +214,7 @@ python3 -m pytest -q
 ---
 
 **English quick start:** Clone `https://github.com/Amirtn9/radarsonarplus`, run `bash install.sh --check`, then `sudo bash install.sh` and choose `01`. Use `sudo bash install.sh --support` if installation fails. This is an RC release, not a production certification. Never run clean install without confirming a usable backup.
+
+### تأیید SSH سرور موجود (رفع `HOST_KEY_UNKNOWN`)
+
+برای سروری که قبلاً ثبت شده، در وب/مینی‌اپ از «جزئیات سرور → مدیریت عملیاتی → بررسی کلید SSH این سرور» و در ربات از «جزئیات سرور → ابزارها و تست‌ها → بررسی و تأیید کلید SSH» اقدام کنید. پس از بررسی مستقل SHA256 از کنسول سرور و احراز هویت موفق، کلید در known_hosts ثبت می‌شود و سرور مجدداً ایجاد نمی‌شود. راهنمای کامل: `EXISTING_SERVER_SSH_FA.md`.
