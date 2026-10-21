@@ -87,11 +87,46 @@
  id('web-show-config').addEventListener('click',loadGroups);
  function currentServer(){return Number(window.SonarConsole?.currentServerId?.()||0);}
  const serverStatus=id('web-server-actions-status');
+ const existingKeyForm=id('web-existing-ssh-confirm-form');
+ const existingKeyInfo=id('web-existing-ssh-key-info');
+ const existingKeyInput=id('web-existing-ssh-fingerprint');
+ let existingKeyCandidate=null;
+ function resetExistingKey(){existingKeyCandidate=null;existingKeyInput.value='';existingKeyForm.hidden=true;}
+ id('web-existing-ssh-cancel')?.addEventListener('click',resetExistingKey);
+ id('web-existing-ssh-probe')?.addEventListener('click',async e=>{
+   const sid=currentServer();if(!sid)return;
+   resetExistingKey();e.currentTarget.disabled=true;
+   serverStatus.textContent='در حال خواندن کلید SSH سرور موجود، ابتدا مرکزی سپس Agent مجاز…';
+   try{
+     const r=await jsonPost(`/api/operations/server/${sid}/ssh-host/probe`,{});
+     existingKeyCandidate={sid,fingerprint:r.fingerprint};
+     existingKeyInfo.textContent=`سرور #${sid} · نوع کلید: ${r.key_type} · مسیر: ${r.route==='direct'?'مرکزی':'Agent #'+r.agent_id} · اثر انگشت پیشنهادی: ${r.fingerprint}`;
+     existingKeyForm.hidden=false;
+     serverStatus.textContent='پیش از تأیید، اثر انگشت را مستقل از طریق کنسول سرور بررسی کنید.';
+   }catch(err){serverStatus.textContent='بررسی کلید ناموفق: '+err.message;}
+   finally{e.currentTarget.disabled=false;}
+ });
+ existingKeyForm?.addEventListener('submit',async e=>{
+   e.preventDefault();const sid=currentServer(),fingerprint=existingKeyInput.value.trim();
+   if(!existingKeyCandidate||existingKeyCandidate.sid!==sid){resetExistingKey();serverStatus.textContent='سرور عوض شده است؛ کلید را دوباره بررسی کنید.';return;}
+   if(fingerprint!==existingKeyCandidate.fingerprint){serverStatus.textContent='اثر انگشت واردشده با کلید فعلی مطابقت ندارد؛ هیچ کلیدی ثبت نشد.';return;}
+   const btn=e.submitter;if(btn)btn.disabled=true;
+   serverStatus.textContent='در حال بررسی مجدد کلید، احراز هویت SSH و ثبت کلید معتبر…';
+   try{
+     const r=await jsonPost(`/api/operations/server/${sid}/ssh-host/confirm`,{expected_fingerprint:fingerprint});
+     resetExistingKey();serverStatus.textContent=`SSH سرور #${sid} تأیید شد. مسیر: ${r.route==='direct'?'مرکزی':'Agent'}. سرور موجود حفظ شد.`;
+     window.SonarConsole?.loadServer?.();
+   }catch(err){serverStatus.textContent='تأیید ناموفق: '+err.message;}
+   finally{if(btn)btn.disabled=false;}
+ });
  id('web-ssh-check')?.addEventListener('click',async e=>{
-   const sid=currentServer();if(!sid)return;serverStatus.textContent='در حال بررسی SSH از سرور مرکزی یا Agent…';
+   const sid=currentServer();if(!sid)return;resetExistingKey();serverStatus.textContent='در حال بررسی SSH از سرور مرکزی یا Agent…';
    const btn=e.currentTarget;btn.disabled=true;
    try{const r=await jsonPost(`/api/operations/server/${sid}/check-ssh`,{});
      serverStatus.textContent=r.status==='Online'?'اتصال مدیریتی SSH برقرار است.':`SSH: ${r.error||'ناموفق'}`;
+     if(r.status!=='Online'&&String(r.error||'').startsWith('HOST_KEY_UNKNOWN')){
+       serverStatus.textContent+=' برای تأیید کلید این سرور، دکمه «بررسی کلید SSH این سرور» را بزنید.';
+     }
    }catch(err){serverStatus.textContent=err.message;}finally{btn.disabled=false;}
  });
  id('web-agent-install')?.addEventListener('click',async e=>{

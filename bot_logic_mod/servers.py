@@ -1339,3 +1339,62 @@ async def _install_saved_server(context, uid, server, message):
     except Exception as exc:
         logger.error('Agent job failed server=%s type=%s',server.get('id'),type(exc).__name__)
         await message.edit_text('❌ نصب ایجنت با خطای داخلی متوقف شد؛ از جزئیات سرور دوباره نصب/رفع ایجنت را اجرا کنید.')
+
+
+async def existing_ssh_host_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Confirm host identity on an existing server without recreating the row."""
+    try:
+        sid=int(update.callback_query.data.rsplit('_',1)[1])
+    except (IndexError,ValueError):
+        return ConversationHandler.END
+    uid=update.effective_user.id
+    saved=await run_sync(db.get_server_for_user,sid,uid,SUPER_ADMIN_ID)
+    if not saved:
+        await update.callback_query.answer('دسترسی به این سرور وجود ندارد.',show_alert=True)
+        return ConversationHandler.END
+    await update.callback_query.answer()
+    await update.effective_message.reply_text('در حال خواندن کلید SSH از مسیر مرکزی و در صورت لزوم Agent مجاز…')
+    try:
+        from server_onboarding import probe_saved_server
+        result=await run_sync(probe_saved_server,db,SUPER_ADMIN_ID,saved)
+    except Exception as exc:
+        from ssh_support import describe_ssh_error
+        await update.effective_message.reply_text('❌ بررسی کلید SSH ناموفق بود: '+describe_ssh_error(exc))
+        return ConversationHandler.END
+    context.user_data['existing_ssh_approval']={'sid':sid,'fingerprint':result['fingerprint']}
+    await update.effective_message.reply_text(
+        f'🔐 سرور موجود: {saved["name"]} ({saved["ip"]}:{saved["port"]})\n'
+        f'نوع کلید: {result["key_type"]}\n'
+        f'اثر انگشت پیشنهادی: {result["fingerprint"]}\n\n'
+        'اثر انگشت را مستقل از کنسول سرور یا ارائه‌دهنده بررسی کنید؛ سپس مقدار صحیح را بفرستید. '
+        'کلید خودکار تأیید نمی‌شود. برای لغو /cancel بفرستید.')
+    return CONFIRM_EXISTING_SSH_HOST
+
+
+async def existing_ssh_host_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from hmac import compare_digest
+    approved=context.user_data.get('existing_ssh_approval') or {}
+    sid=approved.get('sid')
+    if not sid:
+        await update.effective_message.reply_text('درخواست منقضی شده است؛ از جزئیات سرور دوباره اقدام کنید.')
+        return ConversationHandler.END
+    expected=(update.effective_message.text or '').strip()
+    if not expected.isascii() or not compare_digest(expected,approved['fingerprint']):
+        await update.effective_message.reply_text('❌ اثر انگشت مطابقت ندارد. از کنسول سرور بررسی و مجدداً ارسال کنید، یا /cancel بزنید.')
+        return CONFIRM_EXISTING_SSH_HOST
+    try:
+        saved=await run_sync(db.get_server_for_user,sid,update.effective_user.id,SUPER_ADMIN_ID)
+        if not saved:raise PermissionError('Server no longer authorized')
+        from server_onboarding import confirm_saved_server
+        path=await run_sync(confirm_saved_server,db,SUPER_ADMIN_ID,saved,expected)
+    except Exception as exc:
+        from ssh_support import describe_ssh_error
+        context.user_data.pop('existing_ssh_approval',None)
+        await update.effective_message.reply_text('❌ تأیید SSH ناموفق بود؛ کلید جدید ثبت نشد.\n'+describe_ssh_error(exc))
+        return ConversationHandler.END
+    context.user_data.pop('existing_ssh_approval',None)
+    await update.effective_message.reply_text(
+        f'✅ کلید SSH سرور #{sid} تأیید و ذخیره شد. مسیر: '+('Agent' if path['route']=='agent' else 'مرکزی')+
+        '. اطلاعات سرور موجود و تنظیمات آن تغییر نکردند.',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('بازگشت به سرور',callback_data=f'detail_{sid}')]]))
+    return ConversationHandler.END

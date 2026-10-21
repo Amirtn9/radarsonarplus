@@ -68,12 +68,23 @@
         <section class="panel"><h3>مدیریت عملیاتی سرور</h3>
           <div class="fleet-actions">
             <button type="button" id="web-ssh-check">تست SSH مرکزی / اجنت</button>
+            <button type="button" id="web-existing-ssh-probe">بررسی کلید SSH این سرور</button>
             <button type="button" id="web-agent-install">نصب یا تعمیر Agent</button>
             <button type="button" id="web-agent-port-update">ویرایش پورت Agent</button>
             <button type="button" id="web-server-rename">تغییر نام</button>
             <button type="button" id="web-server-group">تغییر پوشه</button>
             <button type="button" id="web-server-delete" class="destructive">حذف سرور</button>
-          </div><p id="web-server-actions-status" role="status" class="muted"></p>
+          </div>
+          <form id="web-existing-ssh-confirm-form" class="web-wizard" hidden>
+            <p class="muted" id="web-existing-ssh-key-info" role="status"></p>
+            <label>اثر انگشت SHA256 تأییدشده از کنسول خود سرور
+              <input id="web-existing-ssh-fingerprint" dir="ltr" minlength="50" maxlength="60" placeholder="SHA256:..." autocomplete="off" required>
+            </label>
+            <p class="muted">کلید نمایش‌داده‌شده فقط از شبکه خوانده شده و قابل اعتماد نیست. اثر انگشت واقعی را جداگانه در کنسول سرور بررسی کنید. ثبت فقط پس از احراز هویت SSH انجام می‌شود.</p>
+            <button type="submit">تأیید اثر انگشت و فعال‌سازی SSH سرور موجود</button>
+            <button type="button" id="web-existing-ssh-cancel">انصراف</button>
+          </form>
+          <p id="web-server-actions-status" role="status" class="muted"></p>
           <div id="web-server-install-history" class="muted"></div>
         </section>
         <section class="panel"><h3>🌐 بررسی دسترسی از داخل و خارج</h3><p class="muted">این آزمایش فقط اتصال TCP از مسیرهای موجود را بررسی می‌کند و تشخیص قطع کامل اینترنت نیست.</p><button type="button" id="reachability-run">شروع تشخیص چندمسیره</button><div id="reachability-results" class="listitems" role="status"></div></section>
