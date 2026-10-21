@@ -65,12 +65,24 @@
   <div class="bat-signature"><svg viewBox="0 0 240 100" role="img" aria-label="نشان خفاش رادار"><path fill="currentColor" d="M120 24 104 7 100 34C85 23 69 15 55 21L42 33 21 29 4 51 34 56 44 80 64 70 88 92 105 73 120 88 135 73 152 92 176 70 196 80 206 56 236 51 219 29 198 33 185 21C171 15 155 23 140 34L136 7Z"/></svg><span>SONAR RADAR · AGENT TELEMETRY</span></div>
   <p class="muted">نمایش داده‌های واقعیِ آخرین نمونه؛ با تأخیر شبکه یا قطع Agent، عقربه‌ها به‌روزرسانی نمی‌شوند. مقدار Swap در نسخه فعلی Agent اندازه‌گیری نمی‌شود.</p>
 </section>
+        <section class="panel"><h3>مدیریت عملیاتی سرور</h3>
+          <div class="fleet-actions">
+            <button type="button" id="web-ssh-check">تست SSH مرکزی / اجنت</button>
+            <button type="button" id="web-agent-install">نصب یا تعمیر Agent</button>
+            <button type="button" id="web-agent-port-update">ویرایش پورت Agent</button>
+            <button type="button" id="web-server-rename">تغییر نام</button>
+            <button type="button" id="web-server-group">تغییر پوشه</button>
+            <button type="button" id="web-server-delete" class="destructive">حذف سرور</button>
+          </div><p id="web-server-actions-status" role="status" class="muted"></p>
+          <div id="web-server-install-history" class="muted"></div>
+        </section>
         <section class="panel"><h3>🌐 بررسی دسترسی از داخل و خارج</h3><p class="muted">این آزمایش فقط اتصال TCP از مسیرهای موجود را بررسی می‌کند و تشخیص قطع کامل اینترنت نیست.</p><button type="button" id="reachability-run">شروع تشخیص چندمسیره</button><div id="reachability-results" class="listitems" role="status"></div></section>
         <section class="panel"><div class="resource-head"><h3>📊 روند مصرف منابع</h3><small class="muted">آخرین نمونه‌های ۲۴ ساعت</small></div><canvas id="detail-chart" width="900" height="260" aria-label="نمودار پردازنده و حافظه" role="img"></canvas><div id="detail-chart-status" class="muted"></div></section>
       </section>
       <section id="config-detail" class="view" aria-label="جزئیات کانفیگ">
         <div class="detail-header"><button type="button" class="btn-back" data-go="configs">→ برگشت به کانفیگ‌ها</button><span class="soft-tag">بدون نمایش لینک محرمانه</span></div>
         <div id="config-details" class="panel"><p class="muted">کانفیگی انتخاب نشده است.</p></div>
+        <section class="panel"><button type="button" id="web-config-delete" class="destructive">حذف کانفیگ تأییدشده</button><p id="web-config-actions-status" role="status"></p></section>
       </section>
       <section id="channels" class="view" aria-label="کانال‌های اعلان">
         <section class="panel"><h2>📣 کانال‌ها و مقصدهای اعلان</h2><p>کانال‌هایی که در ربات ثبت کرده‌اید. برای افزودن مقصد یا بررسی مجوز ارسال، از منوی تنظیمات کانال ربات تلگرام استفاده کنید.</p>
@@ -84,14 +96,21 @@
         <form class="web-wizard" id="web-server-form"><h3>مرحله ۱ · معرفی سرور</h3>
           <label>نام سرور<input id="new-server-name" required minlength="2" maxlength="100" autocomplete="off" placeholder="سرور ایران شماره ۱"></label>
           <label>آدرس IP عمومی<input id="new-server-ip" required maxlength="45" dir="ltr" placeholder="203.0.113.10"></label>
+          <label>پوشه سرور<select id="new-server-group"><option value="0">بدون پوشه</option></select></label>
           <label>موقعیت سرور<select id="new-server-location" required><option value="">انتخاب کنید</option><option value="ir">🇮🇷 داخل ایران</option><option value="ext">🌐 خارج از ایران</option></select></label>
           <h3>مرحله ۲ · اتصال امن SSH</h3>
           <label>پورت SSH<input id="new-server-port" type="number" min="1" max="65535" value="22" required></label>
           <label>نام کاربری<input id="new-server-user" required maxlength="64" autocomplete="off" dir="ltr" placeholder="root"></label>
           <label>رمز SSH<input id="new-server-password" required type="password" minlength="1" maxlength="2048" autocomplete="new-password" dir="ltr"></label>
           <label>پورت Agent (قابل تغییر)<input id="new-server-ws" type="number" min="1024" max="65535" value="8080" required></label>
-          <p class="muted">رمز SSH در سایت ذخیره نمی‌شود؛ فقط از اتصال HTTPS به API ارسال و توسط سرویس ذخیره‌سازی اصلی ربات رمزنگاری می‌شود. Agent به‌صورت خودکار نصب نمی‌شود.</p>
-          <button class="primary" type="submit">ثبت سرور در فضای کاری</button>
+          <h3>مرحله ۳ · بررسی کلید و مسیر ارتباط</h3>
+          <button id="server-probe" type="button">۱. بررسی سرور از مرکز / اجنت</button>
+          <p id="server-probe-status" class="muted" role="status">ارتباط مرکزی مقدم است؛ سپس Agent مجاز امتحان می‌شود.</p>
+          <label>اثر انگشت مشاهده‌شده (فقط برای مقایسه)<input id="server-fingerprint-preview" readonly dir="ltr" placeholder="ابتدا بررسی را اجرا کنید"></label>
+          <label>اثر انگشت SHA256 از کنسول مستقل سرور<input id="new-server-fingerprint" required dir="ltr" placeholder="SHA256:..." minlength="50" maxlength="60" autocomplete="off"></label>
+          <label class="web-check"><input type="checkbox" id="new-server-install-agent" checked> نصب Agent پس از تأیید SSH (با وضعیت قابل پیگیری)</label>
+          <p class="muted">کلید دریافت‌شده از شبکه به‌تنهایی معتبر نیست؛ اثر انگشت را مستقل از کنسول سرور یا ارائه‌دهنده بررسی کنید. رمز SSH روی HTTPS انتقال و داخل دیتابیس ربات رمزنگاری می‌شود.</p>
+          <button class="primary" type="submit">۲. تأیید کلید و ثبت سرور</button>
         </form>
         <form class="web-wizard" id="web-config-form" hidden><h3>ثبت کانفیگ یا لینک اشتراک</h3>
           <label>نام کانفیگ<input id="new-config-name" minlength="2" maxlength="128" required placeholder="کانفیگ شخصی"></label>
@@ -99,7 +118,9 @@
           <label>لینک<input id="new-config-link" required minlength="10" maxlength="8192" dir="ltr" placeholder="vless://..."></label>
           <p class="muted">کانفیگ در وضعیت «منتظر آزمون» ذخیره می‌شود؛ هیچ نتیجه تست فرضی به شما نشان داده نمی‌شود.</p>
           <button class="primary" type="submit">ثبت کانفیگ</button>
-        </form><p id="web-ops-result" role="status" class="muted"></p></section>
+        </form><p id="web-ops-result" role="status" class="muted"></p>
+        <section class="panel" id="web-groups"><h3>پوشه‌های سرورها</h3><div id="web-group-list" class="listitems"></div>
+          <form id="web-group-form" class="formline"><label>نام پوشه جدید<input id="web-group-name" required maxlength="80" autocomplete="off"></label><button type="submit">افزودن پوشه</button></form></section></section>
       </section>
       <section id="services" class="view">
         <section class="panel">
