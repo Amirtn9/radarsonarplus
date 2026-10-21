@@ -67,7 +67,16 @@ class RelaySocket:
         if n <= 0: return b''
         while not self.buf:
             if self.closed: return b''
-            frame = self.ws.recv(timeout=self.timeout)
+            try:
+                frame = self.ws.recv(timeout=self.timeout)
+            except Exception as exc:
+                # A clean WebSocket close is end-of-stream, not a transport
+                # programming error to be repeatedly logged by Paramiko.
+                from websockets.exceptions import ConnectionClosed
+                if isinstance(exc, ConnectionClosed):
+                    self.close()
+                    return b''
+                raise
             if not isinstance(frame, bytes):
                 self.close()
                 raise ConnectionError('RELAY_UNEXPECTED_CONTROL_FRAME')
@@ -81,7 +90,14 @@ class RelaySocket:
         if not data: return 0
         # Explicit chunks cap intermediate memory and message size.
         segment = bytes(data[:65536])
-        self.ws.send(segment)
+        try:
+            self.ws.send(segment)
+        except Exception as exc:
+            from websockets.exceptions import ConnectionClosed
+            if isinstance(exc, ConnectionClosed):
+                self.close()
+                raise OSError('RELAY_DISCONNECTED') from exc
+            raise
         return len(segment)
 
     def sendall(self, data):
@@ -94,6 +110,9 @@ class RelaySocket:
         self.timeout = float(timeout) if timeout is not None else None
 
     def gettimeout(self): return self.timeout
+
+    def setblocking(self, enabled):
+        self.settimeout(None if enabled else 0)
 
     def getpeername(self): return self.target, self.port
 

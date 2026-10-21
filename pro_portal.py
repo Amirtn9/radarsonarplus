@@ -174,6 +174,18 @@ async def bootstrap_additive_schemas():
     from agent_traffic import install_schema as install_meter_schema
     await asyncio.to_thread(install_meter_schema,store.db)
     await asyncio.to_thread(install_job_schema,store.db)
+    from web_agent_jobs import install_schema as install_web_agent_schema, worker as web_agent_worker
+    await asyncio.to_thread(install_web_agent_schema,store.db)
+    app.state.web_agent_stop=asyncio.Event()
+    app.state.web_agent_task=asyncio.create_task(web_agent_worker(store.db,app.state.web_agent_stop))
+
+@app.on_event('shutdown')
+async def stop_web_agent_queue():
+    if hasattr(app.state,'web_agent_stop'):
+        app.state.web_agent_stop.set()
+        try:await asyncio.wait_for(app.state.web_agent_task,timeout=15)
+        except asyncio.TimeoutError:
+            log.warning('Web Agent worker still processing a remote installation at shutdown')
 
 @app.get('/healthz')
 async def health():return {'ok':True,'version':(BASE/'VERSION').read_text().strip()}

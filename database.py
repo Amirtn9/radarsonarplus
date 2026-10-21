@@ -738,8 +738,8 @@ class Database:
     def delete_group(self, group_id, owner_id):
         owner_id = self.workspace_owner(owner_id)
         with self.get_connection() as (conn, cur):
-            cur.execute('DELETE FROM groups WHERE id = %s AND owner_id = %s', (group_id, owner_id))
-            cur.execute('UPDATE servers SET group_id = NULL WHERE group_id = %s AND owner_id = %s', (group_id, owner_id)) 
+            cur.execute('UPDATE servers SET group_id = NULL WHERE group_id = %s AND owner_id = %s', (group_id, owner_id))
+            cur.execute('DELETE FROM groups WHERE id = %s AND owner_id = %s', (group_id, owner_id)) 
             conn.commit()
 
     # ==========================================================================

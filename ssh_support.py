@@ -155,17 +155,18 @@ def authenticate_candidate(candidate, expected, username, password, relay_node=N
     if not __import__('hmac').compare_digest(fingerprint(key),str(expected).strip()):
         raise ValueError('Fingerprint mismatch')
     client=paramiko.SSHClient()
+    relay_sock = None
     try:
         client.get_host_keys().add(host_label(candidate['host'],candidate['port']),key.get_name(),key)
         client.set_missing_host_key_policy(paramiko.RejectPolicy())
-        relay_sock = None
-        try:
-            if relay_node is not None:
-                from ssh_relay import RelaySocket
-                relay_sock = RelaySocket.connect(relay_node,candidate['host'],candidate['port'])
-            client.connect(candidate['host'],port=ssh_port(candidate['port']),username=str(username).strip(),password=password,
-                sock=relay_sock,timeout=10,banner_timeout=15,auth_timeout=15,allow_agent=False,look_for_keys=False)
-        finally:
-            if relay_sock is not None: relay_sock.close()
+        if relay_node is not None:
+            from ssh_relay import RelaySocket
+            relay_sock = RelaySocket.connect(relay_node,candidate['host'],candidate['port'])
+        client.connect(candidate['host'],port=ssh_port(candidate['port']),username=str(username).strip(),password=password,
+            sock=relay_sock,timeout=10,banner_timeout=15,auth_timeout=15,allow_agent=False,look_for_keys=False)
     finally:
+        # Close Paramiko's transport *before* the underlying WebSocket.
+        # Previously closing the WebSocket while Paramiko was still reading
+        # produced repeated ConnectionClosedOK transport tracebacks.
         client.close()
+        if relay_sock is not None: relay_sock.close()
