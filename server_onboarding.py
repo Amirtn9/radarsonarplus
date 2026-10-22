@@ -77,31 +77,96 @@ def scan_direct_first(db, admin_id, ip, port):
 
 
 def confirm_and_connect(db, admin_id, ip, port, username, password, expected):
-    """Re-scan key, compare to independently obtained fingerprint and authenticate.
+    """Verify and authenticate SSH, retrying approved relay routes on transport failure.
 
-    Never enroll a host key before a successful SSH authentication. A direct
-    outage permits relay fallback, but not fingerprint or password bypass.
+    The central route is always scanned first. A relay retry is permitted only for
+    network/transport errors; fingerprint changes and authentication failures stop
+    the workflow immediately. A key is persisted only after a successful SSH command.
     """
-    from ssh_support import authenticate_candidate, trust_host_key
+    from ssh_support import authenticate_candidate, trust_host_key, scan_host_key, describe_ssh_error
+    from ssh_relay import (eligible_relay_nodes, retryable_direct_error,
+                           retryable_relay_error, stable_relay_order,
+                           remember_relay_success, forget_relay_route)
     ip, port = public_destination(ip, port)
     if not _FINGERPRINT.fullmatch(str(expected)):
         raise ValueError('Enter the independently verified SHA256 host fingerprint')
+
     candidate, relay_id = scan_direct_first(db, admin_id, ip, port)
     if not hmac.compare_digest(candidate['fingerprint'], expected):
         raise PermissionError('HOST_FINGERPRINT_MISMATCH: SSH key changed or differs from confirmation')
-    node = None
+
+    target_key = f'{ip}:{int(port)}'
+    pool = []
+    selected = None
     if relay_id is not None:
         pool = _eligible_relay_nodes(db, admin_id, ip)
-        node = next((item for item in pool if int(item['id']) == relay_id), None)
-        if node is None:
+        selected = next((item for item in pool if str(item.get('id')) == str(relay_id)), None)
+        if selected is None:
             raise ConnectionError('RELAY_NO_LONGER_APPROVED')
-    authenticate_candidate(candidate, expected, username, password, node)
+
+    try:
+        authenticate_candidate(candidate, expected, username, password, selected)
+    except Exception as initial_error:
+        # Never route around a bad password, an unknown/changed key, or a failed
+        # remote command. Retry only if the active transport itself failed.
+        initial_code = describe_ssh_error(initial_error)
+        retryable = (retryable_relay_error(initial_error, initial_code) if selected is not None
+                     else retryable_direct_error(initial_code))
+        if not retryable:
+            raise
+
+        if selected is not None:
+            forget_relay_route(target_key, selected.get('id'), db=db)
+            try:
+                from monitor_fleet import record_relay_result
+                record_relay_result(db, selected['id'], False)
+            except Exception:
+                pass
+        elif not pool:
+            pool = _eligible_relay_nodes(db, admin_id, ip)
+
+        ordered = stable_relay_order(pool, target_key, db=db)
+        if selected is not None:
+            ordered = [node for node in ordered if str(node.get('id')) != str(selected.get('id'))]
+        last_error = initial_error
+        for node in ordered[:8]:
+            try:
+                candidate_via_relay = scan_host_key(ip, port, node)
+                if not hmac.compare_digest(candidate_via_relay['fingerprint'], expected):
+                    raise PermissionError('HOST_FINGERPRINT_MISMATCH: relay observed a different SSH host key')
+                authenticate_candidate(candidate_via_relay, expected, username, password, node)
+                # Trust only the key whose identity was independently confirmed and
+                # whose SSH authentication + harmless command both succeeded.
+                trust_host_key(candidate_via_relay, expected)
+                remember_relay_success(target_key, node['id'], db=db)
+                try:
+                    from monitor_fleet import record_relay_result
+                    record_relay_result(db, node['id'], True)
+                except Exception:
+                    pass
+                return {'route': 'agent', 'agent_id': int(node['id'])}
+            except PermissionError as exc:
+                # Fingerprint mismatches are security failures, not failover signals.
+                if 'FINGERPRINT' in str(exc) or 'HOST_KEY' in str(exc):
+                    raise
+                last_error = exc
+                code = describe_ssh_error(exc)
+                if not retryable_relay_error(exc, code):
+                    raise
+            except Exception as exc:
+                last_error = exc
+                code = describe_ssh_error(exc)
+                if not retryable_relay_error(exc, code):
+                    raise
+            forget_relay_route(target_key, node.get('id'), db=db)
+            try:
+                from monitor_fleet import record_relay_result
+                record_relay_result(db, node['id'], False)
+            except Exception:
+                pass
+        raise last_error
+
     trust_host_key(candidate, expected)
-    from core import ServerMonitor
-    nodes = _eligible_relay_nodes(db, admin_id, ip)
-    result = ServerMonitor.check_ssh_connection(ip, port, username, password, nodes)
-    if result.get('status') != 'Online':
-        raise ConnectionError('SSH_VERIFICATION_FAILED: '+str(result.get('error') or 'unknown')[:120])
     return {'route': 'agent' if relay_id is not None else 'direct', 'agent_id': relay_id}
 
 

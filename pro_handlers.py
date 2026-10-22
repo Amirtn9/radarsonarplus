@@ -1,6 +1,7 @@
 """Telegram UI for Sonar Radar Pro. Uses existing secure boundary plus scoped store checks."""
 from __future__ import annotations
 import asyncio
+from telegram_safety import safe_callback_answer
 import csv
 import html
 import io
@@ -29,7 +30,7 @@ async def invoke(fn,*args,**kw):return await asyncio.to_thread(fn,*args,**kw)
 
 async def display(update,text,markup=None):
     if update.callback_query:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
         try:
             await update.callback_query.edit_message_text(text,reply_markup=markup,parse_mode='HTML')
         except Exception as exc:
@@ -303,7 +304,7 @@ async def export(update,context):
     else:return
     if rows is None:return
     file=csv_bytes(rows,cols)
-    await update.callback_query.answer()
+    await safe_callback_answer(update.callback_query, )
     await context.bot.send_document(chat_id=update.effective_chat.id,document=InputFile(file,filename=f'sonar-{kind}-{owner}.csv'),caption='📥 گزارش خروجی SONAR')
 
 
@@ -442,7 +443,7 @@ async def rule_command(update,context):
 
 async def pdf_report(update,context):
     if update.callback_query:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
     uid=update.effective_user.id;owner=owned_context(update,context)
     try:
         from pro_pdf import generate_pdf

@@ -877,10 +877,11 @@ def _relay_semaphore():
 
 
 async def _serve_ssh_relay(websocket, request):
-    """Forward SSH ciphertext only; Agent never receives SSH passwords.
+    """Forward SSH ciphertext over one dedicated, authenticated WSS session.
 
-    Destination is a global numeric IP on an operator allowlisted SSH port.
-    The client authenticates with the existing per-Agent token and pinned TLS.
+    No idle timeout is applied to the SSH byte stream: an authenticated SSH
+    connection may be quiet while a command runs or waits for user input. WSS
+    keepalive detects dead peers; the outer handler still caps a relay session.
     """
     from ssh_relay import valid_relay_destination
     try:
@@ -888,42 +889,59 @@ async def _serve_ssh_relay(websocket, request):
     except (ValueError, TypeError):
         await websocket.send(json.dumps({'error': 'RELAY_DESTINATION_NOT_ALLOWED'}))
         return
+
     async with _relay_semaphore():
         try:
-            reader, writer = await asyncio.wait_for(asyncio.open_connection(target, port),timeout=5)
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(target, port), timeout=5)
         except (OSError, asyncio.TimeoutError):
             await websocket.send(json.dumps({'error': 'RELAY_TARGET_UNREACHABLE'}))
             return
+
         await websocket.send(json.dumps({'status': 'relay_ready'}))
+
         async def upstream():
             while True:
-                chunk = await asyncio.wait_for(reader.read(32768), timeout=300)
-                if not chunk:break
+                chunk = await reader.read(32768)
+                if not chunk:
+                    return
                 await websocket.send(chunk)
-        task = asyncio.create_task(upstream())
+
+        task = asyncio.create_task(upstream(), name='sonar-ssh-relay-upstream')
         try:
-            while not task.done():
-                incoming = asyncio.create_task(websocket.recv())
-                done, _ = await asyncio.wait({incoming,task},timeout=300,
-                                             return_when=asyncio.FIRST_COMPLETED)
-                if incoming not in done:
+            while True:
+                incoming = asyncio.create_task(websocket.recv(), name='sonar-ssh-relay-downstream')
+                done, _ = await asyncio.wait({incoming, task}, return_when=asyncio.FIRST_COMPLETED)
+                if task in done:
                     incoming.cancel()
-                    await asyncio.gather(incoming,return_exceptions=True)
+                    await asyncio.gather(incoming, return_exceptions=True)
+                    # Surface a relay task error only as a bounded operational warning.
+                    try:
+                        task.result()
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as exc:
+                        logger.debug('SSH relay upstream ended: %s', type(exc).__name__)
                     break
-                try:chunk=incoming.result()
-                except Exception:break
-                if not isinstance(chunk,bytes) or len(chunk)>65536:break
-                if not chunk:continue
+                try:
+                    chunk = incoming.result()
+                except Exception:
+                    break
+                if not isinstance(chunk, bytes) or not chunk:
+                    break
                 writer.write(chunk)
-                await asyncio.wait_for(writer.drain(),timeout=20)
+                await asyncio.wait_for(writer.drain(), timeout=20)
         except (OSError, asyncio.TimeoutError):
             pass
         finally:
-            task.cancel()
-            await asyncio.gather(task,return_exceptions=True)
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
             writer.close()
-            try:await asyncio.wait_for(writer.wait_closed(),timeout=2)
-            except (OSError,asyncio.TimeoutError):pass
+            try:
+                await asyncio.wait_for(writer.wait_closed(), timeout=2)
+            except (OSError, asyncio.TimeoutError):
+                pass
 
 
 AGENT_TOKEN = os.environ.get("SONAR_AGENT_TOKEN", "")  # Required in server mode.
@@ -1099,8 +1117,18 @@ Protocol:
                 except Exception:
                     pass
 
-    except Exception:
-        logger.exception("Agent client handler failed")
+    except Exception as exc:
+        # WebSocket peers routinely close a TCP/WSS session without a close frame
+        # during network changes. Treat that as a connection lifecycle event, not
+        # an application traceback; retain a warning for abnormal closes.
+        try:
+            from websockets.exceptions import ConnectionClosed
+            if isinstance(exc, ConnectionClosed):
+                logger.debug('Agent WebSocket disconnected: %s', type(exc).__name__)
+            else:
+                logger.warning('Agent client handler failed: %s', type(exc).__name__)
+        except Exception:
+            logger.warning('Agent client handler failed: %s', type(exc).__name__)
 
 async def start_server(port):
     if websockets is None:

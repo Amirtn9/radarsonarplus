@@ -9,6 +9,7 @@ This module handles all admin-related operations including:
 """
 
 import logging
+from telegram_safety import safe_callback_answer
 import asyncio
 import os
 import json
@@ -143,14 +144,14 @@ async def admin_panel_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        users_count = len(db.get_all_users())
-        logger.debug(f"👥 Total users: {users_count}")
-        
-        # ✅ اصلاح شد:  باز کردن صحیح کانکشن و نشانگر
-        with db.get_connection() as (conn, cur):
-            cur.execute('SELECT id FROM servers')
-            total_servers = len(cur.fetchall())
-            logger.debug(f"🖥 Total servers: {total_servers}")
+        def _summary_counts():
+            users_count = len(db.get_all_users())
+            with db.get_connection() as (conn, cur):
+                cur.execute('SELECT id FROM servers')
+                total_servers = len(cur.fetchall())
+            return users_count, total_servers
+        users_count, total_servers = await run_sync(_summary_counts)
+        logger.debug("Admin summary counts loaded: users=%s servers=%s", users_count, total_servers)
 
         reply_markup = keyboard.admin_main_kb()
         txt = (
@@ -179,7 +180,7 @@ async def admin_agent_dashboard(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     try:
-        servers = db.get_all_servers()
+        servers = await run_sync(db.get_all_servers)
         if not servers:
             await safe_edit_message(
                 update, 
@@ -210,17 +211,17 @@ async def admin_agent_dashboard(update: Update, context: ContextTypes.DEFAULT_TY
                 # ذخیره در DB برای نمایش لاگ/آخرین وضعیت
                 now = get_tehran_datetime().strftime('%Y-%m-%d %H:%M:%S')
                 if res. get('status') == 'Online':
-                    db.update_agent_state(s['id'], status='Online', last_log='OK', last_seen=now)
-                    db.update_server_error(s['id'], '')
+                    await run_sync(db.update_agent_state, s['id'], status='Online', last_log='OK', last_seen=now)
+                    await run_sync(db.update_server_error, s['id'], '')
                     logger.debug(f"✅ Server {ip} is Online")
                 else: 
                     err = str(res.get('error') or 'Unknown')
                     # اگر خطای auth باشد، همان وضعیت را روی last_status هم اعمال می‌کنیم
                     if 'auth' in err.lower():
-                        db. update_status(s['id'], 'Auth Failed')
+                        await run_sync(db.update_status, s['id'], 'Auth Failed')
                         logger.warning(f"🔐 Auth failed for {ip}")
-                    db.update_agent_state(s['id'], status='', last_log=err, last_seen=now)
-                    db.update_server_error(s['id'], err)
+                    await run_sync(db.update_agent_state, s['id'], status='', last_log=err, last_seen=now)
+                    await run_sync(db.update_server_error, s['id'], err)
                     logger.warning(f"❌ Server {ip} is Offline: {err}")
                 
                 return s['id'], res
@@ -286,7 +287,7 @@ async def admin_agent_logs_menu(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     try:
-        servers = db.get_all_servers()
+        servers = await run_sync(db.get_all_servers)
         if not servers:
             await safe_edit_message(
                 update,
@@ -328,11 +329,11 @@ async def admin_agent_log_view(update: Update, context: ContextTypes.DEFAULT_TYP
         sid = int(update.callback_query.data. split('_')[-1])
     except Exception as e:
         logger.error(f"❌ Invalid server ID:  {e}")
-        await update. callback_query.answer("❌ شناسه نامعتبر", show_alert=True)
+        await safe_callback_answer(update.callback_query, "❌ شناسه نامعتبر", show_alert=True)
         return
 
     try:
-        srv = db.get_server_by_id(sid)
+        srv = await run_sync(db.get_server_by_id, sid)
         if not srv:
             await safe_edit_message(
                 update,
@@ -378,7 +379,7 @@ async def admin_agent_reconnect_all(update: Update, context: ContextTypes.DEFAUL
         pass
     
     try:
-        await update.callback_query.answer(
+        await safe_callback_answer(update.callback_query, 
             "✅ تمام اتصال‌ها ریست شد؛ تلاش مجدد در اولین درخواست انجام می‌شود.",
             show_alert=True
         )
@@ -469,7 +470,7 @@ async def admin_user_actions(update: Update, context: ContextTypes.DEFAULT_TYPE)
         target_id = int(data.split('_')[3])
     except Exception as e:
         logger.error(f"❌ Parse user action failed: {e}")
-        await update.callback_query.answer("❌ خطای تجزیه دستور", show_alert=True)
+        await safe_callback_answer(update.callback_query, "❌ خطای تجزیه دستور", show_alert=True)
         return
 
     try:
@@ -477,7 +478,7 @@ async def admin_user_actions(update: Update, context: ContextTypes.DEFAULT_TYPE)
             new_state = db.toggle_ban_user(target_id)
             msg = "کاربر مسدود شد." if new_state else "کاربر فعال شد."
             try:
-                await update.callback_query.answer(msg)
+                await safe_callback_answer(update.callback_query, msg)
             except Exception as e:
                 logger.warning(f"⚠️ Callback answer failed: {e}")
             await admin_user_manage(update, context, user_id=target_id)
@@ -486,7 +487,7 @@ async def admin_user_actions(update: Update, context: ContextTypes.DEFAULT_TYPE)
         elif action == 'del':
             db.remove_user(target_id)
             try:
-                await update.callback_query.answer("کاربر حذف شد.")
+                await safe_callback_answer(update.callback_query, "کاربر حذف شد.")
             except Exception as e:
                 logger.warning(f"⚠️ Callback answer failed: {e}")
             await admin_users_list(update, context)
@@ -495,7 +496,7 @@ async def admin_user_actions(update: Update, context: ContextTypes.DEFAULT_TYPE)
         elif action == 'addtime':
             db.add_or_update_user(target_id, days=30)
             try:
-                await update.callback_query. answer("30 روز تمدید شد.")
+                await safe_callback_answer(update.callback_query, "30 روز تمدید شد.")
             except Exception as e:
                 logger.warning(f"⚠️ Callback answer failed: {e}")
             await admin_user_manage(update, context, user_id=target_id)
@@ -515,7 +516,7 @@ async def admin_user_actions(update: Update, context: ContextTypes.DEFAULT_TYPE)
             new_plan = db.toggle_user_plan(target_id)
             msg = "✅ کاربر به پریمیوم ارتقا یافت" if new_plan == 1 else "⬇️ کاربر به عادی تغییر یافت"
             try:
-                await update.callback_query.answer(msg, show_alert=True)
+                await safe_callback_answer(update.callback_query, msg, show_alert=True)
             except Exception as e:
                 logger.warning(f"⚠️ Callback answer failed: {e}")
             await admin_user_manage(update, context, user_id=target_id)
@@ -686,7 +687,7 @@ async def admin_broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYP
 async def add_new_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """شروع افزودن کاربر جدید."""
     try:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
     except: 
         pass
     
@@ -791,7 +792,7 @@ async def admin_all_servers_report(update: Update, context: ContextTypes.DEFAULT
 async def admin_full_report_global_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """شروع تولید گزارش جامع تمام سرورها."""
     try:
-        await update.callback_query.answer("⏳ شروع گزارش جامع...")
+        await safe_callback_answer(update.callback_query, "⏳ شروع گزارش جامع...")
         await update.callback_query.message.reply_text("⚠️ **شروع آنالیز تمام سرورها.. .**\nلطفاً صبور باشید.")
         logger.info("🔄 Full global report started")
         asyncio.create_task(run_full_global_report(context, update. effective_chat.id))
@@ -951,7 +952,7 @@ async def admin_user_servers_report(update: Update, context: ContextTypes.DEFAUL
         servers = db.get_all_user_servers(target_uid)
         
         if not servers: 
-            await query.answer("❌ سروری ندارد.", show_alert=True)
+            await safe_callback_answer(query, "❌ سروری ندارد.", show_alert=True)
             logger.warning(f"⚠️ User {target_uid} has no servers")
             return
 
@@ -975,7 +976,7 @@ async def admin_agent_install_menu(update: Update, context: ContextTypes.DEFAULT
     try:
         query = update.callback_query
         if query:
-            await query.answer()
+            await safe_callback_answer(query, )
 
         servers = db.get_all_servers()
         if not servers:
@@ -1005,7 +1006,7 @@ async def admin_agent_install_menu(update: Update, context: ContextTypes.DEFAULT
 async def admin_agent_install_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not SUPER_ADMIN_ID or update.effective_user.id!=SUPER_ADMIN_ID:
         return ConversationHandler.END
-    await update.callback_query.answer()
+    await safe_callback_answer(update.callback_query, )
     if update.callback_query.data=='admin_agent_install_all':
         servers=await run_sync(db.get_all_servers)
         context.user_data['agent_install_targets']=[int(s['id']) for s in servers]

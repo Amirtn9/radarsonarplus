@@ -37,7 +37,11 @@ logger = logging.getLogger(__name__)
 try:
     import websockets
     from websockets.exceptions import ConnectionClosed
-    from websockets.exceptions import InvalidStatusCode
+    try:
+        # websockets >=14 renamed InvalidStatusCode to InvalidStatus.
+        from websockets.exceptions import InvalidStatus as InvalidStatusCode
+    except ImportError:  # websockets 13 compatibility without importing the deprecated alias on newer releases
+        from websockets.exceptions import InvalidStatusCode
 except Exception:  # pragma: no cover
     websockets = None
     ConnectionClosed = Exception

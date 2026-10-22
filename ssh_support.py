@@ -18,6 +18,10 @@ class HostKeyRotationError(PermissionError):
     """Existing trusted key differs: refuse replacement without offline recovery."""
 
 
+class SSHCommandValidationError(RuntimeError):
+    """SSH authentication succeeded but the required remote command check failed."""
+
+
 def normalize_host(value):
     value = str(value or '').strip()
     if value.startswith('[') and value.endswith(']'):
@@ -53,6 +57,10 @@ def fingerprint(key):
 
 
 def describe_ssh_error(exc):
+    if isinstance(exc, SudoRequiredError):
+        return 'SUDO_REQUIRED: حساب SSH باید مجوز sudo غیرتعاملی داشته باشد؛ رمز sudo در اجرای خودکار درخواست نمی‌شود.'
+    if isinstance(exc, SSHCommandValidationError):
+        return 'SSH_COMMAND_FAILED: ورود SSH انجام شد، اما اجرای فرمان آزمایشی روی سرور موفق نبود.'
     if isinstance(exc, (paramiko.BadHostKeyException, HostKeyRotationError)):
         return 'HOST_KEY_CHANGED: کلید SSH سرور تغییر کرده است؛ اثرانگشت را از کنسول سرور بررسی کنید.'
     if isinstance(exc, paramiko.AuthenticationException):
@@ -155,22 +163,52 @@ def trust_host_key(candidate, expected):
 
 
 def authenticate_candidate(candidate, expected, username, password, relay_node=None):
-    key=paramiko.PKey.from_type_string(candidate['type'],base64.b64decode(candidate['key'],validate=True))
-    if not __import__('hmac').compare_digest(fingerprint(key),str(expected).strip()):
+    """Authenticate against the scanned key and verify command execution on the same transport.
+
+    The key is still untrusted at this point. Only after the fingerprint matches and
+    authentication plus a harmless command succeed may the caller persist it. Reusing
+    this transport avoids a second, unnecessary SSH connection that can fail after a
+    successful authentication due to transient routing or relay changes.
+    """
+    key = paramiko.PKey.from_type_string(
+        candidate['type'], base64.b64decode(candidate['key'], validate=True))
+    if not __import__('hmac').compare_digest(fingerprint(key), str(expected).strip()):
         raise ValueError('Fingerprint mismatch')
-    client=paramiko.SSHClient()
+    client = paramiko.SSHClient()
     relay_sock = None
     try:
-        client.get_host_keys().add(host_label(candidate['host'],candidate['port']),key.get_name(),key)
+        client.get_host_keys().add(host_label(candidate['host'], candidate['port']), key.get_name(), key)
         client.set_missing_host_key_policy(paramiko.RejectPolicy())
         if relay_node is not None:
             from ssh_relay import RelaySocket
-            relay_sock = RelaySocket.connect(relay_node,candidate['host'],candidate['port'])
-        client.connect(candidate['host'],port=ssh_port(candidate['port']),username=str(username).strip(),password=password,
-            sock=relay_sock,timeout=10,banner_timeout=15,auth_timeout=15,allow_agent=False,look_for_keys=False)
+            relay_sock = RelaySocket.connect(relay_node, candidate['host'], candidate['port'])
+        client.connect(candidate['host'], port=ssh_port(candidate['port']),
+            username=str(username).strip(), password=password, sock=relay_sock,
+            timeout=10, banner_timeout=15, auth_timeout=15,
+            allow_agent=False, look_for_keys=False)
+        if str(username).strip() == 'root':
+            probe_command = "/bin/bash -c 'printf SONAR_SSH_OK'"
+        else:
+            probe_command = "sudo -n -- /bin/bash -c 'printf SONAR_SSH_OK'"
+        _stdin, stdout, stderr = client.exec_command(probe_command, timeout=12)
+        stdout.channel.settimeout(15)
+        output = stdout.read(128).decode('utf-8', 'replace')
+        error = stderr.read(512).decode('utf-8', 'replace')
+        exit_status = stdout.channel.recv_exit_status()
+        low_error = error.lower()
+        if exit_status != 0 and str(username).strip() != 'root' and (
+                'sudo: a password is required' in low_error or
+                'a terminal is required to read the password' in low_error or
+                'is not in the sudoers' in low_error or 'not allowed to execute' in low_error):
+            raise SudoRequiredError('Non-interactive sudo is required')
+        if exit_status != 0 or 'SONAR_SSH_OK' not in output:
+            # Keep only the error class/exit status in the raised exception; do not
+            # propagate remote shell output that could contain secrets.
+            raise SSHCommandValidationError(f'remote command exit={exit_status}; stderr={bool(error.strip())}')
+        return {'authenticated': True, 'command_verified': True}
     finally:
-        # Close Paramiko's transport *before* the underlying WebSocket.
-        # Previously closing the WebSocket while Paramiko was still reading
-        # produced repeated ConnectionClosedOK transport tracebacks.
+        # Close Paramiko's transport before closing the underlying WebSocket relay.
         client.close()
-        if relay_sock is not None: relay_sock.close()
+        if relay_sock is not None:
+            relay_sock.close()
+

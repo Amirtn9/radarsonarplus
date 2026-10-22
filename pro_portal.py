@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 from settings import SUPER_ADMIN_ID
 from diagnostics import snapshot, build_bundle, collect_agent_journals, collect_operational_state
+from runtime import run_sync
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import secrets
@@ -31,6 +32,11 @@ from service_monitor import ServiceStore
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
 app=FastAPI(title='Sonar Radar Pro V6.6',docs_url=None,redoc_url=None,openapi_url=None)
+
+@app.on_event('startup')
+async def _configure_executor():
+    # Share the same bounded pool with all asyncio.to_thread() calls in the API.
+    asyncio.get_running_loop().set_default_executor(__import__('runtime').SHARED_EXECUTOR)
 app.mount('/static',StaticFiles(directory=BASE/'pro_web'/'static'),name='static')
 store=ProStore()
 service_store=ServiceStore(store)
@@ -316,30 +322,38 @@ async def rules(uid:int=Depends(actor),owner:int|None=None):
 async def diagnostic_health(uid:int=Depends(actor)):
     if not SUPER_ADMIN_ID or uid != SUPER_ADMIN_ID:
         raise HTTPException(status_code=403,detail='Admin only')
-    return await asyncio.to_thread(snapshot)
+    return await run_sync(snapshot)
 
 @app.get('/api/diagnostics/bundle')
 async def diagnostic_bundle(days:int=Query(default=7,ge=1,le=30),
                             include_remote:bool=Query(default=True),uid:int=Depends(actor)):
     if not SUPER_ADMIN_ID or uid != SUPER_ADMIN_ID:
         raise HTTPException(status_code=403,detail='Admin only')
+    stage='database_connect'
+    path=None
     try:
         from database import Database
         db=Database()
-        agents=await asyncio.wait_for(asyncio.to_thread(db.get_all_servers),timeout=30)
-        state=await asyncio.wait_for(asyncio.to_thread(collect_operational_state,db,days),timeout=45)
+        stage='server_inventory'
+        agents=await asyncio.wait_for(run_sync(db.get_all_servers),timeout=60)
+        stage='operational_state'
+        state=await asyncio.wait_for(run_sync(collect_operational_state,db,days),timeout=90)
         remote=None
         if include_remote:
-            # Includes every saved server; concurrency is bounded inside the collector.
-            remote=await asyncio.wait_for(asyncio.to_thread(collect_agent_journals,agents,None,days),timeout=360)
-        path=await asyncio.wait_for(asyncio.to_thread(build_bundle,agent_rows=agents,remote_logs=remote,
-                            operational_state=state,days=days),timeout=180)
+            stage='remote_agent_logs'
+            # The collector has its own bounded deadline and emits an explicit status
+            # for every host it could not finish; one timeout no longer cancels all logs.
+            remote=await run_sync(collect_agent_journals,agents,None,days,
+                                  timeout_seconds=360,max_workers=16)
+        stage='build_zip'
+        path=await run_sync(build_bundle,agent_rows=agents,remote_logs=remote,
+                            operational_state=state,days=days)
     except asyncio.TimeoutError:
-        log.warning('Full diagnostics export timed out; source logs remain untouched')
-        raise HTTPException(status_code=504,detail='Full log export timed out. Retry with remote Agent logs disabled or a shorter window.')
+        log.warning('Diagnostics export timed out at stage=%s; source logs remain untouched',stage)
+        raise HTTPException(status_code=504,detail=f'Diagnostics stage timed out: {stage}. Source logs were not changed.')
     except Exception as exc:
-        log.exception('Diagnostic report failed type=%s',type(exc).__name__)
-        raise HTTPException(status_code=503,detail='Diagnostic report unavailable: '+type(exc).__name__)
+        log.exception('Diagnostic report failed at stage=%s type=%s',stage,type(exc).__name__)
+        raise HTTPException(status_code=503,detail=f'Diagnostic report unavailable at stage {stage}: {type(exc).__name__}')
     return FileResponse(path,media_type='application/zip',filename=f'sonar-v6.6-full-logs-{days}d.zip',
                         background=BackgroundTask(path.unlink,missing_ok=True))
 

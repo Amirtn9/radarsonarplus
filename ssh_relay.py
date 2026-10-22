@@ -117,6 +117,50 @@ class RelaySocket:
 
     def getpeername(self): return self.target, self.port
 
+    def _underlying_socket(self):
+        # Paramiko versions differ in which optional socket methods they query.
+        # websockets.sync exposes the underlying socket on supported releases.
+        raw = getattr(self.ws, 'socket', None)
+        if raw is None:
+            transport = getattr(self.ws, 'transport', None)
+            if transport is not None and hasattr(transport, 'get_extra_info'):
+                raw = transport.get_extra_info('socket')
+        if raw is not None and not hasattr(raw, 'fileno'):
+            raw = getattr(raw, 'socket', None)
+        return raw
+
+    def recv_into(self, buffer, nbytes=0):
+        """Implement the socket recv_into contract expected by socket adapters."""
+        size = min(int(nbytes or len(buffer)), len(buffer))
+        if size <= 0:
+            return 0
+        data = self.recv(size)
+        count = min(len(data), len(buffer))
+        buffer[:count] = data[:count]
+        return count
+
+    def getsockopt(self, *args):
+        raw = self._underlying_socket()
+        if raw is None:
+            raise OSError('RELAY_SOCKET_OPTION_UNAVAILABLE')
+        return raw.getsockopt(*args)
+
+    def setsockopt(self, *args):
+        raw = self._underlying_socket()
+        if raw is None:
+            raise OSError('RELAY_SOCKET_OPTION_UNAVAILABLE')
+        return raw.setsockopt(*args)
+
+    def getsockname(self):
+        raw = self._underlying_socket()
+        if raw is None:
+            return ('0.0.0.0', 0)
+        return raw.getsockname()
+
+    def fileno(self):
+        raw = self._underlying_socket()
+        return raw.fileno() if raw is not None else -1
+
     def close(self):
         if not self.closed:
             self.closed = True

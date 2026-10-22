@@ -4,6 +4,7 @@ No agent or WebSocket settings are changed here.
 """
 from __future__ import annotations
 import asyncio
+from telegram_safety import safe_callback_answer
 import html
 from telegram import InlineKeyboardButton as B, InlineKeyboardMarkup as M
 from telegram.ext import ConversationHandler, filters
@@ -131,7 +132,7 @@ async def server_tools(update,context):
     sid=int(update.callback_query.data.rsplit('_',1)[1])
     server=await run_sync(db.get_server_for_user,sid,update.effective_user.id)
     if not server:
-        await update.callback_query.answer('این سرور در دسترس نیست.',show_alert=True);return
+        await safe_callback_answer(update.callback_query, 'این سرور در دسترس نیست.',show_alert=True);return
     buttons=[
         [B('📊 گزارش کامل',callback_data=f'act_fullreport_{sid}')],
         [B('🌐 تست ارتباط ایران',callback_data=f'act_checkhost_{sid}_{server["ip"]}')],
@@ -146,7 +147,7 @@ async def server_settings(update,context):
     sid=int(update.callback_query.data.rsplit('_',1)[1])
     server=await run_sync(db.get_server_for_user,sid,update.effective_user.id)
     if not server:
-        await update.callback_query.answer('سرور در دسترس نیست.',show_alert=True);return
+        await safe_callback_answer(update.callback_query, 'سرور در دسترس نیست.',show_alert=True);return
     await show(update,server_heading(server,'⚙️ <b>تنظیمات سرور</b>')+'برای تغییر هر مورد یک مرحله جدید باز می‌شود.',
          M([[B('🌐 تغییر IP',callback_data=f'ui_ip_start_{sid}'),B('📅 تنظیم انقضا',callback_data=f'act_editexpiry_{sid}')],
             [B('⚙️ DNS',callback_data=f'act_dns_{sid}')],
@@ -158,7 +159,7 @@ async def server_advanced(update,context):
     sid=int(update.callback_query.data.rsplit('_',1)[1])
     srv=await run_sync(db.get_server_for_user,sid,update.effective_user.id)
     if not srv:
-        await update.callback_query.answer('سرور در دسترس نیست.',show_alert=True);return
+        await safe_callback_answer(update.callback_query, 'سرور در دسترس نیست.',show_alert=True);return
     kb=M([
       [B('🏢 اطلاعات دیتاسنتر',callback_data=f'act_datacenter_{sid}'),B('📝 گزارش جهانی',callback_data=f'act_fullreport_{sid}')],
       [B('📥 نصب ابزار سرعت',callback_data=f'act_installspeed_{sid}'),B('📦 بروزرسانی مخازن',callback_data=f'act_repoupdate_{sid}')],
@@ -175,7 +176,7 @@ async def delete_confirm(update,context):
     sid=int(update.callback_query.data.rsplit('_',1)[1])
     srv=await run_sync(db.get_server_for_user,sid,update.effective_user.id)
     if not srv:
-        await update.callback_query.answer('دسترسی ندارید.',show_alert=True);return
+        await safe_callback_answer(update.callback_query, 'دسترسی ندارید.',show_alert=True);return
     await show(update,f'⚠️ <b>حذف سرور {html.escape(srv["name"])}</b>\n\nاین سرور برای تمام هم‌گروهی‌ها حذف می‌شود. مطمئن هستید؟',
          M([[B('🗑 بله، حذف شود',callback_data=f'act_del_{sid}')],
             [B('نه، بازگشت',callback_data=f'ui_server_settings_{sid}')]]))
@@ -198,7 +199,7 @@ async def ip_start(update,context):
     sid=int(update.callback_query.data.rsplit('_',1)[1])
     srv=await run_sync(db.get_server_for_user,sid,update.effective_user.id)
     if not srv:
-        await update.callback_query.answer('سرور در دسترس نیست.',show_alert=True);return ConversationHandler.END
+        await safe_callback_answer(update.callback_query, 'سرور در دسترس نیست.',show_alert=True);return ConversationHandler.END
     context.user_data['ui_ip_sid']=sid
     await show(update,f'🌐 <b>ویرایش آدرس سرور | مرحله ۱ از ۲</b>\n\n'
          f'سرور: {html.escape(srv["name"])}\n'

@@ -4,13 +4,28 @@ All management features reuse the existing vetted handler callbacks.
 from __future__ import annotations
 import asyncio
 import html
+import logging
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from telegram import InlineKeyboardButton as B, InlineKeyboardMarkup as M
 from secure_handlers import SecureCallbackQueryHandler, SecureCommandHandler
 from settings import SUPER_ADMIN_ID
 from diagnostics import snapshot, build_bundle, collect_agent_journals, collect_operational_state
-from runtime import background_callback
+from runtime import spawn_background, run_sync
 from navigation import remember_section, get_section, clear_section, section_parent
+
+logger = logging.getLogger(__name__)
+
+# Diagnostics use their own bounded pool. Long SSH/journal/ZIP work must not queue
+# behind ordinary bot database and network jobs in the shared executor.
+_DIAG_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix='sonar-diag')
+_DIAG_JOB_ACTIVE = False
+
+
+async def _diag_sync(func, *args, **kwargs):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_DIAG_EXECUTOR, partial(func, *args, **kwargs))
 
 
 def rows(*parts):
@@ -21,14 +36,38 @@ def is_admin(update):
     return bool(SUPER_ADMIN_ID) and update.effective_user and update.effective_user.id == SUPER_ADMIN_ID
 
 
+async def _safe_answer(query, text=None, *, show_alert=False):
+    """A stale Telegram callback must never abort the operation behind it."""
+    if query is None:
+        return False
+    try:
+        kwargs = {'cache_time': 0, 'show_alert': show_alert}
+        if text is not None:
+            kwargs['text'] = str(text)[:190]
+        await query.answer(**kwargs)
+        return True
+    except Exception as exc:
+        message = str(exc).lower()
+        expected = ('query is too old', 'query id is invalid', 'query is not found',
+                    'response timeout expired', 'query too old')
+        if any(item in message for item in expected):
+            logger.debug('Ignoring expired callback acknowledgement')
+        else:
+            logger.warning('Telegram callback acknowledgement failed: %s', type(exc).__name__)
+        return False
+
+
 async def show(update, text, menu=None):
     if update.callback_query:
-        await update.callback_query.answer()
+        await _safe_answer(update.callback_query)
         try:
             await update.callback_query.edit_message_text(text, parse_mode='HTML', reply_markup=menu)
         except Exception as exc:
             if 'Message is not modified' not in str(exc):
-                await update.effective_message.reply_text(text, parse_mode='HTML', reply_markup=menu)
+                try:
+                    await update.effective_message.reply_text(text, parse_mode='HTML', reply_markup=menu)
+                except Exception:
+                    logger.warning('Telegram menu fallback failed: %s', type(exc).__name__)
     else:
         await update.effective_message.reply_text(text, parse_mode='HTML', reply_markup=menu)
 
@@ -60,9 +99,9 @@ async def dashboard(update, context):
 async def section(update, context):
     section_name = update.callback_query.data[3:]
     if section_name not in MENUS:
-        await update.callback_query.answer('منوی ناشناخته',show_alert=True);return
+        await _safe_answer(update.callback_query, 'منوی ناشناخته', show_alert=True);return
     if section_name == 'admin' and not is_admin(update):
-        await update.callback_query.answer('فقط مدیر اصلی',show_alert=True);return
+        await _safe_answer(update.callback_query, 'فقط مدیر اصلی', show_alert=True);return
     remember_section(context, section_name)
     desc, buttons = MENUS[section_name]
     await show(update,desc,rows(*buttons,('🏠 صفحه اصلی','main_menu')))
@@ -85,7 +124,7 @@ async def return_to_section(update, context):
 
 async def diag_menu(update, context):
     if not is_admin(update):
-        if update.callback_query:await update.callback_query.answer('فقط مدیر اصلی',show_alert=True)
+        if update.callback_query:await _safe_answer(update.callback_query, 'فقط مدیر اصلی', show_alert=True)
         return
     await show(update,'🩺 <b>مرکز عیب‌یابی Sonar V6</b>\n\n'
                'گزارش سلامت بدون رمزها و توکن‌ها تولید می‌شود. '\
@@ -97,9 +136,9 @@ async def diag_menu(update, context):
 
 async def diag_health(update, context):
     if not is_admin(update):
-        if update.callback_query:await update.callback_query.answer('مجاز نیست',show_alert=True)
+        if update.callback_query:await _safe_answer(update.callback_query, 'مجاز نیست', show_alert=True)
         return
-    snap=await asyncio.to_thread(snapshot)
+    snap=await run_sync(snapshot)
     label=lambda val: '✅' if val else '❌'
     service_text='\n'.join(f'• {html.escape(name)}: {html.escape(str(data).splitlines()[1] if len(str(data).splitlines())>1 else str(data))[:100]}'
                            for name,data in snap['services'].items())
@@ -115,38 +154,161 @@ async def diag_health(update, context):
     await show(update,content, rows(('📤 دریافت ZIP کامل','v6_diag_zip'),('⬅️ مرکز عیب‌یابی','v6_diag')))
 
 
-async def diag_zip(update, context):
+async def diag_zip_entry(update, context):
+    """Acknowledge Telegram callbacks before spawning slow diagnostic work."""
     if not is_admin(update):
-        if update.callback_query:await update.callback_query.answer('مجاز نیست',show_alert=True)
+        if update.callback_query:
+            await _safe_answer(update.callback_query, 'فقط مدیر اصلی اجازه دارد.', show_alert=True)
+        else:
+            try:
+                await context.bot.send_message(chat_id=update.effective_user.id, text='فقط مدیر اصلی اجازه دارد.')
+            except Exception:
+                pass
         return
-    if update.callback_query:await update.callback_query.answer('در حال جمع‌آوری گزارش امن')
-    path=None
-    try:
-        # Full seven-day diagnostics: central bot/web journals, rotated files,
-        # safe operational state, and every saved server's SSH-verified Agent log.
-        from database import Database
-        db=Database()
-        agents=await asyncio.wait_for(asyncio.to_thread(db.get_all_servers),timeout=30)
-        state=await asyncio.wait_for(asyncio.to_thread(collect_operational_state,db,7),timeout=45)
-        remote=await asyncio.wait_for(asyncio.to_thread(collect_agent_journals,agents,None,7),timeout=360)
-        path=await asyncio.wait_for(asyncio.to_thread(build_bundle,agent_rows=agents,remote_logs=remote,
-                                  operational_state=state,days=7),timeout=180)
-        if path.stat().st_size > 45*1024*1024:
+    if update.callback_query:
+        # This is deliberately before create_task: callbacks can expire while the
+        # event loop is busy, and an acknowledgement error must not abort ZIP export.
+        await _safe_answer(update.callback_query, 'در حال جمع‌آوری گزارش امن')
+    spawn_background(context, diag_zip(update, context), name='diag-zip')
+
+
+async def diag_zip(update, context):
+    """Build and send the full diagnostics archive without blocking the bot loop.
+
+    Collection is best-effort by component: a database timeout or offline Agent is
+    recorded inside the ZIP instead of aborting the entire local-log export.
+    """
+    global _DIAG_JOB_ACTIVE
+    if not is_admin(update):
+        return
+    if _DIAG_JOB_ACTIVE:
+        try:
             await context.bot.send_message(chat_id=update.effective_user.id,
-                text='گزارش کامل هفت‌روزه از محدودیت ارسال فایل تلگرام بزرگ‌تر است. هیچ لاگی حذف یا کوتاه نشده؛ همان ZIP را از «پنل وب ← عیب‌یابی مدیر» دریافت کنید.')
+                text='⏳ یک گزارش عیب‌یابی در حال تهیه است؛ پس از پایان دوباره تلاش کنید.')
+        except Exception:
+            pass
+        return
+    _DIAG_JOB_ACTIVE = True
+
+    path = None
+    stage = 'database_connect'
+    chat_id = update.effective_user.id
+    progress_message = None
+    collection_errors = {}
+    agents = []
+    state = {}
+    remote = {}
+
+    async def progress(text):
+        nonlocal progress_message
+        try:
+            if progress_message is None:
+                progress_message = await context.bot.send_message(chat_id=chat_id, text=text)
+            else:
+                await progress_message.edit_text(text)
+        except Exception as exc:
+            logger.debug('Diagnostics progress update failed: %s', type(exc).__name__)
+
+    try:
+        await progress('⏳ گزارش عیب‌یابی آغاز شد؛ لاگ‌های منبع حذف یا کوتاه نمی‌شوند.')
+        db = None
+        try:
+            from database import Database
+            db = await _diag_sync(Database)
+        except Exception as exc:
+            collection_errors['database_connect'] = type(exc).__name__
+            logger.warning('Diagnostics DB connection unavailable: %s', type(exc).__name__)
+
+        if db is not None:
+            stage = 'server_inventory'
+            try:
+                agents = await asyncio.wait_for(_diag_sync(db.get_all_servers), timeout=60)
+            except Exception as exc:
+                collection_errors['server_inventory'] = type(exc).__name__
+                logger.warning('Diagnostics server inventory unavailable: %s', type(exc).__name__)
+
+            stage = 'operational_state'
+            try:
+                state = await asyncio.wait_for(_diag_sync(collect_operational_state, db, 7), timeout=90)
+                if not isinstance(state, dict):
+                    state = {'result': 'invalid_operational_state_shape'}
+            except Exception as exc:
+                collection_errors['operational_state'] = type(exc).__name__
+                state = {}
+                logger.warning('Diagnostics operational state unavailable: %s', type(exc).__name__)
+
+            stage = 'remote_agent_logs'
+            await progress(f'⏳ جمع‌آوری لاگ‌های هفت‌روزه؛ {len(agents)} سرور ثبت‌شده بررسی می‌شود.')
+            try:
+                # The collector has a per-host/global deadline and emits a status line
+                # for each offline or timed-out Agent. Do not wrap it in a short timeout.
+                remote = await _diag_sync(collect_agent_journals, agents, None, 7,
+                                          timeout_seconds=420, max_workers=16)
+            except Exception as exc:
+                collection_errors['remote_agent_logs'] = type(exc).__name__
+                remote = {'0': 'REMOTE_AGENT_COLLECTION_FAILED: ' + type(exc).__name__ + '\n'}
+                logger.warning('Diagnostics remote Agent collection unavailable: %s', type(exc).__name__)
+        else:
+            remote = {'0': 'REMOTE_AGENT_COLLECTION_SKIPPED: database unavailable\n'}
+
+        state = dict(state or {})
+        if collection_errors:
+            state['diagnostic_collection_errors'] = collection_errors
+        stage = 'build_zip'
+        await progress('⏳ بسته‌بندی لاگ‌های ربات، پنل، نصب، وضعیت دیتابیس و Agentها...')
+        path = await _diag_sync(build_bundle, agent_rows=agents, remote_logs=remote,
+                                operational_state=state, days=7)
+        size = path.stat().st_size
+        if size > 45 * 1024 * 1024:
+            await context.bot.send_message(chat_id=chat_id,
+                text=('گزارش کامل ساخته شد اما از سقف ارسال فایل تلگرام بزرگ‌تر است. '
+                      'از پنل وب ← عیب‌یابی مدیر، بسته هفت‌روزه را دانلود کنید. '
+                      'جزئیات خطاهای جمع‌آوری در state/operational-state.json قرار دارد.'))
             return
-        with path.open('rb') as f:
-            await context.bot.send_document(chat_id=update.effective_user.id,document=f,
-                     filename='sonar-v6.6-full-logs-7d.zip',
-                     caption='گزارش کامل ۷ روز اخیر ربات، پنل، وضعیت عملیاتی و Agentها. مقادیر محرمانه درجا پوشانده شده‌اند؛ فایل‌های منبع حذف یا تغییر نکرده‌اند.',
-                     read_timeout=360, write_timeout=360, connect_timeout=30)
+
+        stage = 'telegram_upload'
+        await progress(f'📦 ZIP آماده شد ({size / (1024 * 1024):.1f} MiB)؛ در حال ارسال...')
+        # Retry only transient network timeouts. Each attempt gets a fresh file handle.
+        from telegram.error import NetworkError
+        uploaded = False
+        for attempt in range(2):
+            try:
+                with path.open('rb') as handle:
+                    await context.bot.send_document(
+                        chat_id=chat_id, document=handle,
+                        filename='sonar-v6.6-full-logs-7d.zip',
+                        caption=('گزارش هفت‌روزه ربات، پنل، نصب، وضعیت عملیاتی و Agentها. '
+                                 'مقادیر محرمانه پوشانده شده‌اند؛ لاگ‌های اصلی دست‌نخورده مانده‌اند.'),
+                        read_timeout=600, write_timeout=600, connect_timeout=30, pool_timeout=60)
+                uploaded = True
+                break
+            except (NetworkError, asyncio.TimeoutError, TimeoutError) as exc:
+                if attempt:
+                    raise
+                logger.warning('Diagnostics Telegram upload timed out; retrying once (%s)', type(exc).__name__)
+                await progress('⚠️ ارسال گزارش با وقفه شبکه روبه‌رو شد؛ یک بار دیگر تلاش می‌کنم...')
+                await asyncio.sleep(2)
+        if uploaded and progress_message:
+            try:
+                await progress_message.edit_text('✅ گزارش کامل ارسال شد.')
+            except Exception:
+                pass
     except Exception as exc:
-        await context.bot.send_message(chat_id=update.effective_user.id,
-                  text=f'❌ تهیه گزارش ناموفق: {html.escape(type(exc).__name__)}')
+        # Keep the stage in the log so a partial failure can be diagnosed without
+        # exposing credentials or raw command output to Telegram.
+        logger.exception('Diagnostics export failed at stage=%s type=%s', stage, type(exc).__name__)
+        try:
+            await context.bot.send_message(chat_id=chat_id,
+                text=f'❌ تهیه گزارش ناموفق شد. مرحله: {stage} | خطا: {html.escape(type(exc).__name__)}')
+        except Exception:
+            logger.warning('Unable to deliver diagnostics failure notice')
     finally:
         if path:
-            try:Path(path).unlink(missing_ok=True)
-            except OSError:pass
+            try:
+                Path(path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        _DIAG_JOB_ACTIVE = False
 
 
 async def guide_menu(update, context):
@@ -184,4 +346,4 @@ def register(app):
     app.add_handler(SecureCallbackQueryHandler(section,pattern=r'^v6_(servers|configs|monitor|tools|settings|account|admin)$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(diag_menu,pattern=r'^v6_diag$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(diag_health,pattern=r'^v6_diag_health$'),group=0)
-    app.add_handler(SecureCallbackQueryHandler(background_callback(diag_zip),pattern=r'^v6_diag_zip(?:_agents)?$'),group=0)
+    app.add_handler(SecureCallbackQueryHandler(diag_zip_entry,pattern=r'^v6_diag_zip(?:_agents)?$'),group=0)

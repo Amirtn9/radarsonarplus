@@ -848,8 +848,8 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 420s;
-        proxy_send_timeout 420s;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
     }
     location / {
         proxy_pass http://127.0.0.1:$port;

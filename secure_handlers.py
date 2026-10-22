@@ -4,6 +4,7 @@ Checks are applied to ConversationHandler children as well as regular handlers.
 The database queries are performed off the asyncio event loop.
 """
 import asyncio
+from telegram_safety import safe_callback_answer
 import logging
 import re
 from access_policy import parse_server_action
@@ -90,7 +91,7 @@ class SecureCallbackQueryHandler(CallbackQueryHandler):
     async def handle_update(self, update, application, check_result, context):
         if not await _is_allowed(update, self.callback):
             if update.callback_query:
-                await update.callback_query.answer('⛔ دسترسی مجاز نیست.', show_alert=True)
+                await safe_callback_answer(update.callback_query, '⛔ دسترسی مجاز نیست.', show_alert=True)
             return None
         token=ACTOR_ID.set(int(update.effective_user.id))
         try:

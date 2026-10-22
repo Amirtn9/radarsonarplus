@@ -200,6 +200,8 @@ def _ensure_os_tools(run, progress, host=None, port=22, username=None, password=
              'command -v curl >/dev/null && command -v ss >/dev/null && '
              'test -s /etc/ssl/certs/ca-certificates.crt')
     ok, out = run(basic, 20)
+    if not ok and 'SUDO_REQUIRED' in str(out):
+        raise RuntimeError('SUDO_REQUIRED: SSH account must have passwordless sudo for Agent installation')
     if not ok:
         _emit(progress, 'system_packages', 'نصب پیش‌نیازهای سیستم با دسترسی مدیر')
         update = ('export DEBIAN_FRONTEND=noninteractive; '
@@ -428,12 +430,44 @@ def install_agent_dependencies(run, host, port, username, password, progress=Non
     staged = f'/opt/sonar-agent-venv.stage-{marker}'
     live = '/opt/sonar-agent-venv'
     previous = f'/opt/sonar-agent-venv.previous-{marker}'
-    ok, out = run('python3 -m venv ' + shlex.quote(staged) + ' && test -x ' + shlex.quote(staged + '/bin/python') +
-                  ' && ' + shlex.quote(staged + '/bin/python') + ' -m pip --version', 90)
+    exact_python = 'python' + str(target['py'])
+    staged_q = shlex.quote(staged)
+    create_venv = ('PYBIN=$(command -v ' + shlex.quote(exact_python) + ' || command -v python3); '
+                   'rm -rf -- ' + staged_q + '; '
+                   '"$PYBIN" -m venv ' + staged_q + ' && test -x ' + shlex.quote(staged + '/bin/python') +
+                   ' && ' + shlex.quote(staged + '/bin/python') + ' -m pip --version')
+    ok, out = run(create_venv, 90)
+    if not ok and 'SUDO_REQUIRED' in str(out):
+        raise RuntimeError('SUDO_REQUIRED: SSH account must have passwordless sudo for Agent installation')
     if not ok:
-        # Remove only the new incomplete staging directory; the live/previous venv is untouched.
-        run('rm -rf -- ' + shlex.quote(staged), 30)
-        raise RuntimeError('VENV_CREATE_FAILED: create/check with sudo failed after installing the matching python3-venv package: ' + str(out)[-260:])
+        # Ubuntu images sometimes have python3-venv installed without the matching
+        # minor-version ensurepip package. Repair that exact package once, then retry
+        # only the staging environment; the live/previous venv remains untouched.
+        run('rm -rf -- ' + staged_q, 30)
+        _emit(progress, 'venv_repair', 'ساخت محیط مجازی ناموفق بود؛ نصب بسته venv متناسب با نسخه دقیق Python با sudo')
+        version_ok, version_out = run('python3 -c ' + shlex.quote('import sys; print("%s.%s" % sys.version_info[:2])'), 15)
+        pyver = str(version_out).strip().splitlines()[-1] if version_ok and str(version_out).strip() else ''
+        if not re.fullmatch(r'3\.[0-9]{1,2}', pyver):
+            raise RuntimeError('VENV_CREATE_FAILED: Python version could not be identified for the matching venv package')
+        exact_package = 'python' + pyver + '-venv'
+        repair = ('export DEBIAN_FRONTEND=noninteractive; '
+                  '(timeout 100s apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=12 '
+                  '-o Acquire::https::Timeout=12 install -y python3-venv ' + shlex.quote(exact_package) +
+                  ' || (timeout 95s apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=12 '
+                  '-o Acquire::https::Timeout=12 update && timeout 100s apt-get -o Acquire::Retries=1 '
+                  '-o Acquire::http::Timeout=12 -o Acquire::https::Timeout=12 install -y python3-venv ' +
+                  shlex.quote(exact_package) + '))')
+        repair_ok, repair_out = run(repair, 220)
+        if not repair_ok and connector:
+            central_ok, central_out = _download_apt_bundle(
+                run, host, port, username, password, ['python3-venv', exact_package], progress, connector)
+            if not central_ok:
+                repair_out = str(repair_out) + ' | central package transfer: ' + str(central_out)
+        ok, out = run(create_venv, 90)
+        if not ok:
+            run('rm -rf -- ' + staged_q, 30)
+            detail = (str(out) + ' | venv-package-repair: ' + str(repair_out))[-420:].replace('\x00', '')
+            raise RuntimeError('VENV_CREATE_FAILED: matching python3-venv repair and staging retry failed: ' + detail)
 
     central_installed = False
     central_error = ''

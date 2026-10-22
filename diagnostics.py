@@ -10,6 +10,8 @@ SSH account is not authorized for administrative log access.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import gzip
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -183,7 +185,12 @@ def snapshot() -> dict:
 def _read_file(path: Path) -> str | None:
     if path.is_symlink() or not path.is_file():
         return None
+    def decode(data):
+        return data.decode('utf-8', 'replace')
     try:
+        if path.suffix == '.gz':
+            with gzip.open(path, 'rb') as stream:
+                return decode(stream.read())
         return path.read_text(encoding='utf-8', errors='replace')
     except PermissionError:
         # Prefer the root-owned allowlisted reader; never sudo arbitrary user paths.
@@ -196,23 +203,29 @@ def _read_file(path: Path) -> str | None:
         if action and helper.is_file():
             try:
                 command = [str(helper), *action]
-                if os.geteuid() != 0: command = ['sudo','-n','--',*command]
+                if os.geteuid() != 0:
+                    command = ['sudo', '-n', '--', *command]
                 result = subprocess.run(command, capture_output=True, timeout=120, check=False,
                                         env={'PATH':'/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'})
                 if result.returncode == 0:
-                    return result.stdout.decode('utf-8', 'replace')
-            except (OSError, subprocess.TimeoutExpired):
+                    return decode(result.stdout)
+            except (OSError, subprocess.SubprocessError):
                 pass
-        # Compatibility with older installs; path is a fixed allowlisted file.
+        # Compatibility with older installs; this path is selected from a fixed allowlist.
         try:
-            command = ['cat','--',str(path)] if os.geteuid() == 0 else ['sudo','-n','--','cat','--',str(path)]
+            command = ['cat', '--', str(path)] if os.geteuid() == 0 else ['sudo', '-n', '--', 'cat', '--', str(path)]
             result = subprocess.run(command, capture_output=True, timeout=60, check=False,
                                      env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'})
             if result.returncode == 0:
-                return result.stdout.decode('utf-8', 'replace')
-        except (OSError, subprocess.TimeoutExpired):
+                raw = result.stdout
+                if path.suffix == '.gz':
+                    import io
+                    with gzip.GzipFile(fileobj=io.BytesIO(raw), mode='rb') as stream:
+                        raw = stream.read()
+                return decode(raw)
+        except (OSError, subprocess.SubprocessError, gzip.BadGzipFile):
             pass
-    except OSError:
+    except (OSError, gzip.BadGzipFile, EOFError):
         pass
     return None
 
@@ -374,7 +387,11 @@ def collect_operational_state(db, days: int = DEFAULT_WINDOW_DAYS) -> dict:
 
 
 def remote_agent_logs(server_row, days: int = DEFAULT_WINDOW_DAYS):
-    """Collect a full recent Agent journal over direct SSH first, then approved relays."""
+    """Collect a complete recent Agent journal over direct SSH, then approved relays.
+
+    Remote collection has per-command socket timeouts. If a target cannot be reached,
+    a diagnostic status is recorded instead of failing the whole archive.
+    """
     row = dict(server_row)
     days = max(1, min(30, int(days)))
     connection = None
@@ -383,21 +400,30 @@ def remote_agent_logs(server_row, days: int = DEFAULT_WINDOW_DAYS):
         from database import Database
         from settings import SUPER_ADMIN_ID
         from ssh_relay import eligible_relay_nodes
-        db=Database()
-        relays=eligible_relay_nodes(db,SUPER_ADMIN_ID,user_id=SUPER_ADMIN_ID,exclude_ip=str(row['ip']))
-        connection = ServerMonitor.get_ssh_client(row['ip'], int(row.get('port') or row.get('ssh_port') or 22),
-                                                  row['username'], sec.decrypt(row['password']),relay_nodes=relays)
+        db = Database()
+        relays = eligible_relay_nodes(db, SUPER_ADMIN_ID, user_id=SUPER_ADMIN_ID, exclude_ip=str(row['ip']))
+        try:
+            from ssh_relay import stable_relay_order
+            relays = stable_relay_order(relays, f"{row['ip']}:{int(row.get('port') or row.get('ssh_port') or 22)}", db=db)
+        except Exception:
+            relays = list(relays or [])
+        # Diagnostic export is read-only; three approved relay candidates are enough
+        # to keep the export bounded without silently trusting an unapproved node.
+        relays = list(relays or [])[:3]
+        connection = ServerMonitor.get_ssh_client(
+            row['ip'], int(row.get('port') or row.get('ssh_port') or 22),
+            row['username'], sec.decrypt(row['password']), relay_nodes=relays)
         sudo_prefix = '' if row.get('username') == 'root' else 'sudo -n '
         command = ('if [ -x /usr/local/sbin/sonar-diagnostic-read ]; then '
                    + sudo_prefix + '/usr/local/sbin/sonar-diagnostic-read service agent; '
-                   'printf "\\n===== SONAR AGENT JOURNAL =====\\n"; '
+                   'printf "\n===== SONAR AGENT JOURNAL =====\n"; '
                    + sudo_prefix + '/usr/local/sbin/sonar-diagnostic-read journal agent ' + str(days) +
-                   '; else printf "DIAGNOSTIC_HELPER_NOT_INSTALLED\\n"; '
+                   '; else printf "DIAGNOSTIC_HELPER_NOT_INSTALLED\n"; '
                    + sudo_prefix + 'systemctl show sonar-agent.service --no-pager --property=LoadState,ActiveState,SubState,Result,NRestarts,ExecMainStatus; '
                    + sudo_prefix + 'journalctl -u sonar-agent --since ' + repr(f'{days} days ago') +
                    ' --no-pager --output=short-iso-precise; fi')
-        _stdin, stdout, stderr = connection.exec_command(command, timeout=120)
-        stdout.channel.settimeout(125)
+        _stdin, stdout, stderr = connection.exec_command(command, timeout=90)
+        stdout.channel.settimeout(100)
         data = stdout.read().decode('utf-8', 'replace')
         errors = stderr.read().decode('utf-8', 'replace')
         exit_code = stdout.channel.recv_exit_status()
@@ -417,23 +443,45 @@ def remote_agent_logs(server_row, days: int = DEFAULT_WINDOW_DAYS):
             except OSError: pass
 
 
-def collect_agent_journals(server_rows, limit=None, days: int = DEFAULT_WINDOW_DAYS):
-    """Collect recent journals from all supplied servers with bounded concurrency."""
-    import concurrent.futures
+def collect_agent_journals(server_rows, limit=None, days: int = DEFAULT_WINDOW_DAYS,
+                           *, timeout_seconds: float = 420, max_workers: int = 16):
+    """Collect remote journals with a global deadline and an entry for every server.
+
+    A single unreachable VPS must not abort the complete diagnostics ZIP. Pending
+    hosts receive an explicit timeout record; source logs are never shortened or
+    removed. The worker pool is shut down without waiting for already timed-out
+    network operations, so the caller can finish the archive deterministically.
+    """
     servers = [dict(row) for row in list(server_rows or [])]
     if limit is not None:
         servers = servers[:max(0, min(int(limit), len(servers)))]
     result = {}
-    if not servers: return result
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(servers))) as pool:
-        futures = {pool.submit(remote_agent_logs, srv, days): int(srv.get('id') or index)
-                   for index, srv in enumerate(servers, 1)}
-        for future in concurrent.futures.as_completed(futures):
-            server_id = futures[future]
-            try: result[str(server_id)] = future.result()
-            except Exception as exc: result[str(server_id)] = 'REMOTE_AGENT_LOG_UNAVAILABLE: ' + type(exc).__name__
+    if not servers:
+        return result
+    worker_count = max(1, min(int(max_workers), len(servers), 24))
+    timeout_seconds = max(0.1, min(float(timeout_seconds), 900.0))
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix='sonar-diag-agent')
+    futures = {}
+    try:
+        for index, server in enumerate(servers, 1):
+            identifier = int(server.get('id') or index)
+            futures[pool.submit(remote_agent_logs, server, days)] = identifier
+        done, pending = concurrent.futures.wait(futures, timeout=timeout_seconds)
+        for future in done:
+            identifier = futures[future]
+            try:
+                result[str(identifier)] = future.result()
+            except Exception as exc:
+                result[str(identifier)] = 'REMOTE_AGENT_LOG_UNAVAILABLE: ' + type(exc).__name__
+        for future in pending:
+            identifier = futures[future]
+            future.cancel()
+            result[str(identifier)] = (
+                f'REMOTE_AGENT_LOG_TIMEOUT: exceeded {timeout_seconds:g}s diagnostics collection budget; '
+                'host was not deleted or modified; retry this host separately if full remote logs are required.\n')
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     return dict(sorted(result.items(), key=lambda item: int(item[0]) if item[0].isdigit() else 0))
-
 
 def build_bundle(output: str | Path | None = None, *, include_logs: bool = True,
                  agent_rows=None, remote_logs=None, operational_state=None,

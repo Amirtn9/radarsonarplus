@@ -1,4 +1,5 @@
 import asyncio
+from telegram_safety import safe_callback_answer
 import io
 import os
 import requests
@@ -41,7 +42,7 @@ async def setup_group_notify_start(update: Update, context: ContextTypes.DEFAULT
 
 async def get_group_id_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مرحله ۲: دریافت آیدی گروه"""
-    await update.callback_query.answer()
+    await safe_callback_answer(update.callback_query, )
     txt = (
         "🔢 **لطفاً آیدی عددی گروه را ارسال کنید:**\n\n"
         "مثال: `-1001234567890`\n"

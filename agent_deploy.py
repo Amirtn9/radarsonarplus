@@ -34,7 +34,7 @@ def agent_port_preflight(run, ws_port):
 
     Does not terminate, change ports, or interfere with other services.
     """
-    check = r'''import os,re,subprocess,sys
+    check = r'''import os,re,subprocess,sys,pathlib
 port=int(sys.argv[1])
 listener=subprocess.run(['ss','-H','-ltnp'],capture_output=True,text=True,timeout=8)
 if listener.returncode: raise SystemExit('AGENT_PORT_CHECK_FAILED: ss command failed')
@@ -48,14 +48,27 @@ for line in listener.stdout.splitlines():
 if not rows:
  print('SONAR_PORT_AVAILABLE')
  raise SystemExit(0)
-managed=subprocess.run(['systemctl','show','sonar-agent.service','--property=MainPID','--value'],capture_output=True,text=True,timeout=8)
-pid=managed.stdout.strip() if managed.returncode==0 else ''
-if not pid.isdigit() or int(pid)<=0:
- raise SystemExit('AGENT_PORT_CONFLICT: port is in use; no running managed Agent owns it')
+main=subprocess.run(['systemctl','show','sonar-agent.service','--property=MainPID','--value'],capture_output=True,text=True,timeout=8)
+cgroup=subprocess.run(['systemctl','show','sonar-agent.service','--property=ControlGroup','--value'],capture_output=True,text=True,timeout=8)
+main_pid=main.stdout.strip() if main.returncode==0 else ''
+control_group=cgroup.stdout.strip() if cgroup.returncode==0 else ''
+if (not main_pid.isdigit() or int(main_pid)<=0) and not control_group:
+ raise SystemExit('AGENT_PORT_CONFLICT: port is occupied; no active managed Agent owns it')
+def managed_pid(pid):
+ if pid==main_pid:return True
+ if not control_group:return False
+ try:
+  rows=pathlib.Path('/proc',pid,'cgroup').read_text().splitlines()
+ except (OSError,ValueError):return False
+ for row in rows:
+  group=row.rsplit(':',1)[-1].strip()
+  if group==control_group or group.startswith(control_group.rstrip('/')+'/'):
+   return True
+ return False
 for line in rows:
  pids=set(re.findall(r'pid=(\d+)',line))
- if not pids or pids!={pid}:
-  raise SystemExit('AGENT_PORT_CONFLICT: another process is listening on the Agent port')
+ if not pids or not all(managed_pid(pid) for pid in pids):
+  raise SystemExit('AGENT_PORT_CONFLICT: another process is listening on the Agent port; no process was stopped')
 print('SONAR_PORT_MANAGED_AGENT')
 '''
     command = "python3 - " + str(int(ws_port)) + " <<'SONAR_PORT_PREFLIGHT'\n" + check + "\nSONAR_PORT_PREFLIGHT\n"
@@ -63,6 +76,8 @@ print('SONAR_PORT_MANAGED_AGENT')
     if not ok:
         # Do not disclose raw process arguments from remote ss output.
         diagnostic = str(result)
+        if 'SUDO_REQUIRED' in diagnostic:
+            return False, 'SUDO_REQUIRED: حساب SSH برای بررسی پورت و نصب Agent به sudo غیرتعاملی نیاز دارد.'
         for code in ('AGENT_PORT_CONFLICT', 'AGENT_PORT_CHECK_FAILED'):
             if code in diagnostic:
                 return False, diagnostic[diagnostic.index(code):].splitlines()[0][:240]
@@ -70,6 +85,43 @@ print('SONAR_PORT_MANAGED_AGENT')
     if 'SONAR_PORT_AVAILABLE' in result or 'SONAR_PORT_MANAGED_AGENT' in result:
         return True, result.strip()
     return False, 'AGENT_PORT_CHECK_FAILED: unexpected preflight result'
+
+def select_available_agent_port(run, requested_port, *, reserved=None):
+    """Keep a requested port when safe; otherwise choose a verified free port.
+
+    No unrelated listener is stopped. A fallback port is committed to the shared
+    database only after the new Agent passes its TLS/WSS health check.
+    """
+    requested_port = valid_agent_port(requested_port)
+    ok, status = agent_port_preflight(run, requested_port)
+    if ok:
+        try:
+            if reserved is None or not reserved(requested_port):
+                return requested_port, status
+            status = f'AGENT_PORT_CONFLICT: port {requested_port} is already assigned to another SSH endpoint in the database'
+        except Exception:
+            status = f'AGENT_PORT_CONFLICT: cannot verify database port uniqueness for {requested_port}'
+    elif 'AGENT_PORT_CONFLICT' not in str(status):
+        return None, status
+
+    candidates = (5542, 8080, 8443, 9443, 10080, 18080, 28080, 38080, 48080, 55080)
+    last_status = status
+    for candidate in candidates:
+        if candidate == requested_port:
+            continue
+        if reserved is not None:
+            try:
+                if reserved(candidate):
+                    continue
+            except Exception:
+                # Do not reuse a port if the DB uniqueness check cannot be trusted.
+                continue
+        free, candidate_status = agent_port_preflight(run, candidate)
+        if free:
+            return candidate, f'AGENT_PORT_AUTO_SELECTED: requested={requested_port}; selected={candidate}'
+        last_status = candidate_status
+    return None, f'AGENT_PORT_CONFLICT: requested port and all safe fallback ports are occupied; last_check={str(last_status)[:160]}'
+
 
 def deploy_agent(monitor, db, ip, port, user, password, ws_port, progress=None):
     ip, port, ws_port = normalize_host(ip), ssh_port(port), valid_agent_port(ws_port)
@@ -97,7 +149,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
         return False, 'DIAGNOSTIC_SUDOERS_USERNAME_INVALID: use a standard Unix SSH account name'
     from agent_bootstrap import install_agent_dependencies, rollback_venv, commit_venv, _emit
     from agent_xray_bridge import install_xray_via_main
-    token = db.get_or_create_agent_token(ip, port, ws_port)
+    requested_ws_port = ws_port
 
     def run(command, timeout=120):
         return monitor._run_ssh_command(ip, port, user, password, privileged_script(command), timeout)
@@ -130,9 +182,21 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
         return False, message
 
     _emit(progress, 'port_preflight', f'بررسی مالک پورت {ws_port} پیش از تغییر سرویس')
-    port_ok, port_status = agent_port_preflight(run, ws_port)
-    if not port_ok:
-        return False, (port_status + '; برای شناسایی مالک پورت دستور sudo ss -ltnp اجرا شود. هیچ فرایندی خودکار متوقف نشد.')
+    def port_reserved(candidate):
+        # Agent transport lookup is keyed by (public IP, WSS port). Reusing a
+        # port already assigned to another SSH endpoint would make TLS enrollment
+        # ambiguous, so skip such candidates even when the OS port is free.
+        row = db.execute('SELECT 1 AS used FROM agent_nodes WHERE ip=%s AND ws_port=%s AND ssh_port<>%s LIMIT 1',
+                         (str(ip), int(candidate), int(port)), fetch='one')
+        return bool(row)
+    actual_port, port_status = select_available_agent_port(run, ws_port, reserved=port_reserved)
+    if actual_port is None:
+        return False, (port_status + '; هیچ فرایند نامرتبطی متوقف نشد؛ پورت آزاد و مجاز تعیین کنید.')
+    ws_port = int(actual_port)
+    if ws_port != requested_ws_port:
+        _emit(progress, 'port_auto_selected',
+              f'پورت {requested_ws_port} اشغال بود؛ پورت آزاد {ws_port} انتخاب شد. ثبت دیتابیس پس از تأیید TLS انجام می‌شود.')
+    token = db.get_or_create_agent_token(ip, port, ws_port)
     ok, out = run('id -u', 25)
     if not ok:
         return False, out
@@ -349,4 +413,6 @@ WantedBy=multi-user.target
     # Retain exactly one verified previous environment for future manual rollback.
     commit_venv(run,previous_venv,progress)
     if backup_path:run('rm -rf -- '+shlex.quote(backup_path), 35)
-    return True, f'ایجنت و Xray نصب شدند؛ اتصال WSS:{ws_port} با TLS و توکن آزموده شد.\n{firewall}'
+    port_note = (f'پورت درخواستی {requested_ws_port} اشغال بود؛ پورت امن {ws_port} انتخاب و پس از تأیید TLS در دیتابیس ثبت شد.\n'
+                 if ws_port != requested_ws_port else '')
+    return True, f'{port_note}ایجنت و Xray نصب شدند؛ اتصال WSS:{ws_port} با TLS و توکن آزموده شد.\n{firewall}'

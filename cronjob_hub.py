@@ -30,6 +30,7 @@
 """
 
 import logging
+from telegram_safety import safe_callback_answer
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
@@ -56,7 +57,7 @@ def cronjob_hub_kb():
 async def open_cronjob_hub(update, context: ContextTypes.DEFAULT_TYPE):
     """کالبک: cronjob_hub_main"""
     query = update.callback_query
-    await query.answer()
+    await safe_callback_answer(query, )
     txt = (
         "🗓 <b>مرکز کرون‌جاب‌ها</b>\n"
         "➖➖➖➖➖➖➖➖➖➖\n"

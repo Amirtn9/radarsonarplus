@@ -3,6 +3,7 @@ Does not replace the original single-node installer or WebSocket protocol.
 """
 from __future__ import annotations
 import asyncio
+from telegram_safety import safe_callback_answer
 import logging
 from telegram import InlineKeyboardButton as Button,InlineKeyboardMarkup as Markup
 from secure_handlers import SecureCallbackQueryHandler
@@ -18,9 +19,9 @@ def _allowed(update):
 
 async def manage(update,context):
     q=update.callback_query
-    await q.answer()
+    await safe_callback_answer(q, )
     if not _allowed(update):
-        await q.answer('فقط مدیر اصلی مجاز است',show_alert=True);return
+        await safe_callback_answer(q, 'فقط مدیر اصلی مجاز است',show_alert=True);return
     db=Database()
     def get():
         from monitor_fleet import install_schema, install_job_schema
@@ -65,7 +66,7 @@ async def manage(update,context):
 async def dispatch(update,context):
     q=update.callback_query;code=q.data
     if not _allowed(update):
-        await q.answer('فقط مدیر اصلی مجاز است',show_alert=True);return
+        await safe_callback_answer(q, 'فقط مدیر اصلی مجاز است',show_alert=True);return
     if code.startswith('fleet_pick_'):
         sid=int(code.rsplit('_',1)[1]);ids=set(context.user_data.get('fleet_checked',[]))
         if sid in ids:ids.remove(sid)
@@ -75,8 +76,8 @@ async def dispatch(update,context):
     if code=='fleet_apply':
         ids=context.user_data.get('fleet_checked') or []
         if not ids:
-            await q.answer('حداقل یک سرور را انتخاب کنید',show_alert=True);return
-        await q.answer()
+            await safe_callback_answer(q, 'حداقل یک سرور را انتخاب کنید',show_alert=True);return
+        await safe_callback_answer(q, )
         def save():
             db=Database();done=0
             for sid in ids:
@@ -89,7 +90,7 @@ async def dispatch(update,context):
             await q.edit_message_text('❌ انتخاب تأیید نشد. مجوز مالک یا ثبت سرور را بررسی کنید.',reply_markup=Markup([[Button('🔙 بازگشت',callback_data='fleet_manage')]]))
         return
     if code=='fleet_install_prepare':
-        await q.answer()
+        await safe_callback_answer(q, )
         ids=context.user_data.get('fleet_checked') or []
         await q.edit_message_text(f'🔧 **نصب چندتایی**\n\n{len(ids)} سرور انتخاب شده است. نصب گروهی فقط روی سرورهای متعلق به مدیر اصلی در ایران یا خارج مجاز است؛ سرورهای دیگر باید توسط مالک نصب و برای اشتراک پیشنهاد شوند.\n\n🔌 پورت ایجنت چگونه انتخاب شود؟',parse_mode='Markdown',reply_markup=Markup([
             [Button('پورت ثبت‌شده هر سرور',callback_data='fleet_install_stored')],
@@ -97,7 +98,7 @@ async def dispatch(update,context):
             [Button('🔙 بازگشت',callback_data='fleet_manage')]]))
         return
     if code.startswith('fleet_install_'):
-        await q.answer()
+        await safe_callback_answer(q, )
         mode=code.removeprefix('fleet_install_')
         if mode not in ('stored','automatic'):return
         ids=context.user_data.get('fleet_checked') or []
@@ -131,9 +132,9 @@ def _gb(value):
 async def traffic_menu(update, context):
     """Root-only usage view; totals are WSS/relay bytes measured by Agent."""
     q=update.callback_query
-    await q.answer()
+    await safe_callback_answer(q, )
     if not _allowed(update):
-        await q.answer('فقط مدیر اصلی مجاز است',show_alert=True)
+        await safe_callback_answer(q, 'فقط مدیر اصلی مجاز است',show_alert=True)
         return
     from agent_traffic import admin_report
     rows=await run_sync(admin_report,Database(),SUPER_ADMIN_ID)
@@ -157,9 +158,9 @@ async def traffic_menu(update, context):
 
 async def traffic_reset(update,context):
     q=update.callback_query
-    await q.answer()
+    await safe_callback_answer(q, )
     if not _allowed(update):
-        await q.answer('فقط مدیر اصلی مجاز است',show_alert=True);return
+        await safe_callback_answer(q, 'فقط مدیر اصلی مجاز است',show_alert=True);return
     bits=q.data.split('_')
     try:agent_id=int(bits[-1]);confirmed='confirm' in bits
     except ValueError:return

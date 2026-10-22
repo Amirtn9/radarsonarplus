@@ -16,6 +16,7 @@ from telegram.ext import (
 from bot_logic_mod import servers
 from runtime import background_callback
 from secure_handlers import SecureCallbackQueryHandler, SecureMessageHandler, SecureCommandHandler
+from telegram_safety import safe_callback_answer
 CallbackQueryHandler = SecureCallbackQueryHandler
 MessageHandler = SecureMessageHandler
 CommandHandler = SecureCommandHandler
@@ -26,6 +27,11 @@ from cronjob_hub import open_cronjob_hub
 from states import *
 
 # ─────────────────────────────────────────────────
+
+async def _dev_feature_callback(update, context):
+    """Acknowledge a placeholder callback without failing on an expired query."""
+    await safe_callback_answer(getattr(update, "callback_query", None), "🔜 به‌زودی!", show_alert=True)
+
 
 def register_all_handlers(app:  Application):
     logger.debug("📝 Starting handler registration...")
@@ -124,7 +130,7 @@ def register_all_handlers(app:  Application):
             CallbackQueryHandler(bot_logic.set_config_cron_action, pattern='^setconfcron_'),
             CallbackQueryHandler(bot_logic.toggle_config_alert, pattern='^toggle_confalert_'),
             CallbackQueryHandler(bot_logic.header_none_action, pattern='^header_none$'),
-            CallbackQueryHandler(lambda u, c: u.callback_query.answer("🔜 به‌زودی!", show_alert=True), pattern='^dev_feature$')
+            CallbackQueryHandler(_dev_feature_callback, pattern='^dev_feature$')
         ],
         states={
             SELECT_ADD_METHOD: [

@@ -46,8 +46,12 @@ def main():
     # 🔧 نسخه ۴.۲: pool_timeout و سقف صریح آپدیت‌های همزمان اضافه شد تا وقتی
     # چند کاربر همزمان کار سنگین می‌کنند، ارسال پیام‌ها پشت هم گیر نکند.
     async def _post_init(application):
-        # 🩺 v4.3: ناظر تاخیر event loop — برای تشخیص اینکه هنگ از کد است یا از CPU سرور
+        # Use the same bounded executor for run_sync() and asyncio.to_thread().
+        # Otherwise the default pool (often only five workers on a small VPS) can
+        # queue SSH/DB jobs and leave callback acknowledgements stale.
         import runtime
+        asyncio.get_running_loop().set_default_executor(runtime.SHARED_EXECUTOR)
+        # 🩺 Event-loop watchdog for distinguishing blocking code from CPU pressure.
         runtime.start_watchdog(threshold=1.0)
         # Pro schema migrations fail startup rather than leaving half-working controls.
         from pro_store import install_schema
