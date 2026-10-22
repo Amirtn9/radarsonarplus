@@ -10,8 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from typing import Literal
 
-from monitor_fleet import (available, offer, approve, policy, set_policy, record_probe, choose,
-                           queue_installs, valid_agent_stats, available_relay_nodes, relay_candidates, available_workspace_nodes)
+from monitor_fleet import (offer, approve, policy, set_policy, record_probe, choose,
+                           queue_installs, valid_agent_stats, available_relay_nodes, available_workspace_nodes)
 
 class PoolOffer(BaseModel):
     server_id:int=Field(gt=0)
@@ -41,6 +41,40 @@ class ScanPorts(BaseModel):
     ports:list[int]=Field(default_factory=list,max_length=5)
 
 SAFE_PROBE_PORTS=(8080,8443,9443,18080,28080)
+
+
+def _select_reachability_nodes(nodes, limit=3):
+    """Prefer one fresh approved node per region, then fill by relay priority."""
+    nodes=list(nodes or [])
+    limit=max(1,int(limit))
+    selected=[]
+    for region in ('ir','ext'):
+        candidate=next((node for node in nodes if node.get('location_type')==region),None)
+        if candidate is not None and all(int(item['id'])!=int(candidate['id']) for item in selected):
+            selected.append(candidate)
+        if len(selected)>=limit:return selected[:limit]
+    for node in nodes:
+        if len(selected)>=limit:break
+        if all(int(item['id'])!=int(node['id']) for item in selected):
+            selected.append(node)
+    return selected[:limit]
+
+
+def _reachability_result(main, probes, nodes):
+    agents=True if any(value is True for value in probes) else False if probes and all(value is False for value in probes) else None
+    iran_samples=[value for value,node in zip(probes,nodes) if node.get('location_type')=='ir']
+    iran=True if any(value is True for value in iran_samples) else False if iran_samples and all(value is False for value in iran_samples) else None
+    if main:
+        status='reachable_from_main'
+    elif iran is True:
+        status='reachable_from_iran'
+    elif agents is True:
+        status='reachable_from_agent'
+    elif agents is False:
+        status='unreachable_from_available_vantage_points'
+    else:
+        status='insufficient_evidence'
+    return status,agents,iran
 
 
 def make_router(store,actor,guarded,admin_id):
@@ -202,8 +236,8 @@ def make_router(store,actor,guarded,admin_id):
                 writer.close();await writer.wait_closed();return True
             except (OSError,asyncio.TimeoutError):return False
         main=await direct()
-        nodes=await guarded(available,store.db,admin_id,uid)
-        eligible=[r for r in nodes if r.get('enabled') and r.get('approved_by') is not None and r.get('last_probe_ok') is True]
+        nodes=await guarded(available_relay_nodes,store.db,admin_id,user_id=uid,exclude_ip=str(address))
+        eligible=_select_reachability_nodes(nodes,limit=3)
         from core import ServerMonitor
         async def from_node(node):
             try:
@@ -213,13 +247,8 @@ def make_router(store,actor,guarded,admin_id):
                 if isinstance(response,dict) and isinstance(response.get('reachable'),bool):return response['reachable']
             except (OSError,asyncio.TimeoutError):pass
             return None
-        probes=await asyncio.gather(*(from_node(n) for n in eligible[:3]))
-        agents=True if any(x is True for x in probes) else False if probes and all(x is False for x in probes) else None
-        if not main and agents is True:status='reachable_from_agent'
-        elif main:status='reachable_from_main'
-        elif agents is False:status='unreachable_from_available_vantage_points'
-        else:status='insufficient_evidence'
-        iran=True if any(x is True for x,n in zip(probes,eligible[:3]) if n.get('location_type')=='ir') else None
+        probes=await asyncio.gather(*(from_node(n) for n in eligible))
+        status,agents,iran=_reachability_result(main,probes,eligible)
         return {'server_id':server_id,'classification':status,'main':main,'iran':iran,'agents':agents,
                 'agent_samples':len(probes),
                 'detail':'This is TCP reachability, not ICMP ping. Full outage requires independent external confirmation.'}

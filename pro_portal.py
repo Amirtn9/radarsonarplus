@@ -22,11 +22,11 @@ from runtime import run_sync
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import secrets
-from web_login import digest as session_digest, redeem, identify, logout, logout_all, allow_login_attempt, install_schema as install_login_schema
+from web_login import digest as session_digest, redeem, create_session, identify, logout, logout_all, allow_login_attempt, install_schema as install_login_schema
 from monitor_fleet import install_schema as install_fleet_schema, install_job_schema
 from subscription_health import install_schema as install_subscription_schema, summaries as subscription_summaries
 from pro_auth import verify_init_data
-from pro_store import ProStore
+from pro_store import ProStore, install_schema as install_pro_schema
 from service_monitor import ServiceStore
 
 log=logging.getLogger(__name__)
@@ -149,6 +149,39 @@ async def web_login_endpoint(body:WebCode,request:Request,response:Response):
                          httponly=True,samesite='strict',path='/')
     return {'ok':True,'csrf':csrf}
 
+
+@app.post('/api/web/miniapp-session')
+async def miniapp_session(request:Request,response:Response,authorization:str=Header(default='')):
+    """Exchange fresh Telegram-signed initData for a normal revocable web session.
+
+    initData is intentionally short-lived; the resulting HttpOnly cookie keeps a
+    Mini App usable after that short verification window without weakening it.
+    """
+    require_web_origin(request)
+    if not authorization.startswith('tma '):
+        raise HTTPException(status_code=401,detail='Telegram authorization required')
+    secret=get_bot_token()
+    if not secret:raise HTTPException(status_code=503,detail='Login secret unavailable')
+    try:
+        uid=verify_init_data(authorization[4:],secret,
+            max_age=min(600,max(60,int(os.getenv('SONAR_MINIAPP_SESSION_MAX_AGE','300')))))
+    except (PermissionError,ValueError,KeyError,TypeError):
+        raise HTTPException(status_code=401,detail='Invalid or expired Telegram authorization')
+    try:
+        allowed,_=await asyncio.to_thread(store.db.check_access,uid)
+    except Exception:
+        log.exception('Mini App authorization database check failed')
+        raise HTTPException(status_code=503,detail='Service unavailable')
+    if not allowed:raise HTTPException(status_code=403,detail='Inactive account')
+    try:
+        session,csrf=await asyncio.to_thread(create_session,store.db,uid)
+    except Exception:
+        log.exception('Mini App session creation failed')
+        raise HTTPException(status_code=503,detail='Could not create a secure session')
+    response.set_cookie('sonar_web_session',session,max_age=8*3600,secure=True,
+                         httponly=True,samesite='strict',path='/')
+    return {'ok':True,'csrf':csrf,'expires_in':8*3600}
+
 @app.get('/api/web/csrf')
 async def refresh_csrf(request:Request,uid:int=Depends(actor)):
     session=request.cookies.get('sonar_web_session','')
@@ -173,7 +206,9 @@ async def web_logout_all(response:Response,uid:int=Depends(actor)):
 
 @app.on_event('startup')
 async def bootstrap_additive_schemas():
-    # Versioned, additive tables only; no changes to existing WSS identity.
+    # The API can start independently of the Telegram bot; provision its additive
+    # Pro/service tables here as well so /readyz and service endpoints are usable.
+    await asyncio.to_thread(install_pro_schema,store.db)
     await asyncio.to_thread(install_subscription_schema,store.db)
     await asyncio.to_thread(install_login_schema,store.db)
     await asyncio.to_thread(install_fleet_schema,store.db)

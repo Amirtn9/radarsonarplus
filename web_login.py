@@ -1,5 +1,5 @@
-"""One-time website login codes, stored hashed; website sessions are revocable.
-Telegram Mini App initData remains supported unchanged.
+"""Hashed one-time website codes and revocable sessions for web and Telegram Mini Apps.
+Fresh Telegram initData can be exchanged for an HttpOnly session cookie.
 """
 from __future__ import annotations
 import hashlib
@@ -41,6 +41,21 @@ def issue_code(db,uid):
         cur.execute("INSERT INTO sonar_web_codes(code_hash,user_id,expires_at) VALUES (%s,%s,NOW()+INTERVAL '8 minutes')",(digest(code),int(uid)))
         conn.commit()
     return code
+
+
+def create_session(db, uid):
+    """Create a revocable, HttpOnly-cookie session after trusted authentication."""
+    uid=int(uid)
+    if uid<=0:raise ValueError('Invalid user ID')
+    session=secrets.token_urlsafe(32)
+    csrf=secrets.token_urlsafe(32)
+    with db.get_connection() as (conn,cur):
+        # Bound storage growth without deleting active or recently revoked sessions.
+        cur.execute('DELETE FROM sonar_web_sessions WHERE expires_at<NOW()')
+        cur.execute("INSERT INTO sonar_web_sessions(token_hash,user_id,csrf_hash,expires_at) VALUES(%s,%s,%s,NOW()+INTERVAL '8 hours')",
+                    (digest(session),uid,digest(csrf)))
+        conn.commit()
+    return session,csrf
 
 
 def redeem(db,code):
