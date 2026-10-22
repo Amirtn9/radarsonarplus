@@ -87,11 +87,11 @@
       host.replaceChildren();items.forEach(x=>{const wrap=node('div',null,'console-timeline-item');wrap.append(node('span','●','console-timeline-point'));const d=node('div');d.append(node('strong',x.event),node('small',`کاربر ${x.actor_id} · ${localTime(x.time)}`));wrap.append(d);host.append(wrap);});
     }catch(err){if(state.tab==='overview')empty(host,err.message);}
   }
-  // Poll reads only, respecting hidden tabs and existing short-lived signed Telegram sessions.
-  // This is not an Agent WebSocket; data remains last-known until underlying collectors update.
+  // Poll read-only views for either cookie-authenticated web sessions or Telegram Mini Apps.
+  // Stop polling once authentication fails; this is not an Agent WebSocket.
   let refreshing=false;
   async function refreshVisible(){
-    if(document.hidden||refreshing||!window.Telegram?.WebApp?.initData||!byId('session-warning')?.hidden)return;
+    if(document.hidden||refreshing||!byId('session-warning')?.hidden)return;
     refreshing=true;
     try{
       if(state.tab==='overview'){await summary();await loadRecent();}

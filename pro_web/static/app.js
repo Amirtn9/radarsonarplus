@@ -2,6 +2,7 @@
 // Only use Telegram-signed initData; never store credentials in URL or browser storage.
 const tg=window.Telegram?.WebApp;
 let auth=tg?.initData||'';
+let cookieAuth=false;
 let csrfToken='';
 const $=id=>document.getElementById(id);
 const state={tab:'overview',index:1,search:'',admin:false,listingRequest:0,resourceRequest:0,onlyFavorites:false};
@@ -9,14 +10,43 @@ const titles={overview:'داشبورد',servers:'مدیریت سرورها',conf
 const elem=(tag,text,cl)=>{const el=document.createElement(tag);if(text!=null)el.textContent=String(text);if(cl)el.className=cl;return el;};
 function toast(text){$('toast').textContent=text;$('toast').classList.add('visible');clearTimeout(toast.delay);toast.delay=setTimeout(()=>$('toast').classList.remove('visible'),4000);}
 async function request(path,options={}){
-  // If no Telegram initData is present, HttpOnly cookie authenticates web sessions.
-  const response=await fetch(path,{...options,cache:'no-store',headers:{...(auth?{Authorization:'tma '+auth}:{}),...(!auth&&options.method&&options.method!=='GET'?{'X-CSRF-Token':csrfToken}:{}),...options.headers}});
+  // Use signed Telegram initData until it is exchanged for an HttpOnly cookie session.
+  const method=String(options.method||'GET').toUpperCase();
+  const response=await fetch(path,{...options,credentials:'same-origin',cache:'no-store',headers:{...(auth&&!cookieAuth?{Authorization:'tma '+auth}:{}),...((!auth||cookieAuth)&&method!=='GET'&&method!=='HEAD'?{'X-CSRF-Token':csrfToken}:{}),...options.headers}});
   if(response.status===401){if(!auth){$('web-auth').hidden=false;}else{const banner=$('session-warning');if(banner)banner.hidden=false;}}
   if(!response.ok){let message=`خطای ارتباط (${response.status})`;try{const d=await response.json();message=d.detail||message;}catch{}throw Error(message);}
   if(options.raw)return response;
   return response.json();
 }
 async function jsonPost(path,value){return request(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});}
+async function prepareMiniAppSession(){
+ if(!auth)return;
+ const initData=auth;
+ // Prefer a fresh signed exchange. The server keeps initData's short age limit;
+ // subsequent requests use an HttpOnly cookie plus the normal CSRF token.
+ try{
+  const response=await fetch('/api/web/miniapp-session',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{Authorization:'tma '+initData}});
+  if(response.ok){const data=await response.json();csrfToken=data.csrf||'';cookieAuth=true;return;}
+ }catch{}
+ // A page reload can retain an older initData string while its prior cookie is
+ // still valid. Reuse that cookie only when its authenticated user matches the
+ // user ID carried by initData; otherwise keep the signed-initData path.
+ try{
+  const rawUser=new URLSearchParams(initData).get('user');
+  const telegramUserId=Number(JSON.parse(rawUser||'null')?.id);
+  if(Number.isSafeInteger(telegramUserId)&&telegramUserId>0){
+   const meResponse=await fetch('/api/me',{credentials:'same-origin',cache:'no-store'});
+   if(meResponse.ok){
+    const me=await meResponse.json();
+    if(Number(me.id)===telegramUserId){
+     const csrfResponse=await fetch('/api/web/csrf',{credentials:'same-origin',cache:'no-store'});
+     if(csrfResponse.ok){const data=await csrfResponse.json();csrfToken=data.csrf||'';cookieAuth=true;return;}
+    }
+   }
+  }
+ }catch{}
+ cookieAuth=false;
+}
 function setStatus(text,good=true){$('side-state').textContent=text;const dot=document.querySelector?.('.statusdot');if(dot?.style)dot.style.background=good?'#75dcac':'#ff938e';}
 async function summary(){const data=await request('/api/summary');$('srv').textContent=`${data.servers.active}/${data.servers.total}`;$('cfg').textContent=`${data.configs.healthy}/${data.configs.total}`;$('inc').textContent=data.incidents;$('service-up').textContent=`${data.services?.up??0}/${data.services?.total??0}`;$('last-test').textContent='آخرین تست ثبت‌شده: '+(data.last_test_at||'هنوز داده‌ای وجود ندارد');}
 async function loadDashboardRoutes(){
@@ -102,7 +132,7 @@ if($('team-form'))$('team-form').onsubmit=async e=>{e.preventDefault();try{await
 for(const key of ['daily_digest','multi_probe'])$(key).onchange=async e=>{try{await jsonPost('/api/preferences',{key,value:e.target.checked});toast('تنظیمات ذخیره شد');}catch(err){e.target.checked=!e.target.checked;toast(err.message);}};
 $('rule-form')?.addEventListener('submit',async e=>{e.preventDefault();const btn=e.submitter;if(btn)btn.disabled=true;try{await jsonPost('/api/console/rules',{event:$('rule-event').value,action:$('rule-action').value,enabled:$('rule-enabled').value==='true'});toast('قانون ثبت شد');await loadPreferences();}catch(err){toast(err.message);}finally{if(btn)btn.disabled=false;}});
 $('health-btn').onclick=loadHealth;$('download-btn').onclick=supportZip;$('trend-close').onclick=()=>$('trend').close();
-async function boot(){if(tg){tg.ready();tg.expand();if(document.documentElement?.dataset)document.documentElement.dataset.theme=tg.colorScheme==='light'?'light':'dark';tg.onEvent?.('themeChanged',()=>{if(document.documentElement?.dataset)document.documentElement.dataset.theme=tg.colorScheme==='light'?'light':'dark';});}try{const me=await request('/api/me');state.admin=!!me.admin;$('admin-tab').hidden=!me.admin;if($('balancer-tab'))$('balancer-tab').hidden=!me.admin;if($('dashboard-route-panel'))$('dashboard-route-panel').hidden=!me.admin;if($('dashboard-balancer-btn'))$('dashboard-balancer-btn').hidden=!me.admin;if($('dashboard-balancer-quick'))$('dashboard-balancer-quick').hidden=!me.admin;setStatus('متصل');tabClick('overview');}catch(e){setStatus('اتصال ناموفق',false);if(!auth)$('web-auth').hidden=false;else toast(e.message);$('last-test').textContent=e.message;}}
+async function boot(){if(tg){tg.ready();tg.expand();if(document.documentElement?.dataset)document.documentElement.dataset.theme=tg.colorScheme==='light'?'light':'dark';tg.onEvent?.('themeChanged',()=>{if(document.documentElement?.dataset)document.documentElement.dataset.theme=tg.colorScheme==='light'?'light':'dark';});}await prepareMiniAppSession();try{const me=await request('/api/me');state.admin=!!me.admin;$('admin-tab').hidden=!me.admin;if($('balancer-tab'))$('balancer-tab').hidden=!me.admin;if($('dashboard-route-panel'))$('dashboard-route-panel').hidden=!me.admin;if($('dashboard-balancer-btn'))$('dashboard-balancer-btn').hidden=!me.admin;if($('dashboard-balancer-quick'))$('dashboard-balancer-quick').hidden=!me.admin;setStatus('متصل');tabClick('overview');}catch(e){setStatus('اتصال ناموفق',false);if(!auth)$('web-auth').hidden=false;else toast(e.message);$('last-test').textContent=e.message;}}
 boot();
 
 // Resource telemetry: historical samples only; no synthetic sensor values.

@@ -200,7 +200,7 @@
     const sid=Number(window.SonarConsole?.currentServerId?.());const host=id('reachability-results');
     if(!sid)return;host.textContent='در حال بررسی دسترسی TCP از مسیرهای مجاز…';
     try{const result=await request(`/api/fleet/reachability/${sid}`);
-       const labels={possible_iran_only:'⚠️ دسترسی از مسیر اصلی مشکل دارد؛ مسیر ایران پاسخ داده است',
+       const labels={reachable_from_iran:'⚠️ مسیر اصلی پاسخ نداد؛ Agent ایران به سرور دسترسی دارد',
          reachable_from_main:'✅ سرور از میزبان اصلی در دسترس است',
          reachable_from_agent:'✅ مسیر اصلی ناموفق بود؛ سرور از Agent پشتیبان در دسترس است',
          unreachable_from_available_vantage_points:'🔴 از مسیرهای بررسی‌شده در دسترس نبود؛ قطع کامل هنوز اثبات نشده',
