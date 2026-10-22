@@ -4,16 +4,20 @@ Does not handle tokens, enrollment, TLS credentials, WebSocket or agent runtime 
 Refuses a fallback package if target tags cannot be resolved into binary wheels.
 """
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
 import platform
+import socket
 import re
 import secrets
 import shlex
 import subprocess
 import tempfile
 import time
+from urllib.parse import urlsplit
+from urllib.request import Request, urlopen, HTTPRedirectHandler, build_opener
 
 REQUIREMENTS = ('websockets==13.1', 'psutil==6.1.1', 'PyYAML==6.0.2')
 MIN_DISK_BYTES = 350 * 1024 * 1024
@@ -66,23 +70,178 @@ def probe(run, progress=None):
     except (StopIteration, ValueError, TypeError, KeyError) as exc:
         raise ValueError('PREFLIGHT_INVALID: unsupported or incomplete target environment') from exc
 
-def _ensure_os_tools(run, progress):
-    _emit(progress,'system_packages','بررسی ابزارهای ضروری سیستم')
-    # If everything already exists, never run apt update or touch the package DB.
-    check='''python3 -m venv --help >/dev/null 2>&1 && command -v openssl >/dev/null && command -v curl >/dev/null && command -v ss >/dev/null && test -s /etc/ssl/certs/ca-certificates.crt'''
-    ok, _ = run(check, 20)
-    if ok:return
-    _emit(progress,'system_packages','تکمیل پیش‌نیازهای سیستم با apt (محدودیت زمانی)')
-    cmd=('export DEBIAN_FRONTEND=noninteractive; '
-         'timeout 95s apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=12 '
-         '-o Acquire::https::Timeout=12 update -y && '
-         'timeout 110s apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=12 '
-         '-o Acquire::https::Timeout=12 install -y '
-         'python3-venv ca-certificates curl openssl iproute2')
-    ok, out = run(cmd, 230)
-    if not ok: raise RuntimeError('SYSTEM_PACKAGES_UNAVAILABLE: apt dependencies unavailable; configure Ubuntu mirror/cache: '+str(out)[-200:])
-    ok,_ = run(check,20)
-    if not ok:raise RuntimeError('SYSTEM_PACKAGES_INCOMPLETE: required tools missing after apt')
+def _venv_preflight(run, timeout=35):
+    """Create a throw-away venv and verify its pip; --help alone is insufficient."""
+    script = r'''import pathlib,shutil,subprocess,sys,tempfile
+base=pathlib.Path(tempfile.mkdtemp(prefix=".sonar-venv-check-",dir="/opt"))
+try:
+ target=base/"env"
+ try:
+  created=subprocess.run([sys.executable,"-m","venv",str(target)],capture_output=True,text=True,timeout=25)
+ except Exception as exc:
+  print("VENV_CREATE_PROBE_FAILED:"+type(exc).__name__);raise SystemExit(1)
+ if created.returncode:
+  print("VENV_CREATE_PROBE_FAILED:"+(created.stderr or created.stdout)[-500:]);raise SystemExit(1)
+ try:
+  pip=subprocess.run([str(target/"bin/python"),"-m","pip","--version"],capture_output=True,text=True,timeout=15)
+ except Exception as exc:
+  print("VENV_PIP_PROBE_FAILED:"+type(exc).__name__);raise SystemExit(1)
+ if pip.returncode:
+  print("VENV_PIP_PROBE_FAILED:"+(pip.stderr or pip.stdout)[-500:]);raise SystemExit(1)
+ print("SONAR_VENV_READY")
+finally:
+ shutil.rmtree(base,ignore_errors=True)
+'''
+    command = "python3 - <<'SONAR_VENV_PREFLIGHT'\n" + script + "\nSONAR_VENV_PREFLIGHT\n"
+    return run(command, timeout)
+
+
+def _validate_public_apt_url(url):
+    parts=urlsplit(str(url))
+    if parts.scheme not in ('http','https') or not parts.hostname or parts.username or parts.password:
+        raise RuntimeError('APT_BUNDLE_UNSAFE_URI')
+    try:
+        addresses={item[4][0].split('%',1)[0] for item in socket.getaddrinfo(parts.hostname,parts.port or (443 if parts.scheme=='https' else 80),type=socket.SOCK_STREAM)}
+        if not addresses or any(not ipaddress.ip_address(addr).is_global for addr in addresses):
+            raise RuntimeError('APT_BUNDLE_NONPUBLIC_MIRROR')
+    except OSError as exc:
+        raise RuntimeError('APT_BUNDLE_MIRROR_DNS_FAILED') from exc
+    return parts
+
+
+class _PublicAptRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_public_apt_url(newurl)
+        return super().redirect_request(req,fp,code,msg,headers,newurl)
+
+
+def _parse_apt_uris(output):
+    """Parse apt's own URI plan. Only signed-index hashes and public HTTP(S) hosts are accepted."""
+    records=[]
+    pattern=re.compile(r"'(?P<url>https?://[^']+)'\s+(?P<name>[^\s]+)\s+(?P<size>\d+)\s+(?P<kind>MD5Sum|SHA256):(?P<digest>[A-Fa-f0-9]+)")
+    for line in str(output).splitlines():
+        match=pattern.search(line)
+        if not match: continue
+        url=match.group('url'); name=match.group('name')
+        if Path(name).name!=name or not name.endswith('.deb') or '..' in name:
+            raise RuntimeError('APT_BUNDLE_UNSAFE_FILENAME')
+        _validate_public_apt_url(url)
+        records.append({'url':url,'name':name,'size':int(match.group('size')),
+                        'hash_kind':match.group('kind').lower(),'expected':match.group('digest').lower()})
+    # apt can mention the same package URL more than once; keep one exact record.
+    unique={}
+    for item in records:
+        previous=unique.get(item['name'])
+        if previous and (previous['url']!=item['url'] or previous['expected']!=item['expected']):
+            raise RuntimeError('APT_BUNDLE_CONFLICTING_PACKAGE_RECORD')
+        unique[item['name']]=item
+    return list(unique.values())
+
+
+def _download_apt_bundle(run, host, port, username, password, packages, progress=None, connector=None):
+    """Download exact target .deb URIs centrally, verify apt-index digest, then transfer via verified SSH/Agent."""
+    if not all((host, username, password, connector)):
+        return False, 'CENTRAL_APT_TRANSFER_UNAVAILABLE: SSH transport context missing'
+    package_args=' '.join(shlex.quote(str(x)) for x in packages)
+    plan_command='DEBIAN_FRONTEND=noninteractive apt-get --print-uris --yes --no-install-recommends install ' + package_args
+    ok, output=run(plan_command,45)
+    records=[]
+    try: records=_parse_apt_uris(output) if ok else []
+    except Exception as exc: return False, type(exc).__name__+': '+str(exc)
+    if not records:
+        # One metadata refresh attempt; package bytes still download on the central host.
+        run('timeout 95s apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=12 -o Acquire::https::Timeout=12 update',110)
+        ok, output=run(plan_command,45)
+        try: records=_parse_apt_uris(output) if ok else []
+        except Exception as exc: return False, type(exc).__name__+': '+str(exc)
+    if not records:
+        return False, 'APT_URI_PLAN_UNAVAILABLE: target apt metadata did not return verifiable public .deb URIs'
+    total=sum(item['size'] for item in records)
+    if total > 800*1024*1024:
+        return False, 'APT_BUNDLE_TOO_LARGE: target prerequisite package set exceeds 800 MiB'
+    _emit(progress,'central_os_packages',f'سرور مرکزی {len(records)} بسته سیستم را از مخزن APT تأییدشده دانلود می‌کند')
+    with tempfile.TemporaryDirectory(prefix='sonar-apt-bundle-') as temp:
+        folder=Path(temp); manifest=[]; downloaded=0
+        for item in records:
+            request=Request(item['url'],headers={'User-Agent':'Sonar-Radar-Pro-Agent-Bootstrap/6.6'})
+            try:
+                opener=build_opener(_PublicAptRedirectHandler())
+                with opener.open(request,timeout=45) as response:
+                    _validate_public_apt_url(response.geturl())
+                    data=response.read(300*1024*1024+1)
+            except Exception as exc:
+                return False,'APT_PACKAGE_DOWNLOAD_FAILED: '+item['name']+' ('+type(exc).__name__+')'
+            if len(data)>300*1024*1024:
+                return False,'APT_PACKAGE_TOO_LARGE: '+item['name']
+            digest=hashlib.md5(data).hexdigest() if item['hash_kind']=='md5sum' else hashlib.sha256(data).hexdigest()
+            if digest.lower()!=item['expected']:
+                return False,'APT_PACKAGE_HASH_MISMATCH: '+item['name']
+            (folder/item['name']).write_bytes(data)
+            manifest.append({'name':item['name'],'sha256':hashlib.sha256(data).hexdigest(),'size':len(data)})
+            downloaded+=len(data)
+        (folder/'sonar-apt-manifest.json').write_text(json.dumps({'schema':'sonar-apt-bundle-v1','packages':manifest},indent=2),encoding='utf-8')
+        _emit(progress,'central_os_transfer','ارسال بسته‌های سیستم از مسیر SSH مستقیم یا Agent تأییدشده')
+        remote=_sftp_bundle(host,port,username,password,temp,connector=connector)
+        remote_files=' '.join(shlex.quote(remote+'/'+item['name']) for item in manifest)
+        command=('DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=0 --no-download --no-install-recommends '
+                 '-y install '+remote_files)
+        ok,out=run(command,220)
+        if not ok:
+            run('rm -rf -- '+shlex.quote(remote),35)
+            return False,'CENTRAL_APT_INSTALL_FAILED: '+str(out)[-260:]
+        run('rm -rf -- '+shlex.quote(remote),35)
+    ok,out=_venv_preflight(run,40)
+    return (True,'CENTRAL_APT_BUNDLE_INSTALLED') if ok and 'SONAR_VENV_READY' in str(out) else (False,'CENTRAL_APT_BUNDLE_INSTALLED_BUT_VENV_PREFLIGHT_FAILED: '+str(out)[-220:])
+
+
+def _ensure_os_tools(run, progress, host=None, port=22, username=None, password=None, connector=None):
+    _emit(progress, 'system_packages', 'بررسی واقعی python3-venv، pip و ابزارهای سیستم با sudo')
+    basic = ('command -v python3 >/dev/null && command -v openssl >/dev/null && '
+             'command -v curl >/dev/null && command -v ss >/dev/null && '
+             'test -s /etc/ssl/certs/ca-certificates.crt')
+    ok, out = run(basic, 20)
+    if not ok:
+        _emit(progress, 'system_packages', 'نصب پیش‌نیازهای سیستم با دسترسی مدیر')
+        update = ('export DEBIAN_FRONTEND=noninteractive; '
+                  'timeout 95s apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=12 '
+                  '-o Acquire::https::Timeout=12 update && '
+                  'timeout 110s apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=12 '
+                  '-o Acquire::https::Timeout=12 install -y python3-venv ca-certificates curl openssl iproute2')
+        ok, out = run(update, 230)
+        ok, out = run(basic, 20)
+        if not ok:
+            central_ok, central_out = _download_apt_bundle(run,host,port,username,password,
+                ['python3-venv','ca-certificates','curl','openssl','iproute2'],progress,connector)
+            if not central_ok:
+                raise RuntimeError('SYSTEM_PACKAGES_UNAVAILABLE: target apt and central verified package transfer failed: '+str(central_out)[-240:])
+            ok,out=run(basic,20)
+            if not ok: raise RuntimeError('SYSTEM_PACKAGES_UNAVAILABLE_AFTER_CENTRAL_TRANSFER: '+str(out)[-200:])
+    # --help alone is insufficient: actually create a temporary venv and verify pip.
+    ok, out = _venv_preflight(run, 40)
+    if ok and 'SONAR_VENV_READY' in str(out):
+        return
+    _emit(progress, 'system_packages', 'محیط مجازی ناقص است؛ نصب بسته نسخه دقیق Python با sudo')
+    version_script = "python3 -c 'import sys; print(\"%s.%s\" % sys.version_info[:2])'"
+    version_ok, version = run(version_script, 15)
+    pyver = str(version).strip().splitlines()[-1] if version_ok and str(version).strip() else ''
+    if not re.fullmatch(r'3\.[0-9]{1,2}', pyver):
+        raise RuntimeError('VENV_PREREQUISITE_FAILED: python3-venv did not provide ensurepip and Python version could not be identified')
+    exact_package = 'python' + pyver + '-venv'
+    exact = ('export DEBIAN_FRONTEND=noninteractive; '
+             '(timeout 100s apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=12 '
+             '-o Acquire::https::Timeout=12 install -y python3-venv ' + shlex.quote(exact_package) +
+             ' || (timeout 95s apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=12 '
+             '-o Acquire::https::Timeout=12 update && timeout 100s apt-get -o Acquire::Retries=1 '
+             '-o Acquire::http::Timeout=12 -o Acquire::https::Timeout=12 install -y python3-venv ' + shlex.quote(exact_package) + '))')
+    exact_ok, exact_out = run(exact, 220)
+    ok, out = _venv_preflight(run, 40)
+    if not (ok and 'SONAR_VENV_READY' in str(out)):
+        central_ok,central_out=_download_apt_bundle(run,host,port,username,password,
+                    ['python3-venv',exact_package],progress,connector)
+        ok,out=_venv_preflight(run,40) if central_ok else (False,central_out)
+        if not (ok and 'SONAR_VENV_READY' in str(out)):
+            detail = str(central_out if not central_ok else (exact_out if not exact_ok else out))[-260:]
+            raise RuntimeError('VENV_PREREQUISITE_FAILED: target and central verified apt package install could not create a venv; run sudo apt-get install -y python3-venv ' + shlex.quote(exact_package) + '; ' + detail)
 
 def make_wheelhouse(target, dest, timeout=170):
     """Download binary-only target wheels from main VPS; reject source builds.
@@ -232,6 +391,7 @@ VERIFY_INSTALL='''import hashlib,json,pathlib,subprocess,sys
 p=pathlib.Path(sys.argv[1]); m=json.loads((p/'manifest.json').read_text())
 files=m['wheels']
 import platform
+import socket
 actual_arch={'amd64':'x86_64','arm64':'aarch64'}.get(platform.machine().lower(), platform.machine().lower())
 if m['target']['arch']!=actual_arch or m['target']['py']!='.'.join(str(x) for x in sys.version_info[:2]):
  raise SystemExit('TARGET_ARCH_PYTHON_MISMATCH')
@@ -256,52 +416,72 @@ print('SONAR_OFFLINE_OK')
 '''
 
 def install_agent_dependencies(run, host, port, username, password, progress=None, connector=None):
-    """Set up staged venv; return rollback marker. Call commit_venv *after* WSS health.
+    """Prepare dependencies on the central host, transfer over verified SSH/Agent,
+    install offline first, and only use target-side pip as a last-resort fallback.
 
-    An existing live venv is never deleted; moves to .previous for rollback.
+    The staged venv is created with the privileged runner; a working live venv is
+    never removed until the replacement is verified and activated.
     """
-    target=probe(run,progress)
-    _ensure_os_tools(run,progress)
-    marker=secrets.token_hex(6)
-    staged=f'/opt/sonar-agent-venv.stage-{marker}'
-    live='/opt/sonar-agent-venv'
-    previous=f'/opt/sonar-agent-venv.previous-{marker}'
-    ok,out=run('python3 -m venv '+shlex.quote(staged)+' && test -x '+shlex.quote(staged+'/bin/python'),75)
-    if not ok:raise RuntimeError('VENV_CREATE_FAILED: '+str(out)[-170:])
-    _emit(progress,'direct','نصب مستقیم وابستگی‌ها (زمان محدود)')
-    direct=(f'{shlex.quote(staged)}/bin/python -m pip install '
-            '--disable-pip-version-check --timeout 12 --retries 1 '
-            + ' '.join(shlex.quote(s) for s in REQUIREMENTS)
-            + f' && {shlex.quote(staged)}/bin/python -m pip check && '
-              f'{shlex.quote(staged)}/bin/python -c '+shlex.quote('import websockets, psutil, yaml'))
-    ok,out=run('timeout 185s '+direct,205)
+    target = probe(run, progress)
+    _ensure_os_tools(run, progress, host, port, username, password, connector)
+    marker = secrets.token_hex(6)
+    staged = f'/opt/sonar-agent-venv.stage-{marker}'
+    live = '/opt/sonar-agent-venv'
+    previous = f'/opt/sonar-agent-venv.previous-{marker}'
+    ok, out = run('python3 -m venv ' + shlex.quote(staged) + ' && test -x ' + shlex.quote(staged + '/bin/python') +
+                  ' && ' + shlex.quote(staged + '/bin/python') + ' -m pip --version', 90)
     if not ok:
-        _emit(progress,'fallback','نصب مستقیم ناموفق یا کند؛ دریافت بسته آفلاین از سرور اصلی')
+        # Remove only the new incomplete staging directory; the live/previous venv is untouched.
+        run('rm -rf -- ' + shlex.quote(staged), 30)
+        raise RuntimeError('VENV_CREATE_FAILED: create/check with sudo failed after installing the matching python3-venv package: ' + str(out)[-260:])
+
+    central_installed = False
+    central_error = ''
+    remote = None
+    _emit(progress, 'prepare_bundle', 'سرور مرکزی بسته‌های سازگار را آماده و هش آن‌ها را ثبت می‌کند')
+    try:
         with tempfile.TemporaryDirectory(prefix='sonar-wheelhouse-') as tmp:
-            _emit(progress,'prepare_bundle','تهیه wheel سازگار با معماری و Python مقصد')
-            manifest=cached_wheelhouse(target,tmp)
-            _emit(progress,'transfer','ارسال امن بسته با SSH/SFTP')
-            remote=_sftp_bundle(host,port,username,password,tmp,connector=connector)
-            _emit(progress,'verify_bundle','بررسی SHA-256 و نصب کاملاً آفلاین')
-            # Remote installer verifies target metadata on disk too.
-            command=(f'python3 - {shlex.quote(remote)} {shlex.quote(staged+"/bin/python")} <<\'SONAR_VERIFY\'\n'
-                     + VERIFY_INSTALL + '\nSONAR_VERIFY\n')
-            ok,out=run(command,170)
+            manifest = cached_wheelhouse(target, tmp)
+            if not manifest or not manifest.get('wheels'):
+                raise RuntimeError('WHEEL_BUNDLE_INCOMPLETE')
+            _emit(progress, 'transfer', 'ارسال امن بسته‌ها از مسیر مرکزی؛ در صورت قطع مسیر مستقیم، Agent مجاز')
+            remote = _sftp_bundle(host, port, username, password, tmp, connector=connector)
+            _emit(progress, 'verify_bundle', 'بررسی SHA-256 و نصب کاملاً آفلاین روی مقصد')
+            command = (f'python3 - {shlex.quote(remote)} {shlex.quote(staged + "/bin/python")} <<\'SONAR_VERIFY\'\n'
+                       + VERIFY_INSTALL + '\nSONAR_VERIFY\n')
+            ok, out = run(command, 190)
             if not ok:
-                raise RuntimeError('OFFLINE_INSTALL_FAILED: '+str(out)[-320:])
-            # Preserve failed stage for diagnosis; bundle is removed after successful installation only.
-            run(f'rm -rf -- {shlex.quote(remote)}',35)
-    _emit(progress,'dependencies_ok','وابستگی‌ها با Python مقصد بررسی شدند')
-    # Swapping a venv by moving it is safe only if interpreter/shebang path points at live path.
-    # Python console scripts in this project are not used; python -m and shared installed libs are.
-    check=(f'test ! -L {live} && '
-           f'if test -e {live}; then mv -- {live} {shlex.quote(previous)}; fi; '
-           f'mv -- {shlex.quote(staged)} {live}; '
-           f'{live}/bin/python -c '+shlex.quote('import websockets,psutil,yaml'))
-    ok,out=run(check,50)
+                raise RuntimeError('OFFLINE_INSTALL_FAILED: ' + str(out)[-320:])
+            run('rm -rf -- ' + shlex.quote(remote), 35)
+            central_installed = True
+    except Exception as exc:
+        central_error = f'{type(exc).__name__}: {str(exc)[:180]}'
+        _emit(progress, 'direct_fallback', 'بسته مرکزی در دسترس نبود؛ تلاش محدود برای pip مستقیم از مقصد')
+
+    if not central_installed:
+        direct = (f'{shlex.quote(staged)}/bin/python -m pip install '
+                  '--disable-pip-version-check --timeout 12 --retries 1 '
+                  + ' '.join(shlex.quote(item) for item in REQUIREMENTS)
+                  + f' && {shlex.quote(staged)}/bin/python -m pip check && '
+                    f'{shlex.quote(staged)}/bin/python -c ' + shlex.quote('import websockets, psutil, yaml'))
+        ok, out = run('timeout 185s ' + direct, 205)
+        if not ok:
+            run('rm -rf -- ' + shlex.quote(staged), 30)
+            raise RuntimeError('DEPENDENCY_INSTALL_FAILED: central bundle/Agent route failed (' + central_error[:150] +
+                               ') and target pip fallback failed: ' + str(out)[-220:])
+        if remote:
+            run('rm -rf -- ' + shlex.quote(remote), 35)
+
+    _emit(progress, 'dependencies_ok', 'وابستگی‌ها و pip check با Python مقصد تأیید شدند')
+    check = (f'test ! -L {live} && '
+             f'if test -e {live}; then mv -- {live} {shlex.quote(previous)}; fi; '
+             f'mv -- {shlex.quote(staged)} {live}; '
+             f'{live}/bin/python -m pip check && '
+             f'{live}/bin/python -c ' + shlex.quote('import websockets,psutil,yaml'))
+    ok, out = run(check, 60)
     if not ok:
-        run(f'if test -d {shlex.quote(previous)} && ! test -e {live}; then mv -- {shlex.quote(previous)} {live}; fi',30)
-        raise RuntimeError('VENV_ACTIVATION_FAILED: '+str(out)[-180:])
+        run(f'if test -d {shlex.quote(previous)} && ! test -e {live}; then mv -- {shlex.quote(previous)} {live}; fi', 30)
+        raise RuntimeError('VENV_ACTIVATION_FAILED: ' + str(out)[-220:])
     return previous
 
 def rollback_venv(run, previous, progress=None):

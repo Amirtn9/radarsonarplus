@@ -170,18 +170,39 @@ class ServerMonitor:
                 from database import Database
                 from settings import SUPER_ADMIN_ID
                 database=Database()
-                saved=database.execute('SELECT id FROM servers WHERE ip=%s AND port=%s AND is_active=1 LIMIT 1',
+                saved=database.execute('SELECT id,owner_id FROM servers WHERE ip=%s AND port=%s AND is_active=1 LIMIT 1',
                                        (str(ip),int(port)),fetch='one')
                 if not saved:raise
-                relay_nodes=eligible_relay_nodes(database,SUPER_ADMIN_ID,exclude_ip=str(ip))
-            for node in (relay_nodes or [])[:3]:
+                relay_nodes=eligible_relay_nodes(database,SUPER_ADMIN_ID,user_id=int(saved['owner_id']),exclude_ip=str(ip))
+            target_key=f'{ip}:{int(port)}'
+            from database import Database
+            route_db=locals().get('database')
+            if route_db is None:
+                try: route_db=Database()
+                except Exception: route_db=None
+            ordered=__import__('ssh_relay').stable_relay_order((relay_nodes or [])[:8],target_key,db=route_db)
+            for node in ordered[:5]:
                 try:
                     client=connect_ssh(ip,port,user,password,relay_node=node)
-                    logger.info('SSH via enrolled Agent id=%s after direct failure %s',node.get('id'),error_code.split(':',1)[0])
+                    __import__('ssh_relay').remember_relay_success(target_key,node.get('id'),db=route_db)
+                    logger.info('SSH via approved Agent id=%s after direct network failure %s',node.get('id'),error_code.split(':',1)[0])
+                    try:
+                        from monitor_fleet import record_relay_result
+                        if route_db is not None: record_relay_result(route_db,node.get('id'),True)
+                    except Exception:
+                        pass
                     return client
                 except Exception as relay_error:
-                    if not retryable_direct_error(describe_ssh_error(relay_error)):
+                    relay_code=describe_ssh_error(relay_error)
+                    if not __import__('ssh_relay').retryable_relay_error(relay_error,relay_code):
+                        # A key mismatch/auth failure is a security result, not a routing failure.
                         raise
+                    __import__('ssh_relay').forget_relay_route(target_key,node.get('id'),db=route_db)
+                    try:
+                        from monitor_fleet import record_relay_result
+                        if route_db is not None: record_relay_result(route_db,node.get('id'),False)
+                    except Exception:
+                        pass
                     logger.warning('SSH relay unavailable; agent_id=%s; error_type=%s',node.get('id'),type(relay_error).__name__)
             raise direct_error
 

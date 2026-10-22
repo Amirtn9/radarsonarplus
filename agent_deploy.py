@@ -9,6 +9,7 @@ import threading
 import time
 import secrets
 import logging
+import re
 
 from access_policy import valid_agent_port
 from ssh_support import normalize_host, ssh_port
@@ -90,7 +91,10 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
     script = (root / 'monitor_agent.py').read_text()
     meter_script = (root / 'agent_metering.py').read_text()
     relay_script = (root / 'ssh_relay.py').read_text()
+    diagnostic_helper = (root / 'scripts' / 'sonar-diagnostic-read.sh').read_text()
     runtime_lock = json.loads((root / 'agent_runtime.lock.json').read_text())
+    if user != 'root' and not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', str(user)):
+        return False, 'DIAGNOSTIC_SUDOERS_USERNAME_INVALID: use a standard Unix SSH account name'
     from agent_bootstrap import install_agent_dependencies, rollback_venv, commit_venv, _emit
     from agent_xray_bridge import install_xray_via_main
     token = db.get_or_create_agent_token(ip, port, ws_port)
@@ -109,7 +113,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
                 rollback_files = ("python3 - " + shlex.quote(backup_path) + " <<'SONAR_ROLLBACK'\n" +
                     "import pathlib,shutil,sys,subprocess\n" +
                     "folder=pathlib.Path(sys.argv[1])\n" +
-                    "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service']\n" +
+                    "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service','/usr/local/sbin/sonar-diagnostic-read','/etc/sudoers.d/sonar-agent-diagnostics']\n" +
                     "for ix,path in enumerate(paths):\n" +
                     " source=folder/str(ix); target=pathlib.Path(path)\n" +
                     " if source.is_file():\n  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)\n" +
@@ -137,7 +141,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
             "import pathlib,shutil,sys,os\n" +
             "folder=pathlib.Path(sys.argv[1]);folder.mkdir(mode=0o700)\n" +
             "os.chmod(folder,0o700)\n" +
-            "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service']\n" +
+            "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service','/usr/local/sbin/sonar-diagnostic-read','/etc/sudoers.d/sonar-agent-diagnostics']\n" +
             "for i,path in enumerate(paths):\n" +
             " source=pathlib.Path(path)\n" +
             " if source.is_symlink():raise SystemExit('REFUSING_SYMLINKED_IDENTITY')\n" +
@@ -172,7 +176,8 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
             ('monitor_agent.py',script.encode('utf-8')),
             ('agent_metering.py',meter_script.encode('utf-8')),
             ('ssh_relay.py',relay_script.encode('utf-8')),
-            ('agent_runtime.lock.json',json.dumps(runtime_lock).encode('utf-8'))):
+            ('agent_runtime.lock.json',json.dumps(runtime_lock).encode('utf-8')),
+            ('sonar-diagnostic-read.sh',diagnostic_helper.encode('utf-8'))):
             with sftp.open(remote_dir+'/'+name,'wb') as target:
                 target.write(payload)
                 target.flush()
@@ -182,7 +187,13 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
                 f'install -m 0644 {destination}/agent_metering.py /opt/sonar-agent/agent_metering.py\n'
                 f'install -m 0644 {destination}/ssh_relay.py /opt/sonar-agent/ssh_relay.py\n'
                 f'install -m 0644 {destination}/agent_runtime.lock.json /opt/sonar-agent/agent_runtime.lock.json\n'
-                'chown -R root:root /opt/sonar-agent\n')
+                f'install -d -m 0755 /usr/local/sbin\n'
+                f'install -m 0755 {destination}/sonar-diagnostic-read.sh /usr/local/sbin/sonar-diagnostic-read\n'
+                'chown root:root /usr/local/sbin/sonar-diagnostic-read\n'
+                + ('' if user == 'root' else
+                   "printf '%s\\n' " + shlex.quote(str(user) + ' ALL=(root) NOPASSWD: /usr/local/sbin/sonar-diagnostic-read *') +
+                   ' > /etc/sudoers.d/sonar-agent-diagnostics\nchmod 0440 /etc/sudoers.d/sonar-agent-diagnostics\nvisudo -cf /etc/sudoers.d/sonar-agent-diagnostics\n')
+                + 'chown -R root:root /opt/sonar-agent\n')
         ok,out=run(upload,timeout=90)
         if not ok:return fail('AGENT_UPLOAD_INSTALL_FAILED: '+str(out)[-400:])
     except Exception as exc:
@@ -191,7 +202,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None):
         if ssh:
             try:
                 if remote_dir:
-                    for name in ('monitor_agent.py','agent_metering.py','ssh_relay.py','agent_runtime.lock.json'):
+                    for name in ('monitor_agent.py','agent_metering.py','ssh_relay.py','agent_runtime.lock.json','sonar-diagnostic-read.sh'):
                         try:sftp.remove(remote_dir+'/'+name)
                         except OSError:pass
                     sftp.rmdir(remote_dir)
@@ -219,6 +230,7 @@ chmod 0640 /etc/sonar-agent/tls.key /etc/sonar-agent/tls.crt
         return fail('AGENT_TLS_FAILED: ' + out[-700:])
     bind = '::' if ':' in ip else '0.0.0.0'
     managed = {'SONAR_AGENT_TOKEN': token, 'SONAR_AGENT_BIND': bind,
+               'SONAR_AGENT_RELAY_PORTS': os.getenv('SONAR_AGENT_RELAY_PORTS','22,443,2022,2222,10022,22022'),
                'SONAR_AGENT_TLS_CERT': '/etc/sonar-agent/tls.crt',
                'SONAR_AGENT_TLS_KEY': '/etc/sonar-agent/tls.key',
                'SONAR_AGENT_WORK_DIR': '/var/lib/sonar-agent/xray_workspace'}

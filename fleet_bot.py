@@ -1,14 +1,15 @@
-"""Beginner-first multi-select wizard for Iran monitoring agents.
+"""Multi-select wizard for approved Iran/foreign relay Agents and admin-owned installs.
 Does not replace the original single-node installer or WebSocket protocol.
 """
 from __future__ import annotations
 import asyncio
+import logging
 from telegram import InlineKeyboardButton as Button,InlineKeyboardMarkup as Markup
 from secure_handlers import SecureCallbackQueryHandler
 from runtime import run_sync
 from settings import SUPER_ADMIN_ID
 from database import Database
-from monitor_fleet import available,offer,approve,queue_installs,install_job_schema,install_schema
+from monitor_fleet import available_workspace_nodes,offer,approve,queue_installs,install_job_schema,install_schema
 
 
 def _allowed(update):
@@ -24,13 +25,21 @@ async def manage(update,context):
     def get():
         from monitor_fleet import install_schema, install_job_schema
         install_schema(db); install_job_schema(db)
-        owned=db.execute('''SELECT id,name,ip,ws_port,owner_id FROM servers
-               WHERE location_type='ir' AND is_active=1 ORDER BY id LIMIT 150''',fetch='all')
-        offers=available(db,SUPER_ADMIN_ID,SUPER_ADMIN_ID)
-        all_options={int(s['id']):dict(s) for s in owned}
-        for row in offers:
-            all_options.setdefault(int(row['id']),dict(row))
-        return all_options,offers
+        rows=db.execute('''SELECT s.id,s.name,s.ip,s.port,s.ws_port,s.owner_id,s.location_type,
+              COALESCE(a.agent_cert_pem,'')<>'' AS tls_enrolled,
+              COALESCE(a.agent_token,'')<>'' AS token_configured,
+              COALESCE(f.enabled,FALSE) AS enabled,(f.approved_by IS NOT NULL) AS approved,
+              COALESCE(f.relay_ready,FALSE) AS relay_ready,
+              EXISTS(SELECT 1 FROM monitor_fleet_nodes offered WHERE offered.server_id=s.id AND offered.offered_by=s.owner_id AND offered.admin_only=FALSE) AS owner_opted_in
+            FROM servers s LEFT JOIN agent_nodes a ON a.ip=s.ip AND a.ssh_port=s.port
+            LEFT JOIN monitor_fleet_nodes f ON f.server_id=s.id
+            WHERE s.is_active=1 AND s.location_type IN ('ir','ext')
+              AND (s.owner_id=%s OR EXISTS(SELECT 1 FROM monitor_fleet_nodes offered WHERE offered.server_id=s.id AND offered.offered_by=s.owner_id)
+                   OR f.enabled=TRUE)
+            ORDER BY CASE WHEN s.location_type='ir' THEN 0 ELSE 1 END,s.id LIMIT 250''',(int(SUPER_ADMIN_ID),),fetch='all')
+        options={int(row['id']):dict(row) for row in rows or []}
+        offers=available_workspace_nodes(db,SUPER_ADMIN_ID,SUPER_ADMIN_ID)
+        return options,offers
     options,offers=await run_sync(get)
     selected=context.user_data.get('fleet_checked')
     if selected is None:
@@ -39,12 +48,17 @@ async def manage(update,context):
     buttons=[]
     for sid,item in list(options.items())[:40]:
         prefix='☑️' if sid in selected else '⬜️'
-        buttons.append([Button(f'{prefix} {item["name"][:25]} • {str(item.get("ip",""))[:21]}',callback_data=f'fleet_pick_{sid}')])
+        region='IR' if item.get('location_type')=='ir' else 'EXT'
+        state='TLS' if item.get('tls_enrolled') and item.get('token_configured') else 'NO-AGENT'
+        buttons.append([Button(f'{prefix} [{region}/{state}] {item["name"][:20]} • {str(item.get("ip",""))[:18]}',callback_data=f'fleet_pick_{sid}')])
     buttons.extend([[Button('✅ تأیید نودهای انتخاب‌شده',callback_data='fleet_apply')],
                     [Button('🧩 نصب Agent روی انتخاب‌ها',callback_data='fleet_install_prepare')],
                     [Button('🔙 بازگشت',callback_data='monitor_settings_panel')]])
-    text='🛰 **انتخاب چند Agent ایران**\n\nمدیر اصلی می‌تواند Agentهای سالم ثبت‌شده برای حساب‌های مختلف را فعال کند؛ استفاده از SSH و بررسی سلامت در لاگ ثبت می‌شود.\n\nروی هر سرور بزنید تا تیک بخورد. سپس عملیات موردنظر را انتخاب کنید.\n\n⚠️ انتخاب، به‌تنهایی نصب یا تأیید ارتباط نیست.'
-    if not options:text+='\n\nهیچ سرور ایران واجد شرایطی ثبت نشده است.'
+    text=('🛰 **مدیریت Agentهای ایران و خارج**\n\n'
+          'مسیر اصلی همیشه سرور مرکزی است؛ Agentهای تأییدشده فقط هنگام خطای شبکه مسیر جایگزین می‌شوند.\n\n'
+          'نصب گروهی فقط روی سرورهای متعلق به مدیر اصلی مجاز است. مالکین دیگر باید Agent را روی سرور خود نصب و برای اشتراک پیشنهاد کنند.\n\n'
+          'نشان TLS یعنی گواهی/توکن ثبت شده است؛ NO-AGENT یعنی ابتدا نصب/تعمیر لازم است. انتخاب به‌تنهایی نصب یا تأیید ارتباط نیست.')
+    if not options:text+='\n\nهیچ سرور فعالی در ایران یا خارج ثبت نشده است.'
     await q.edit_message_text(text,reply_markup=Markup(buttons),parse_mode='Markdown')
 
 
@@ -64,13 +78,10 @@ async def dispatch(update,context):
             await q.answer('حداقل یک سرور را انتخاب کنید',show_alert=True);return
         await q.answer()
         def save():
-            db=Database();options=available(db,SUPER_ADMIN_ID,SUPER_ADMIN_ID)
-            valid={int(x['id']) for x in available(db,SUPER_ADMIN_ID,SUPER_ADMIN_ID)}
-            registered=db.execute('SELECT id FROM servers WHERE id=ANY(%s) AND location_type=%s AND is_active=1',
-                                  (ids,'ir'),fetch='all')
-            if set(ids)-{int(x['id']) for x in registered}:raise PermissionError('Unregistered or inactive Iran server')
-            for sid in ids:approve(db,SUPER_ADMIN_ID,sid,True)
-            return len(ids)
+            db=Database();done=0
+            for sid in ids:
+                approve(db,SUPER_ADMIN_ID,sid,True);done+=1
+            return done
         try:
             total=await run_sync(save)
             await q.edit_message_text(f'✅ {total} نود در استخر فعال شد. فقط Agentهایی برای تست انتخاب می‌شوند که WSS سالم و تازه داشته باشند.',reply_markup=Markup([[Button('🔙 فهرست Agentها',callback_data='fleet_manage')]]))
@@ -80,7 +91,7 @@ async def dispatch(update,context):
     if code=='fleet_install_prepare':
         await q.answer()
         ids=context.user_data.get('fleet_checked') or []
-        await q.edit_message_text(f'🔧 **نصب چندتایی**\n\n{len(ids)} سرور انتخاب شده است. مدیر اصلی می‌تواند برای سرورهای ثبت‌شدهٔ کاربران نیز نصب را درخواست کند؛ این عملیات به SSH معتبر نیاز دارد و ثبت می‌شود.\n\n🔌 پورت ایجنت چگونه انتخاب شود؟',parse_mode='Markdown',reply_markup=Markup([
+        await q.edit_message_text(f'🔧 **نصب چندتایی**\n\n{len(ids)} سرور انتخاب شده است. نصب گروهی فقط روی سرورهای متعلق به مدیر اصلی در ایران یا خارج مجاز است؛ سرورهای دیگر باید توسط مالک نصب و برای اشتراک پیشنهاد شوند.\n\n🔌 پورت ایجنت چگونه انتخاب شود؟',parse_mode='Markdown',reply_markup=Markup([
             [Button('پورت ثبت‌شده هر سرور',callback_data='fleet_install_stored')],
             [Button('🎲 پورت آزاد خودکار (۲۰۰۰۰ تا ۵۹۹۹۹)',callback_data='fleet_install_automatic')],
             [Button('🔙 بازگشت',callback_data='fleet_manage')]]))
@@ -97,10 +108,16 @@ async def dispatch(update,context):
             jobs=await run_sync(queue_installs,Database(),SUPER_ADMIN_ID,ids,mode)
             await q.edit_message_text(f'⏳ {len(jobs)} درخواست نصب در صف ثبت شد.\n\nپیشرفت از طریق پنل وب قابل مشاهده است. نصب پس از بررسی واقعی WSS موفق اعلام می‌شود.',reply_markup=Markup([[Button('🔙 فهرست',callback_data='fleet_manage')]]))
         except Exception:
-            await q.edit_message_text('❌ نصب گروهی ثبت نشد. تنها سرورهای ثبت‌شده و فعال ایران بدون نصب درحال‌اجرا مجازند.',reply_markup=Markup([[Button('🔙 بازگشت',callback_data='fleet_manage')]]))
+            await q.edit_message_text('❌ نصب گروهی ثبت نشد. فقط سرورهای فعال متعلق به مدیر اصلی مجازند؛ سرورهای دیگر باید توسط مالک مدیریت شوند.',reply_markup=Markup([[Button('🔙 بازگشت',callback_data='fleet_manage')]]))
 
 
 def register(app):
+    # Apply additive fleet/affinity schema even when the web service is offline.
+    # Handler registration remains resilient in isolated test/minimal environments.
+    try:
+        _db=Database();install_schema(_db);install_job_schema(_db)
+    except Exception as exc:
+        logging.getLogger(__name__).warning('Fleet schema bootstrap deferred: %s',type(exc).__name__)
     app.add_handler(SecureCallbackQueryHandler(traffic_menu,pattern=r'^fleet_traffic$'))
     app.add_handler(SecureCallbackQueryHandler(traffic_reset,pattern=r'^fleet_meter_(?:reset|confirm)_\d+$'))
     app.add_handler(SecureCallbackQueryHandler(manage,pattern=r'^fleet_manage$'))

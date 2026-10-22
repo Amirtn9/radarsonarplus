@@ -11,6 +11,7 @@ import json
 import os
 import ssl
 import time
+import threading
 
 
 def valid_relay_destination(host, port):
@@ -20,7 +21,7 @@ def valid_relay_destination(host, port):
         port = int(port)
     except (ValueError, TypeError):
         raise ValueError('RELAY_PUBLIC_IP_REQUIRED') from None
-    ports = frozenset(int(x) for x in os.environ.get('SONAR_AGENT_RELAY_PORTS', '22,2022,2222').split(',') if x.strip().isdigit())
+    ports = frozenset(int(x) for x in os.environ.get('SONAR_AGENT_RELAY_PORTS', '22,443,2022,2222,10022,22022').split(',') if x.strip().isdigit())
     if not addr.is_global or port not in ports or not 1 <= port <= 65535:
         raise ValueError('RELAY_DESTINATION_NOT_ALLOWED')
     return str(addr), port
@@ -125,26 +126,123 @@ class RelaySocket:
     def shutdown(self, how): self.close()
 
 
-def eligible_relay_nodes(db, admin_id, *, exclude_ip=None, limit=3):
-    """Healthy WSS-enrolled, admin-approved Iran nodes, ordered by live score.
+# Short-lived route affinity avoids unnecessary egress changes while retaining
+# immediate failover when a route becomes unhealthy. It is intentionally local
+# to the central controller; no target credentials are stored here.
+_ROUTE_AFFINITY = {}
+_ROUTE_LOCK = threading.Lock()
+_ROUTE_AFFINITY_TTL = 1800
 
-    No raw SSH credentials are selected or transmitted to intermediate nodes.
+
+def stable_relay_order(nodes, target, ttl=_ROUTE_AFFINITY_TTL, db=None):
+    pool = list(nodes or [])
+    key = str(target or '')
+    if not key or not pool:
+        return pool
+    node_id = None
+    if db is not None:
+        try:
+            from monitor_fleet import get_relay_affinity
+            node_id = get_relay_affinity(db,key,ttl)
+        except Exception:
+            node_id = None
+    with _ROUTE_LOCK:
+        saved = _ROUTE_AFFINITY.get(key)
+        if node_id is None and saved:
+            cached_id, stamp = saved
+            if time.monotonic() - stamp <= max(1, int(ttl)):
+                node_id = cached_id
+            else:
+                _ROUTE_AFFINITY.pop(key, None)
+    if node_id is None:
+        return pool
+    for index, node in enumerate(pool):
+        if str(node.get('id')) == str(node_id):
+            return [pool[index], *pool[:index], *pool[index + 1:]]
+    with _ROUTE_LOCK:
+        _ROUTE_AFFINITY.pop(key, None)
+    if db is not None and node_id is not None:
+        try:
+            from monitor_fleet import clear_relay_affinity
+            clear_relay_affinity(db,key,node_id)
+        except Exception:
+            pass
+    return pool
+
+
+def remember_relay_success(target, node_id, db=None):
+    if not target or node_id is None:
+        return
+    with _ROUTE_LOCK:
+        _ROUTE_AFFINITY[str(target)] = (int(node_id), time.monotonic())
+    if db is not None:
+        try:
+            from monitor_fleet import set_relay_affinity
+            set_relay_affinity(db,str(target),int(node_id))
+        except Exception:
+            pass
+
+
+def forget_relay_route(target, node_id=None, db=None):
+    if not target:
+        return
+    with _ROUTE_LOCK:
+        current = _ROUTE_AFFINITY.get(str(target))
+        if current and (node_id is None or str(current[0]) == str(node_id)):
+            _ROUTE_AFFINITY.pop(str(target), None)
+    if db is not None:
+        try:
+            from monitor_fleet import clear_relay_affinity
+            clear_relay_affinity(db,str(target),node_id)
+        except Exception:
+            pass
+
+
+
+def retryable_relay_error(exc, code=None):
+    """Retry a different Agent only for relay transport failures, never destination trust/auth failures."""
+    text=(str(code or '')+' '+type(exc).__name__+' '+str(exc)).upper()
+    if any(marker in text for marker in ('HOST_KEY_UNKNOWN','HOST_KEY_CHANGED','HOST_FINGERPRINT_MISMATCH','BADHOSTKEYEXCEPTION')):
+        return False
+    # These errors originate before the SSH handshake reaches the destination.
+    if any(marker in text for marker in ('RELAY_','WEBSOCKET','CONNECTIONCLOSED','CONNECTIONRESET',
+                                         'CONNECTIONREFUSED','NETWORKISUNREACHABLE','NO ROUTE TO HOST',
+                                         'TIMED OUT','TIMEOUT','SSL','TLSV1_ALERT','CERTIFICATE VERIFY FAILED')):
+        return True
+    if any(marker in text for marker in ('AUTHENTICATION FAILED','AUTH_FAILED','AUTHENTICATIONEXCEPTION',
+                                         'PERMISSION DENIED','BAD PASSWORD','INVALID USERNAME')):
+        return False
+    return retryable_direct_error(code or '')
+
+def eligible_relay_nodes(db, admin_id, *, user_id=None, exclude_ip=None, limit=5):
+    """Return healthy approved TLS-enrolled Agents across Iran and foreign regions.
+
+    The direct controller always tries the destination first. This pool is only
+    for network-level fallback and never bypasses host-key or SSH-auth checks.
     """
-    from monitor_fleet import available, score, policy
-    if not admin_id: return []
-    try:
-        pool = available(db, admin_id, admin_id)
-        strategy = policy(db)
-    except (AttributeError, TypeError, LookupError, RuntimeError):
-        # Existing installations may not have finished the additive fleet migration.
-        # A missing pool must never stop an otherwise healthy direct SSH add.
+    if not admin_id:
         return []
-    entries = [r for r in pool if r.get('enabled') and r.get('approved_by') is not None
+    from monitor_fleet import score, policy
+    try:
+        from monitor_fleet import available_relay_nodes
+        pool = available_relay_nodes(db, admin_id, user_id=user_id, exclude_ip=exclude_ip)
+        strategy = policy(db)
+    except (ImportError, AttributeError, TypeError, LookupError, RuntimeError):
+        # Compatibility for isolated/older installs; this path retains the Iran-only pool.
+        try:
+            from monitor_fleet import available, score, policy
+            pool = available(db, admin_id, int(user_id if user_id is not None else admin_id))
+            strategy = policy(db)
+        except (AttributeError, TypeError, LookupError, RuntimeError):
+            return []
+    effective_user=int(user_id if user_id is not None else admin_id)
+    entries = [r for r in pool if (effective_user==int(admin_id) or not r.get('admin_only'))
+               and r.get('enabled') and r.get('approved_by') is not None
                and r.get('ip') != exclude_ip and r.get('relay_ready') is True
-               and score(r,strategy) != float('inf')]
-    entries.sort(key=lambda r:(score(r,strategy),r['id']))
-    return entries[:max(0,min(int(limit),5))]
-
+               and r.get('tls_enrolled', True) is not False
+               and score(r, strategy) != float('inf')]
+    entries.sort(key=lambda r:(int(r.get('route_priority') or 100), score(r, strategy), int(r['id'])))
+    return entries[:max(0, min(int(limit), 8))]
 
 def retryable_direct_error(code):
     """NEVER bypass an invalid fingerprint or rejected credentials."""

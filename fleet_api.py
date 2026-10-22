@@ -10,7 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from typing import Literal
 
-from monitor_fleet import available, offer, approve, policy, set_policy, record_probe, choose, queue_installs, valid_agent_stats
+from monitor_fleet import (available, offer, approve, policy, set_policy, record_probe, choose,
+                           queue_installs, valid_agent_stats, available_relay_nodes, relay_candidates, available_workspace_nodes)
 
 class PoolOffer(BaseModel):
     server_id:int=Field(gt=0)
@@ -22,6 +23,9 @@ class PoolApproval(BaseModel):
 
 class PoolPolicy(BaseModel):
     strategy:Literal['latency','load','balanced']
+
+class RelayPriority(BaseModel):
+    priority:int=Field(ge=0,le=1000)
 
 class FleetInstall(BaseModel):
     server_ids:list[int]=Field(min_length=1,max_length=12)
@@ -49,11 +53,52 @@ def make_router(store,actor,guarded,admin_id):
     async def candidates(uid:int=Depends(actor)):
         ensure_admin(uid)
         def read():
-            rows=store.db.execute("""SELECT id,name,ip,ws_port,location_type,last_agent_status
-                 FROM servers WHERE is_active=1 AND location_type='ir'
-                 ORDER BY id LIMIT 300""",fetch='all')
+            rows=store.db.execute("""SELECT id,name,ip,ws_port,location_type,last_agent_status,port
+                 FROM servers WHERE is_active=1 AND owner_id=%s AND location_type IN ('ir','ext')
+                 ORDER BY CASE WHEN location_type='ir' THEN 0 ELSE 1 END,id LIMIT 500""",(int(admin_id),),fetch='all')
             return [dict(row) for row in rows]
         return await guarded(read)
+
+    @r.get('/relays')
+    async def relay_pool(uid:int=Depends(actor)):
+        ensure_admin(uid)
+        def read():
+            rows=store.db.execute("""SELECT s.id,s.name,s.ip,s.port,s.ws_port,s.location_type,s.owner_id,
+                (s.owner_id=%s) AS owned_by_admin,
+                EXISTS(SELECT 1 FROM monitor_fleet_nodes offered WHERE offered.server_id=s.id AND offered.offered_by=s.owner_id AND offered.admin_only=FALSE) AS owner_opted_in,
+                s.last_agent_status,s.last_status,
+                COALESCE(a.agent_cert_pem,'')<>'' AS tls_enrolled,
+                COALESCE(a.agent_token,'')<>'' AS token_configured,
+                COALESCE(f.enabled,FALSE) AS enabled,
+                (f.approved_by IS NOT NULL) AS approved,
+                COALESCE(f.relay_ready,FALSE) AS relay_ready,
+                f.route_priority,f.last_probe_ok,f.last_probe_at,f.latency_ms,f.cpu_pct,f.error_code
+              FROM servers s
+              LEFT JOIN agent_nodes a ON a.ip=s.ip AND a.ssh_port=s.port
+              LEFT JOIN monitor_fleet_nodes f ON f.server_id=s.id
+              WHERE s.is_active=1 AND s.location_type IN ('ir','ext')
+              ORDER BY COALESCE(f.route_priority,100),CASE WHEN s.location_type='ir' THEN 0 ELSE 1 END,s.id""",(int(admin_id),),fetch='all')
+            return [dict(row) for row in rows]
+        rows=await guarded(read)
+        eligible=await guarded(available_relay_nodes,store.db,admin_id)
+        pool=[{'id':int(x['id']),'name':x['name'],'location_type':x['location_type'],
+               'priority':int(x.get('route_priority') or 100),'latency_ms':x.get('latency_ms'),
+               'cpu':x.get('cpu_pct'),'last_probe_at':str(x['last_probe_at']) if x.get('last_probe_at') else None}
+              for x in eligible]
+        return {'primary':'central','fallback_order':pool,'nodes':rows,
+                'policy':await guarded(policy,store.db),
+                'note':'Central route is always attempted first. Only approved, TLS-enrolled and freshly healthy agents are used for fallback.'}
+
+    @r.post('/relays/{server_id}/priority')
+    async def relay_priority(server_id:int,body:RelayPriority,uid:int=Depends(actor)):
+        ensure_admin(uid)
+        priority=int(body.priority)
+        def update():
+            row=store.db.execute("""UPDATE monitor_fleet_nodes SET route_priority=%s,changed_at=NOW()
+                WHERE server_id=%s RETURNING server_id""",(priority,int(server_id)),fetch='one')
+            if not row:raise ValueError('Agent must be enrolled in the fleet before setting route priority')
+        await guarded(update)
+        return {'ok':True,'server_id':server_id,'priority':priority}
 
     @r.post('/install')
     async def install(body:FleetInstall,uid:int=Depends(actor)):
@@ -74,15 +119,16 @@ def make_router(store,actor,guarded,admin_id):
     @r.get('/nodes')
     async def nodes(uid:int=Depends(actor)):
         def read():
-            rows=available(store.db,admin_id,uid)
+            rows=available_workspace_nodes(store.db,admin_id,uid)
             for row in rows:
                 # Do not leak another tenant's IP even if offered without approval.
                 if int(uid)!=int(admin_id) and int(row['owner_id']) != int(store.db.workspace_owner(uid)):
                     row['ip']='shared agent';row['name']='نود عمومی تأییدشده'
             return [{'id':x['id'],'name':x['name'],'ip':x['ip'],'owner_id':x['owner_id'] if uid==admin_id else None,
-                 'port':x['ws_port'],'latency_ms':x['latency_ms'],'cpu':x['cpu_pct'],
+                 'location_type':x.get('location_type','ir'),'port':x['ws_port'],'latency_ms':x['latency_ms'],'cpu':x['cpu_pct'],
                  'last_probe_ok':x['last_probe_ok'],'last_probe_at':str(x['last_probe_at']) if x['last_probe_at'] else None,
-                 'enabled':x['enabled'],'approved':x['approved_by'] is not None,'error_code':x['error_code']} for x in rows]
+                 'enabled':x['enabled'],'approved':x['approved_by'] is not None,'relay_ready':x.get('relay_ready',False),
+                 'route_priority':x.get('route_priority',100),'error_code':x['error_code']} for x in rows]
         return {'strategy':await guarded(policy,store.db), 'nodes':await guarded(read)}
 
     @r.post('/offer')
@@ -123,7 +169,8 @@ def make_router(store,actor,guarded,admin_id):
     @r.get('/choice')
     async def choice(uid:int=Depends(actor)):
         # Private diagnostics: only nodes owned by administrator or this workspace.
-        rows=await guarded(available,store.db,admin_id,uid)
+        rows=(await guarded(available_relay_nodes,store.db,admin_id) if int(uid)==int(admin_id)
+              else await guarded(available_workspace_nodes,store.db,admin_id,uid))
         node=choose(rows,await guarded(policy,store.db),uid)
         return {'selected_id':node['id'] if node else None,
                 'reason':'healthy approved node' if node else 'No fresh, verified agent telemetry (last 5 min)'}
@@ -167,12 +214,13 @@ def make_router(store,actor,guarded,admin_id):
             except (OSError,asyncio.TimeoutError):pass
             return None
         probes=await asyncio.gather(*(from_node(n) for n in eligible[:3]))
-        iran=True if any(x is True for x in probes) else False if probes and all(x is False for x in probes) else None
-        if not main and iran is True:status='possible_iran_only'
+        agents=True if any(x is True for x in probes) else False if probes and all(x is False for x in probes) else None
+        if not main and agents is True:status='reachable_from_agent'
         elif main:status='reachable_from_main'
-        elif iran is False:status='unreachable_from_available_vantage_points'
+        elif agents is False:status='unreachable_from_available_vantage_points'
         else:status='insufficient_evidence'
-        return {'server_id':server_id,'classification':status,'main':main,'iran':iran,
+        iran=True if any(x is True for x,n in zip(probes,eligible[:3]) if n.get('location_type')=='ir') else None
+        return {'server_id':server_id,'classification':status,'main':main,'iran':iran,'agents':agents,
                 'agent_samples':len(probes),
                 'detail':'This is TCP reachability, not ICMP ping. Full outage requires independent external confirmation.'}
 

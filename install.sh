@@ -312,7 +312,7 @@ read_env() {
 set_env() {
   local key="$1" val="$2" out
   case "$key" in
-    SONAR_STATE_DIR|SONAR_DB_PASSWORD|SONAR_WEBAPP_URL|SONAR_WEB_ORIGIN|SONAR_WS_POOL_MAX|SONAR_GLOBAL_TEST_LIMIT|SONAR_USER_TEST_LIMIT|SONAR_DB_POOL_MAX|SONAR_EXECUTOR_WORKERS|SONAR_WEB_PORT|SONAR_AGENT_BIND|SONAR_LOG_LEVEL|SONAR_MINIAPP_SESSION_MAX_AGE) ;;
+    SONAR_STATE_DIR|SONAR_DB_PASSWORD|SONAR_WEBAPP_URL|SONAR_WEB_ORIGIN|SONAR_WS_POOL_MAX|SONAR_GLOBAL_TEST_LIMIT|SONAR_USER_TEST_LIMIT|SONAR_DB_POOL_MAX|SONAR_EXECUTOR_WORKERS|SONAR_WEB_PORT|SONAR_AGENT_BIND|SONAR_AGENT_RELAY_PORTS|SONAR_LOG_LEVEL|SONAR_MINIAPP_SESSION_MAX_AGE) ;;
     *) die 'Environment key not permitted';;
   esac
   [[ "$val" != *$'\n'* && "$val" != *$'\r'* ]] || die 'Newline in setting not allowed'
@@ -542,6 +542,8 @@ prepare_runtime_state() {
     chown "$APP_USER:$APP_USER" "$STATE_DIR/.ssh/known_hosts";chmod 0600 "$STATE_DIR/.ssh/known_hosts"
   fi
   set_env SONAR_STATE_DIR "$STATE_DIR"
+  local relay_ports; relay_ports="$(read_env SONAR_AGENT_RELAY_PORTS)"
+  [[ -n "$relay_ports" ]] || set_env SONAR_AGENT_RELAY_PORTS '22,443,2022,2222,10022,22022'
 }
 verify_service_sources() {
   local source="$1"
@@ -630,6 +632,29 @@ rollback() {
   exit "$rc"
 }
 trap rollback EXIT
+install_diagnostic_helper() {
+  local source="${1:-}" helper=/usr/local/sbin/sonar-diagnostic-read sudoers=/etc/sudoers.d/sonar-diagnostics
+  [[ -f "$source" && ! -L "$source" ]] || { warn 'Diagnostic helper source missing; full system journal access may require manual sudo.'; return 1; }
+  [[ "$APP_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { warn 'Invalid service account name; skipped diagnostic sudoers rule.'; return 1; }
+  local backup_dir; backup_dir="$(mktemp -d /run/sonar-diagnostic-helper.XXXXXXXX)"
+  [[ ! -f "$helper" ]] || cp -p "$helper" "$backup_dir/helper.old"
+  [[ ! -f "$sudoers" ]] || cp -p "$sudoers" "$backup_dir/sudoers.old"
+  install -o root -g root -m 0755 "$source" "$helper" || { rm -rf -- "$backup_dir"; return 1; }
+  if [[ "$APP_USER" != root ]]; then
+    printf '%s ALL=(root) NOPASSWD: %s *\n' "$APP_USER" "$helper" > "$sudoers"
+    chmod 0440 "$sudoers"
+    if ! visudo -cf "$sudoers" >/dev/null 2>&1; then
+      [[ ! -f "$backup_dir/sudoers.old" ]] && rm -f "$sudoers" || cp -p "$backup_dir/sudoers.old" "$sudoers"
+      [[ ! -f "$backup_dir/helper.old" ]] && rm -f "$helper" || cp -p "$backup_dir/helper.old" "$helper"
+      rm -rf -- "$backup_dir"
+      warn 'Scoped diagnostic sudoers validation failed; previous helper/rule restored.'
+      return 1
+    fi
+  fi
+  rm -rf -- "$backup_dir"
+  say 'Installed restricted diagnostic reader; service account can read only allowlisted Sonar logs/journals.'
+}
+
 install_app() {
   local mode="$1"
   STATE_INSTALL_ATTEMPT=1
@@ -697,6 +722,7 @@ install_app() {
   # Keep this inside the rollback transaction: failure restores the old code/units.
   install_web
   STATE_SWITCH=0;STATE_OK=1
+  install_diagnostic_helper "$APP_DIR/scripts/sonar-diagnostic-read.sh" || warn 'Full diagnostics may report journal permission errors until the restricted helper is repaired.'
   ok "Full stack installed: Bot, PostgreSQL and private Mini App API ($APP_DIR)"
   say 'Run --doctor and test Telegram /start before migrating production traffic.'
   [[ -z "$STATE_OLD" ]] || say "Previous source archived at: $STATE_OLD"
@@ -813,6 +839,18 @@ server {
     server_name $domain;
     client_max_body_size 32k;
     add_header X-Content-Type-Options nosniff always;
+    # Full seven-day diagnostics may collect remote Agent journals over SSH.
+    # Keep this admin-only endpoint's timeout separate from ordinary UI requests.
+    location = /api/diagnostics/bundle {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 420s;
+        proxy_send_timeout 420s;
+    }
     location / {
         proxy_pass http://127.0.0.1:$port;
         proxy_http_version 1.1;
@@ -946,12 +984,19 @@ change_setting() {
     SONAR_MINIAPP_SESSION_MAX_AGE)
       [[ "$value" =~ ^[0-9]{2,6}$ ]] && (( 10#$value >= 300 && 10#$value <= 86400 )) || die 'Session age must be 300..86400s.'
       set_env "$key" "$value";;
+    SONAR_AGENT_RELAY_PORTS)
+      [[ "$value" =~ ^[0-9]+(,[0-9]+)*$ ]] || die 'Relay ports must be a comma-separated numeric allowlist.'
+      local item; IFS=',' read -r -a relay_port_items <<< "$value"
+      for item in "${relay_port_items[@]}"; do
+        (( item >= 1 && item <= 65535 )) || die 'Relay port values must be between 1 and 65535.'
+      done
+      set_env "$key" "$value";;
     SONAR_WEB_PORT) configure_web_port "$value";;
     *) die 'Unsupported setting';;
   esac
   if [[ "$key" != SONAR_WEB_PORT ]]; then
     systemctl restart "$SERVICE" || die 'Bot restart failed.'
-    if [[ "$key" == SONAR_LOG_LEVEL || "$key" == SONAR_MINIAPP_SESSION_MAX_AGE ]]; then
+    if [[ "$key" == SONAR_LOG_LEVEL || "$key" == SONAR_MINIAPP_SESSION_MAX_AGE || "$key" == SONAR_AGENT_RELAY_PORTS ]]; then
       if systemctl is-active --quiet "$WEB_SERVICE"; then systemctl restart "$WEB_SERVICE" || die 'Web restart failed.'; fi
     fi
   fi

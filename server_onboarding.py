@@ -24,6 +24,14 @@ def public_destination(ip, port):
     return str(address), port
 
 
+
+def _eligible_relay_nodes(db, user_id, ip):
+    from settings import SUPER_ADMIN_ID
+    from ssh_relay import eligible_relay_nodes
+    if not SUPER_ADMIN_ID:
+        return []
+    return eligible_relay_nodes(db, SUPER_ADMIN_ID, user_id=int(user_id), exclude_ip=str(ip))
+
 def scan_direct_first(db, admin_id, ip, port):
     """Direct first, then approved & freshly healthy relay nodes on network errors.
 
@@ -37,13 +45,34 @@ def scan_direct_first(db, admin_id, ip, port):
     except Exception as initial:
         if not retryable_direct_error(describe_ssh_error(initial)):
             raise
-        nodes = eligible_relay_nodes(db, admin_id, exclude_ip=ip)
-        for node in nodes:
+        from settings import SUPER_ADMIN_ID
+        nodes = eligible_relay_nodes(db, SUPER_ADMIN_ID, user_id=int(admin_id), exclude_ip=ip)
+        target_key=f'{ip}:{int(port)}'
+        try:
+            from ssh_relay import stable_relay_order, remember_relay_success, forget_relay_route, retryable_relay_error
+        except ImportError:  # compatibility with isolated relay adapters
+            stable_relay_order=lambda values,key,**kwargs: list(values or [])
+            remember_relay_success=lambda *args,**kwargs: None
+            forget_relay_route=lambda *args,**kwargs: None
+            retryable_relay_error=lambda exc,code: retryable_direct_error(code)
+        for node in stable_relay_order(nodes,target_key,db=db):
             try:
-                return scan_host_key(ip, port, node), int(node['id'])
+                candidate=scan_host_key(ip, port, node)
+                remember_relay_success(target_key,node['id'],db=db)
+                try:
+                    from monitor_fleet import record_relay_result
+                    record_relay_result(db,node['id'],True)
+                except Exception:pass
+                return candidate, int(node['id'])
             except Exception as error:
-                if not retryable_direct_error(describe_ssh_error(error)):
+                relay_code=describe_ssh_error(error)
+                if not retryable_relay_error(error,relay_code):
                     raise
+                forget_relay_route(target_key,node.get('id'),db=db)
+                try:
+                    from monitor_fleet import record_relay_result
+                    record_relay_result(db,node['id'],False)
+                except Exception:pass
         raise initial
 
 
@@ -54,7 +83,6 @@ def confirm_and_connect(db, admin_id, ip, port, username, password, expected):
     outage permits relay fallback, but not fingerprint or password bypass.
     """
     from ssh_support import authenticate_candidate, trust_host_key
-    from ssh_relay import eligible_relay_nodes
     ip, port = public_destination(ip, port)
     if not _FINGERPRINT.fullmatch(str(expected)):
         raise ValueError('Enter the independently verified SHA256 host fingerprint')
@@ -63,14 +91,14 @@ def confirm_and_connect(db, admin_id, ip, port, username, password, expected):
         raise PermissionError('HOST_FINGERPRINT_MISMATCH: SSH key changed or differs from confirmation')
     node = None
     if relay_id is not None:
-        pool = eligible_relay_nodes(db, admin_id, exclude_ip=ip)
+        pool = _eligible_relay_nodes(db, admin_id, ip)
         node = next((item for item in pool if int(item['id']) == relay_id), None)
         if node is None:
             raise ConnectionError('RELAY_NO_LONGER_APPROVED')
     authenticate_candidate(candidate, expected, username, password, node)
     trust_host_key(candidate, expected)
     from core import ServerMonitor
-    nodes = eligible_relay_nodes(db, admin_id, exclude_ip=ip)
+    nodes = _eligible_relay_nodes(db, admin_id, ip)
     result = ServerMonitor.check_ssh_connection(ip, port, username, password, nodes)
     if result.get('status') != 'Online':
         raise ConnectionError('SSH_VERIFICATION_FAILED: '+str(result.get('error') or 'unknown')[:120])

@@ -8,7 +8,7 @@ from pathlib import Path
 from telegram import InlineKeyboardButton as B, InlineKeyboardMarkup as M
 from secure_handlers import SecureCallbackQueryHandler, SecureCommandHandler
 from settings import SUPER_ADMIN_ID
-from diagnostics import snapshot, build_bundle, collect_agent_journals
+from diagnostics import snapshot, build_bundle, collect_agent_journals, collect_operational_state
 from runtime import background_callback
 from navigation import remember_section, get_section, clear_section, section_parent
 
@@ -122,17 +122,24 @@ async def diag_zip(update, context):
     if update.callback_query:await update.callback_query.answer('در حال جمع‌آوری گزارش امن')
     path=None
     try:
-        # Pull ONLY persisted status/last-error fields; never serialize DB credentials.
+        # Full seven-day diagnostics: central bot/web journals, rotated files,
+        # safe operational state, and every saved server's SSH-verified Agent log.
         from database import Database
-        agents=await asyncio.wait_for(asyncio.to_thread(lambda: Database().get_all_servers()),timeout=20)
-        remote=None
-        if update.callback_query and update.callback_query.data == 'v6_diag_zip_agents':
-            remote=await asyncio.wait_for(asyncio.to_thread(collect_agent_journals,agents,5),timeout=180)
-        path=await asyncio.wait_for(asyncio.to_thread(build_bundle,agent_rows=agents,remote_logs=remote), timeout=65)
+        db=Database()
+        agents=await asyncio.wait_for(asyncio.to_thread(db.get_all_servers),timeout=30)
+        state=await asyncio.wait_for(asyncio.to_thread(collect_operational_state,db,7),timeout=45)
+        remote=await asyncio.wait_for(asyncio.to_thread(collect_agent_journals,agents,None,7),timeout=360)
+        path=await asyncio.wait_for(asyncio.to_thread(build_bundle,agent_rows=agents,remote_logs=remote,
+                                  operational_state=state,days=7),timeout=180)
+        if path.stat().st_size > 45*1024*1024:
+            await context.bot.send_message(chat_id=update.effective_user.id,
+                text='گزارش کامل هفت‌روزه از محدودیت ارسال فایل تلگرام بزرگ‌تر است. هیچ لاگی حذف یا کوتاه نشده؛ همان ZIP را از «پنل وب ← عیب‌یابی مدیر» دریافت کنید.')
+            return
         with path.open('rb') as f:
             await context.bot.send_document(chat_id=update.effective_user.id,document=f,
-                     filename='sonar-v6-support.zip',caption='📦 گزارش عیب‌یابی نسخه ۶. پیش از اشتراک‌گذاری فایل را بررسی کنید.',
-                     read_timeout=65, write_timeout=65)
+                     filename='sonar-v6.6-full-logs-7d.zip',
+                     caption='گزارش کامل ۷ روز اخیر ربات، پنل، وضعیت عملیاتی و Agentها. مقادیر محرمانه درجا پوشانده شده‌اند؛ فایل‌های منبع حذف یا تغییر نکرده‌اند.',
+                     read_timeout=360, write_timeout=360, connect_timeout=30)
     except Exception as exc:
         await context.bot.send_message(chat_id=update.effective_user.id,
                   text=f'❌ تهیه گزارش ناموفق: {html.escape(type(exc).__name__)}')

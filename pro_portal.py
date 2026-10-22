@@ -17,7 +17,7 @@ from fastapi import FastAPI, Depends, HTTPException, Header, Query, Request, Res
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 from settings import SUPER_ADMIN_ID
-from diagnostics import snapshot, build_bundle
+from diagnostics import snapshot, build_bundle, collect_agent_journals, collect_operational_state
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import secrets
@@ -319,17 +319,28 @@ async def diagnostic_health(uid:int=Depends(actor)):
     return await asyncio.to_thread(snapshot)
 
 @app.get('/api/diagnostics/bundle')
-async def diagnostic_bundle(uid:int=Depends(actor)):
+async def diagnostic_bundle(days:int=Query(default=7,ge=1,le=30),
+                            include_remote:bool=Query(default=True),uid:int=Depends(actor)):
     if not SUPER_ADMIN_ID or uid != SUPER_ADMIN_ID:
         raise HTTPException(status_code=403,detail='Admin only')
     try:
         from database import Database
-        agents=await asyncio.wait_for(asyncio.to_thread(lambda: Database().get_all_servers()),timeout=20)
-        path=await asyncio.wait_for(asyncio.to_thread(build_bundle,agent_rows=agents),timeout=65)
-    except Exception:
-        log.exception('Diagnostic report failed')
-        raise HTTPException(status_code=503,detail='Diagnostic report unavailable')
-    return FileResponse(path,media_type='application/zip',filename='sonar-v6.3-support.zip',
+        db=Database()
+        agents=await asyncio.wait_for(asyncio.to_thread(db.get_all_servers),timeout=30)
+        state=await asyncio.wait_for(asyncio.to_thread(collect_operational_state,db,days),timeout=45)
+        remote=None
+        if include_remote:
+            # Includes every saved server; concurrency is bounded inside the collector.
+            remote=await asyncio.wait_for(asyncio.to_thread(collect_agent_journals,agents,None,days),timeout=360)
+        path=await asyncio.wait_for(asyncio.to_thread(build_bundle,agent_rows=agents,remote_logs=remote,
+                            operational_state=state,days=days),timeout=180)
+    except asyncio.TimeoutError:
+        log.warning('Full diagnostics export timed out; source logs remain untouched')
+        raise HTTPException(status_code=504,detail='Full log export timed out. Retry with remote Agent logs disabled or a shorter window.')
+    except Exception as exc:
+        log.exception('Diagnostic report failed type=%s',type(exc).__name__)
+        raise HTTPException(status_code=503,detail='Diagnostic report unavailable: '+type(exc).__name__)
+    return FileResponse(path,media_type='application/zip',filename=f'sonar-v6.6-full-logs-{days}d.zip',
                         background=BackgroundTask(path.unlink,missing_ok=True))
 
 class TeamUpdate(BaseModel):

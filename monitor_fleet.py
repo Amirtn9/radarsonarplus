@@ -29,6 +29,10 @@ def install_schema(db):
         )''')
         cur.execute('ALTER TABLE monitor_fleet_nodes ADD COLUMN IF NOT EXISTS admin_only BOOLEAN NOT NULL DEFAULT FALSE')
         cur.execute('ALTER TABLE monitor_fleet_nodes ADD COLUMN IF NOT EXISTS relay_ready BOOLEAN NOT NULL DEFAULT FALSE')
+        # Global SSH relay pool: explicit operator priority is stable; live score breaks ties.
+        cur.execute('ALTER TABLE monitor_fleet_nodes ADD COLUMN IF NOT EXISTS route_priority INTEGER NOT NULL DEFAULT 100')
+        cur.execute('ALTER TABLE monitor_fleet_nodes ADD COLUMN IF NOT EXISTS last_relay_success_at TIMESTAMPTZ')
+        cur.execute('ALTER TABLE monitor_fleet_nodes ADD COLUMN IF NOT EXISTS relay_failure_until TIMESTAMPTZ')
         # Optional operational metrics; existing nodes and identities are retained.
         for column, definition in (
             ('inflight', 'INTEGER NOT NULL DEFAULT 0'),
@@ -40,6 +44,11 @@ def install_schema(db):
         # Expiring leases prevent crashed workers from blocking capacity forever.
         cur.execute("CREATE TABLE IF NOT EXISTS monitor_fleet_test_leases (lease_id TEXT PRIMARY KEY, server_id INTEGER NOT NULL REFERENCES monitor_fleet_nodes(server_id) ON DELETE CASCADE, expires_at TIMESTAMPTZ NOT NULL)")
         cur.execute("CREATE INDEX IF NOT EXISTS monitor_fleet_active_leases ON monitor_fleet_test_leases(server_id,expires_at)")
+        cur.execute("""CREATE TABLE IF NOT EXISTS monitor_relay_affinity(
+          target_key TEXT PRIMARY KEY,
+          server_id INTEGER NOT NULL REFERENCES monitor_fleet_nodes(server_id) ON DELETE CASCADE,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+        cur.execute("DELETE FROM monitor_relay_affinity WHERE updated_at<NOW()-INTERVAL '7 days'")
         cur.execute('''CREATE TABLE IF NOT EXISTS monitor_fleet_policy(
           id SMALLINT PRIMARY KEY CHECK(id=1),
           strategy TEXT NOT NULL DEFAULT 'balanced' CHECK(strategy IN ('latency','load','balanced'))
@@ -80,6 +89,136 @@ def available(db, admin_id, user_id=None):
     return result
 
 
+
+
+
+def available_workspace_nodes(db, admin_id, user_id=None):
+    """UI pool view for both regions; pending offers remain visible only to owner/admin."""
+    uid=int(user_id or admin_id)
+    owner=int(db.workspace_owner(uid))
+    query='''SELECT s.id,s.name,s.ip,s.ws_port,s.owner_id,s.location_type,
+        s.last_cpu,s.last_agent_status,s.last_checked_at,f.enabled,f.approved_by,
+        f.latency_ms,f.cpu_pct,f.last_probe_ok,f.last_probe_at,f.error_code,
+        (SELECT COUNT(*) FROM monitor_fleet_test_leases l WHERE l.server_id=f.server_id AND l.expires_at>NOW()) AS inflight,
+        f.completed_tests,f.successful_tests,f.consecutive_failures,f.admin_only,f.relay_ready,f.route_priority
+      FROM monitor_fleet_nodes f JOIN servers s ON s.id=f.server_id
+      WHERE s.is_active=1 AND s.location_type IN ('ir','ext')
+        AND (s.owner_id=%s OR (f.enabled=TRUE AND f.approved_by IS NOT NULL AND NOT f.admin_only))
+      ORDER BY f.route_priority,s.id'''
+    if uid==int(admin_id):
+        query=query.replace('AND (s.owner_id=%s OR (f.enabled=TRUE AND f.approved_by IS NOT NULL AND NOT f.admin_only))','')
+        rows=db.execute(query,fetch='all')
+    else:
+        rows=db.execute(query,(owner,),fetch='all')
+    result=[dict(r) for r in (rows or [])]
+    if uid!=int(admin_id):
+        result=[r for r in result if int(r['owner_id'])==owner or
+                (r.get('enabled') and r.get('approved_by') is not None and not r.get('admin_only',False))]
+    return result
+
+def relay_candidates(db, admin_id):
+    """All admin-approved, TLS-enrolled Agent nodes in either region for health probes."""
+    if not admin_id:
+        return []
+    try:
+        rows=db.execute('''SELECT s.id,s.name,s.ip,s.port,s.ws_port,s.owner_id,s.location_type,
+              f.enabled,f.approved_by,f.admin_only,f.relay_ready,f.route_priority,
+              f.latency_ms,f.cpu_pct,f.last_probe_ok,f.last_probe_at,f.error_code,
+              f.completed_tests,f.successful_tests,f.consecutive_failures,
+              (SELECT COUNT(*) FROM monitor_fleet_test_leases l
+                 WHERE l.server_id=f.server_id AND l.expires_at>NOW()) AS inflight
+            FROM servers s JOIN agent_nodes a ON a.id=s.agent_id AND a.ip=s.ip AND a.ssh_port=s.port
+            JOIN monitor_fleet_nodes f ON f.server_id=s.id
+            WHERE s.is_active=1 AND s.location_type IN ('ir','ext')
+              AND f.enabled=TRUE AND f.approved_by IS NOT NULL
+              AND a.agent_cert_pem<>'' AND a.agent_token<>''
+              AND (s.owner_id=%s OR (f.admin_only=FALSE AND EXISTS(
+                    SELECT 1 FROM monitor_fleet_nodes offered WHERE offered.server_id=s.id
+                      AND offered.offered_by=s.owner_id AND offered.admin_only=FALSE)))
+            ORDER BY f.route_priority,s.id''',(int(admin_id),),fetch='all')
+        return [dict(row) for row in (rows or [])]
+    except Exception:
+        return []
+
+def available_relay_nodes(db, admin_id, *, user_id=None, exclude_ip=None):
+    """All regions, but only explicitly approved, healthy, TLS-enrolled relay Agents.
+
+    This pool is separate from the Iran-only monitor/test pool so the existing
+    monitoring policy does not silently expand across regions. No credentials or
+    certificate contents are returned to callers.
+    """
+    if not admin_id:
+        return []
+    try:
+        strategy = policy(db)
+        rows = db.execute('''SELECT s.id,s.name,s.ip,s.port,s.ws_port,s.owner_id,s.location_type,
+              f.enabled,f.approved_by,f.admin_only,f.relay_ready,f.route_priority,
+              f.latency_ms,f.cpu_pct,f.last_probe_ok,f.last_probe_at,f.error_code,
+              f.completed_tests,f.successful_tests,f.consecutive_failures,
+              (SELECT COUNT(*) FROM monitor_fleet_test_leases l
+                 WHERE l.server_id=f.server_id AND l.expires_at>NOW()) AS inflight,
+              (a.agent_cert_pem<>'') AS tls_enrolled,(a.agent_token<>'') AS token_configured
+            FROM servers s
+            JOIN agent_nodes a ON a.id=s.agent_id AND a.ip=s.ip AND a.ssh_port=s.port
+            JOIN monitor_fleet_nodes f ON f.server_id=s.id
+            WHERE s.is_active=1 AND s.location_type IN ('ir','ext')
+              AND f.enabled=TRUE AND f.approved_by IS NOT NULL AND f.relay_ready=TRUE
+              AND a.agent_cert_pem<>'' AND a.agent_token<>''
+              AND (s.owner_id=%s OR (f.admin_only=FALSE AND EXISTS(
+                    SELECT 1 FROM monitor_fleet_nodes offered WHERE offered.server_id=s.id
+                      AND offered.offered_by=s.owner_id AND offered.admin_only=FALSE)))
+              AND (f.relay_failure_until IS NULL OR f.relay_failure_until<=NOW())
+              AND f.last_probe_ok=TRUE AND f.last_probe_at>NOW()-INTERVAL '5 minutes'
+            ORDER BY f.route_priority,s.id''', (int(admin_id),), fetch='all')
+    except Exception:
+        return []
+    items=[]
+    effective_user=int(user_id if user_id is not None else admin_id)
+    for row in rows or []:
+        item=dict(row)
+        if exclude_ip and str(item.get('ip'))==str(exclude_ip):
+            continue
+        # Non-admin workflows may only use explicitly shared Agents, never admin-only egress.
+        if effective_user!=int(admin_id) and item.get('admin_only'):
+            continue
+        if score(item,strategy)==math.inf:
+            continue
+        items.append(item)
+    # Priority is operator-controlled and stable; score balances nodes at the same priority.
+    items.sort(key=lambda item:(int(item.get('route_priority') or 100), score(item,strategy), int(item['id'])))
+    return items[:8]
+
+
+def record_relay_result(db, server_id, success):
+    """Update route health/cooldown without storing target credentials or raw errors."""
+    if success:
+        db.execute('''UPDATE monitor_fleet_nodes SET last_relay_success_at=NOW(),
+             relay_failure_until=NULL,consecutive_failures=0 WHERE server_id=%s''',(int(server_id),))
+    else:
+        db.execute('''UPDATE monitor_fleet_nodes SET consecutive_failures=LEAST(consecutive_failures+1,1000),
+             relay_failure_until=CASE WHEN consecutive_failures>=1 THEN NOW()+INTERVAL '3 minutes' ELSE relay_failure_until END
+             WHERE server_id=%s''',(int(server_id),))
+
+
+def get_relay_affinity(db, target_key, ttl_seconds=600):
+    row=db.execute('''SELECT server_id FROM monitor_relay_affinity
+        WHERE target_key=%s AND updated_at>NOW()-(%s * INTERVAL '1 second')''',
+        (str(target_key),max(1,int(ttl_seconds))),fetch='one')
+    return int(row['server_id']) if row else None
+
+
+def set_relay_affinity(db, target_key, server_id):
+    db.execute('''INSERT INTO monitor_relay_affinity(target_key,server_id,updated_at)
+        VALUES(%s,%s,NOW()) ON CONFLICT(target_key) DO UPDATE SET
+        server_id=EXCLUDED.server_id,updated_at=NOW()''',(str(target_key),int(server_id)))
+
+
+def clear_relay_affinity(db, target_key, server_id=None):
+    if server_id is None:
+        db.execute('DELETE FROM monitor_relay_affinity WHERE target_key=%s',(str(target_key),))
+    else:
+        db.execute('DELETE FROM monitor_relay_affinity WHERE target_key=%s AND server_id=%s',(str(target_key),int(server_id)))
+
 def offer(db, uid, server_id, enabled):
     uid=int(uid);server_id=int(server_id)
     owner=int(db.workspace_owner(uid))
@@ -88,7 +227,7 @@ def offer(db, uid, server_id, enabled):
         row=cur.fetchone()
         if not row: raise PermissionError('Server outside workspace')
         if int(row['owner_id'])!=uid: raise PermissionError('Only the workspace owner may share its agent')
-        if row['location_type']!='ir': raise ValueError('Iran node designation is required')
+        if row['location_type'] not in ('ir','ext'): raise ValueError('Valid server region is required')
         if enabled:
             cur.execute('''INSERT INTO monitor_fleet_nodes(server_id,offered_by,enabled,approved_by)
                            VALUES (%s,%s,FALSE,NULL) ON CONFLICT(server_id) DO UPDATE
@@ -99,20 +238,36 @@ def offer(db, uid, server_id, enabled):
 
 
 def approve(db, admin_id, server_id, enabled):
+    admin_id=int(admin_id)
     with db.get_connection() as (conn,cur):
+        if not enabled:
+            cur.execute('''SELECT s.id,s.owner_id,f.offered_by FROM servers s
+                LEFT JOIN monitor_fleet_nodes f ON f.server_id=s.id
+                WHERE s.id=%s AND s.is_active=1 AND s.location_type IN ('ir','ext') FOR UPDATE OF s''',(int(server_id),))
+            row=cur.fetchone()
+            if not row:raise ValueError('Active server required')
+            cur.execute('''UPDATE monitor_fleet_nodes SET enabled=FALSE,approved_by=NULL,relay_ready=FALSE,
+                relay_failure_until=NULL,changed_at=NOW() WHERE server_id=%s''',(int(server_id),))
+            if getattr(cur,'rowcount',1)==0:raise ValueError('Agent is not currently registered in the relay pool')
+            conn.commit()
+            return
         cur.execute('''SELECT s.id,s.owner_id FROM servers s JOIN agent_nodes a ON s.agent_id=a.id
-            WHERE s.id=%s AND s.is_active=1 AND s.location_type='ir'
+            WHERE s.id=%s AND s.is_active=1 AND s.location_type IN ('ir','ext')
               AND a.agent_cert_pem<>'' AND a.agent_token<>'' FOR UPDATE OF s''',(int(server_id),))
         row=cur.fetchone()
-        if not row:raise ValueError('Active enrolled Iran Agent required (install/repair first)')
-        # Administration uses pre-registered, independently enrolled agents.
-        # It never changes server ownership or makes credentials public.
+        if not row:raise ValueError('Active enrolled Agent required (install/repair TLS first)')
+        owner=int(row['owner_id'])
+        if owner!=admin_id:
+            cur.execute('SELECT 1 FROM monitor_fleet_nodes WHERE server_id=%s AND offered_by=%s AND admin_only=FALSE FOR UPDATE',(int(server_id),owner))
+            if not cur.fetchone():
+                raise PermissionError('Server owner must explicitly offer this Agent before administrator approval')
+        # Admin-owned nodes stay private; user-owned nodes are shared only after explicit owner opt-in.
+        admin_only=(owner==admin_id)
         cur.execute('''INSERT INTO monitor_fleet_nodes(server_id,offered_by,enabled,approved_by,admin_only)
-              VALUES(%s,%s,%s,%s,TRUE) ON CONFLICT (server_id) DO UPDATE SET
-              enabled=EXCLUDED.enabled,approved_by=EXCLUDED.approved_by,admin_only=TRUE,changed_at=NOW()''',
-              (int(server_id),int(row['owner_id']),bool(enabled),int(admin_id) if enabled else None))
+              VALUES(%s,%s,TRUE,%s,%s) ON CONFLICT (server_id) DO UPDATE SET
+              enabled=TRUE,approved_by=EXCLUDED.approved_by,admin_only=EXCLUDED.admin_only,changed_at=NOW()''',
+              (int(server_id),owner,admin_id,admin_only))
         conn.commit()
-
 
 def set_policy(db, strategy):
     if strategy not in POLICIES: raise ValueError('Unsupported balancing policy')
@@ -294,7 +449,7 @@ async def fleet_heartbeat_job(context):
     from settings import SUPER_ADMIN_ID
     if not SUPER_ADMIN_ID:return
     db=Database()
-    rows=await asyncio.to_thread(available,db,SUPER_ADMIN_ID,SUPER_ADMIN_ID)
+    rows=await asyncio.to_thread(relay_candidates,db,SUPER_ADMIN_ID)
     items=[r for r in rows if r['enabled'] and r['approved_by'] is not None]
     # Rotate batches: operators with >60 pooled agents are never starved.
     cursor_row=await asyncio.to_thread(db.execute,'SELECT last_server_id FROM monitor_fleet_policy WHERE id=1',None,'one')
@@ -349,8 +504,8 @@ def queue_installs(db,admin_id,server_ids,mode):
     with db.get_connection() as (conn,cur):
         cur.execute('SELECT id,ws_port,owner_id,location_type,is_active FROM servers WHERE id=ANY(%s) FOR UPDATE',(ids,))
         rows=cur.fetchall()
-        if (len(rows)!=len(ids) or any(r['location_type']!='ir' or not r['is_active'] for r in rows)):
-            raise PermissionError('Installation requires active registered Iran servers')
+        if (len(rows)!=len(ids) or any(r['location_type'] not in ('ir','ext') or not r['is_active'] or int(r['owner_id'])!=int(admin_id) for r in rows)):
+            raise PermissionError('Bulk installation is allowed only on active servers owned by the main administrator; other owners must opt in and install their own Agent')
         cur.execute("SELECT server_id FROM monitor_fleet_install_jobs WHERE server_id=ANY(%s) AND state IN ('queued','running')",(ids,))
         if cur.fetchone():raise ValueError('An installation is already pending for at least one selected server')
         job_ids=[]
@@ -400,8 +555,8 @@ async def fleet_install_job(context):
     job_id=task['id']
     try:
         server=await asyncio.to_thread(db.execute,
-          'SELECT * FROM servers WHERE id=%s AND is_active=1 AND location_type=%s',
-          (task['server_id'],'ir'),'one')
+          "SELECT * FROM servers WHERE id=%s AND is_active=1 AND location_type IN ('ir','ext') AND owner_id=%s",
+          (task['server_id'],int(SUPER_ADMIN_ID)),'one')
         if not server:
             await asyncio.to_thread(job_state,db,job_id,'not_found','failed','SERVER_NOT_FOUND');return
         def install():

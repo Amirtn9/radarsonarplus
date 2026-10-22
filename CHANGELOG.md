@@ -51,3 +51,13 @@
 - Added regression checks for direct bootstrap privilege escalation and for preserving the backup-before-upgrade ordering.
 - Regenerated `MANIFEST_SHA256.txt` after the package changes.
 - Validation in this build container: Bash syntax, Python compilation, and source manifest passed. The complete suite remains environment-blocked where optional runtime dependencies (`paramiko`, `python-telegram-bot`) are not installed.
+
+## Reliability patch — 2026-10-22
+
+- Added a real Python venv + pip preflight and version-specific Ubuntu `python3.X-venv` recovery before staging the Agent runtime.
+- Changed Agent dependency provisioning to prefer central wheelhouse download, SHA-256 verification and SFTP transfer through direct SSH or approved Agent relays; target-side pip is a fallback. If Ubuntu prerequisite installation fails, the bootstrap can also transfer target-specific `.deb` packages from verifiable public APT URIs and install them with `--no-download`.
+- Added a cross-region approved relay pool (Iran + foreign regions), owner opt-in checks, operator route priority, a three-minute relay cooldown after repeated failures, and 30-minute persistent destination affinity.
+- Added the administrator-only web route balancer page and custom SSH relay port allowlist support.
+- Added a root-owned allowlisted diagnostics helper for systemd journals and restricted log files, with narrowly scoped passwordless sudo rules for the service and SSH login accounts. Bot and web exports now default to full seven-day logs without per-file tail truncation; source logs are read-only.
+- Expanded support ZIP contents to include all saved server Agent journals and allowlisted operational-state snapshots, with in-place secret redaction.
+- See `docs/operations/RELIABILITY_AGENT_BALANCER_AND_LOGS_FA.md` for deployment and verification steps.
