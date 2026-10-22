@@ -229,12 +229,34 @@ class ServerMonitor:
         try:
             client = (ServerMonitor.get_ssh_client(ip, port, user, password) if relay_nodes is None
                       else ServerMonitor.get_ssh_client(ip, port, user, password, relay_nodes=relay_nodes))
-            full_cmd = f"export DEBIAN_FRONTEND=noninteractive; {command}"
+            # SSH sessions commonly use an unprivileged account (for example,
+            # ubuntu). Run remote commands through non-interactive sudo so a
+            # password prompt can never hang the SSH channel or event-loop worker.
+            # Root logins execute directly; privileged_script remains compatible
+            # because its own root check avoids a second privilege escalation.
+            payload = f"export DEBIAN_FRONTEND=noninteractive; {command}"
+            is_root = str(user or "").strip() == "root"
+            full_cmd = payload if is_root else f"sudo -n -- /bin/bash -c {shlex.quote(payload)}"
             _, stdout, stderr = client.exec_command(full_cmd, timeout=timeout)
-            out = stdout.read().decode().strip()
-            err = stderr.read().decode().strip()
+            out = stdout.read().decode(errors="replace").strip()
+            err = stderr.read().decode(errors="replace").strip()
             exit_code = stdout.channel.recv_exit_status()
             result = (out + "\n" + err).strip()
+            if exit_code != 0 and not is_root:
+                lowered = err.lower()
+                sudo_prompt_errors = (
+                    "a password is required",
+                    "a terminal is required to read the password",
+                    "no tty present and no askpass program specified",
+                    "not in the sudoers",
+                    "sudo: command not found",
+                    "sudo: no such file or directory",
+                )
+                if any(marker in lowered for marker in sudo_prompt_errors):
+                    return False, (
+                        "SUDO_REQUIRED: اتصال SSH برقرار است، اما این حساب به sudo بدون رمز "
+                        "نیاز دارد. دسترسی sudoers را برای کاربر مقصد تنظیم کنید یا با root وصل شوید."
+                    )
             return exit_code == 0, result if exit_code == 0 else f"exit={exit_code}: {result}"
         except paramiko.AuthenticationException:
             return False, "AUTH_FAILED: نام کاربری، رمز یا روش ورود SSH پذیرفته نشد."

@@ -58,7 +58,7 @@ def test_operation_boundary_rechecks_owner_before_remote_command():
         return await query.answer(*args, **kwargs)
     scope = {'asyncio': asyncio, 'parse_server_action': parse_server_action,
              'db': types.SimpleNamespace(get_server_for_user=lambda *a: None), 'run_sync': direct,
-             'safe_callback_answer': safe_answer, 'SUPER_ADMIN_ID': 777,
+             'safe_answer': safe_answer, 'SUPER_ADMIN_ID': 777,
              'ServerMonitor': types.SimpleNamespace(run_remote_command=remote)}
     fn = isolated('bot_logic_mod/servers.py', 'server_actions', scope)
     update = types.SimpleNamespace(callback_query=types.SimpleNamespace(data='act_reboot_5', answer=answers),
@@ -66,6 +66,11 @@ def test_operation_boundary_rechecks_owner_before_remote_command():
     asyncio.run(fn(update, types.SimpleNamespace()))
     assert answers.await_count == 1
     assert remote.await_count == 0
+
+
+def test_shared_callback_utils_module_exists_and_handles_missing_query():
+    from callback_utils import safe_answer
+    assert asyncio.run(safe_answer(None)) is False
 
 
 @pytest.fixture
