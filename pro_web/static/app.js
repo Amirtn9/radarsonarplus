@@ -5,7 +5,7 @@ let auth=tg?.initData||'';
 let csrfToken='';
 const $=id=>document.getElementById(id);
 const state={tab:'overview',index:1,search:'',admin:false,listingRequest:0,resourceRequest:0,onlyFavorites:false};
-const titles={overview:'داشبورد',servers:'مدیریت سرورها',configs:'کانفیگ و اشتراک',rankings:'رتبه‌بندی کیفیت',incidents:'مرکز رخدادها',team:'اعضای تیم',audit:'فعالیت‌ها',settings:'تنظیمات',support:'مرکز عیب‌یابی',fleet:'استخر Agentهای ایران',services:'مانیتورینگ سرویس‌ها',channels:'کانال‌های اعلان', 'server-detail':'جزئیات سرور','config-detail':'جزئیات کانفیگ','web-create':'افزودن منبع جدید'};
+const titles={overview:'داشبورد',servers:'مدیریت سرورها',configs:'کانفیگ‌ها و اشتراک‌ها',rankings:'رتبه‌بندی کیفیت',incidents:'مرکز رخدادها',team:'اعضای تیم',audit:'فعالیت‌ها',settings:'تنظیمات',support:'مرکز عیب‌یابی',fleet:'استخر Agentهای چندمنطقه‌ای',balancer:'بالانسر مسیرها',services:'مانیتورینگ سرویس‌ها',channels:'کانال‌های اعلان', 'server-detail':'جزئیات سرور','config-detail':'جزئیات کانفیگ','web-create':'افزودن منبع جدید'};
 const elem=(tag,text,cl)=>{const el=document.createElement(tag);if(text!=null)el.textContent=String(text);if(cl)el.className=cl;return el;};
 function toast(text){$('toast').textContent=text;$('toast').classList.add('visible');clearTimeout(toast.delay);toast.delay=setTimeout(()=>$('toast').classList.remove('visible'),4000);}
 async function request(path,options={}){
@@ -19,8 +19,18 @@ async function request(path,options={}){
 async function jsonPost(path,value){return request(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});}
 function setStatus(text,good=true){$('side-state').textContent=text;const dot=document.querySelector?.('.statusdot');if(dot?.style)dot.style.background=good?'#75dcac':'#ff938e';}
 async function summary(){const data=await request('/api/summary');$('srv').textContent=`${data.servers.active}/${data.servers.total}`;$('cfg').textContent=`${data.configs.healthy}/${data.configs.total}`;$('inc').textContent=data.incidents;$('service-up').textContent=`${data.services?.up??0}/${data.services?.total??0}`;$('last-test').textContent='آخرین تست ثبت‌شده: '+(data.last_test_at||'هنوز داده‌ای وجود ندارد');}
+async function loadDashboardRoutes(){
+ const panel=$('dashboard-route-panel'),host=$('dashboard-route-status');if(!panel||!host||!state.admin)return;
+ panel.hidden=false;host.replaceChildren(elem('p','در حال دریافت وضعیت مسیرهای سالم...','muted'));
+ try{const result=await request('/api/fleet/relays');const pool=result.fallback_order||[];host.replaceChildren();
+  const primary=elem('div','مسیر اصلی: سرور مرکزی · همیشه اولین تلاش','route-dashboard-primary');host.append(primary);
+  host.append(elem('p',`Agentهای جایگزین واجد شرایط: ${pool.length}`,'route-dashboard-count'));
+  if(!pool.length)host.append(elem('p','هیچ Agent سالم و تأییدشده‌ای در پنج دقیقه اخیر در دسترس نیست.','relay-warn-text'));
+  pool.slice(0,4).forEach((item,index)=>host.append(elem('div',`${index+2}. ${item.name||'Agent #'+item.id} · ${item.location_type==='ir'?'ایران':'خارج'} · اولویت ${item.priority} · ${item.latency_ms==null?'—':Math.round(item.latency_ms)+' ms'}`,'route-dashboard-agent')));
+ }catch(error){host.replaceChildren(elem('p',error.message,'muted'));}
+}
 function choose(name){tabClick(name);}
-function tabClick(name){if(!Object.prototype.hasOwnProperty.call(titles,name)||(name==='support'&&!state.admin))return;state.listingRequest++;state.tab=name;state.index=1;state.search='';$('search').value='';
+function tabClick(name){if(!Object.prototype.hasOwnProperty.call(titles,name)||(['support','balancer'].includes(name)&&!state.admin))return;state.listingRequest++;state.tab=name;state.index=1;state.search='';$('search').value='';
   $('page-title').textContent=titles[name]||name;
   document.querySelectorAll('.navbtn').forEach(btn=>btn.classList.toggle('active',btn.dataset.tab===name));
   document.querySelectorAll('.view').forEach(el=>el.classList.remove('active'));
@@ -28,7 +38,7 @@ function tabClick(name){if(!Object.prototype.hasOwnProperty.call(titles,name)||(
   document.querySelector?.('.workspace')?.scrollIntoView({block:'start',behavior:'instant'});
   const pages=['servers','configs','rankings','incidents'];
   if(pages.includes(name))loadList();
-  if(name==='overview'){summary().catch(e=>toast(e.message));loadResourceServers();window.SonarConsole?.loadRecent();}
+  if(name==='overview'){summary().catch(e=>toast(e.message));loadResourceServers();window.SonarConsole?.loadRecent();if(state.admin)loadDashboardRoutes();}
   if(name==='services')loadServices();
   if(name==='team')loadTeam();
   if(name==='audit')loadAudit();
@@ -36,6 +46,7 @@ function tabClick(name){if(!Object.prototype.hasOwnProperty.call(titles,name)||(
   if(name==='support')loadHealth();
   if(name==='channels')window.SonarConsole?.loadChannels();
   if(name==='fleet')window.SonarNext?.loadFleet?.();
+  if(name==='balancer')window.SonarBalancer?.load?.();
   if(name==='server-detail')window.SonarConsole?.loadServer();
   if(name==='config-detail')window.SonarConsole?.loadConfig();
 }
@@ -76,7 +87,7 @@ async function loadAudit(){const host=$('audit-list');host.replaceChildren(elem(
  catch(e){host.replaceChildren(elem('p',e.message,'bad'));}}
 async function loadPreferences(){try{const p=await request('/api/preferences');$('daily_digest').checked=!!p.daily_digest;$('multi_probe').checked=!!p.multi_probe;const rules=await request('/api/rules');const host=$('rule-list');host.replaceChildren();if(!rules.length)host.append(elem('p','قانون هشدار اختصاصی ثبت نشده است.','muted'));rules.forEach(r=>host.append(simpleEntry(r.event,r.action+' | '+(r.enabled?'فعال':'غیرفعال'))));}catch(e){toast(e.message);}}
 async function loadHealth(){if(!state.admin)return;const host=$('health-output');host.textContent='در حال بررسی سلامت...';try{const data=await request('/api/diagnostics/health');host.textContent=JSON.stringify(data,null,2);}catch(e){host.textContent=e.message;}}
-async function supportZip(){try{$('download-btn').disabled=true;toast('در حال جمع‌آوری بسته گزارش...');const result=await request('/api/diagnostics/bundle',{raw:true});const blob=await result.blob();const url=URL.createObjectURL(blob);const a=elem('a');a.href=url;a.download='sonar-v6.3-support.zip';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),4000);toast('گزارش آماده شد. قبل از ارسال فایل را بررسی کنید.');}catch(e){toast(e.message);}finally{$('download-btn').disabled=false;}}
+async function supportZip(){const days=Number($('diagnostic-days')?.value||7),remote=$('diagnostic-remote')?.checked!==false;try{$('download-btn').disabled=true;toast(`در حال جمع‌آوری لاگ کامل ${days} روز اخیر...`);const result=await request(`/api/diagnostics/bundle?days=${days}&include_remote=${remote}`,{raw:true});const blob=await result.blob();const url=URL.createObjectURL(blob);const a=elem('a');a.href=url;a.download=`sonar-v6.6-full-logs-${days}d.zip`;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);toast('ZIP آماده شد؛ فایل‌های اصلی روی سرور حذف یا تغییر نکرده‌اند.');}catch(e){toast(e.message);}finally{$('download-btn').disabled=false;}}
 async function drawTrend(item){try{const points=await request('/api/metrics/'+Number(item.id)+'?days=7');$('trend-title').textContent='تاریخچه کیفیت: '+String(item.name||item.id);const vals=points.filter(x=>x.ok&&x.ping!=null&&Number.isFinite(Number(x.ping))&&Number(x.ping)>0).slice(0,80).reverse();const canvas=$('trend-canvas'),ctx=canvas.getContext?.('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.fillStyle='#111a28';ctx.fillRect(0,0,w,h);
 if(!vals.length){$('trend-info').textContent='تست موفقی ثبت نشده است.';$('trend').showModal();return;}
 const samples=vals.map(x=>Number(x.ping)),max=Math.max(...samples,100)*1.1;ctx.strokeStyle='#344558';ctx.lineWidth=1;for(let i=0;i<5;i++){let y=15+i*(h-35)/4;ctx.beginPath();ctx.moveTo(35,y);ctx.lineTo(w-10,y);ctx.stroke();}ctx.strokeStyle='#75dcac';ctx.lineWidth=3;ctx.beginPath();samples.forEach((value,i)=>{let x=35+i*(w-55)/Math.max(samples.length-1,1),y=h-20-value*(h-40)/max;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();$('trend-info').textContent=`تعداد: ${vals.length} | حداقل: ${Math.min(...samples)}ms | حداکثر: ${Math.max(...samples)}ms`;$('trend').showModal();
@@ -91,7 +102,7 @@ if($('team-form'))$('team-form').onsubmit=async e=>{e.preventDefault();try{await
 for(const key of ['daily_digest','multi_probe'])$(key).onchange=async e=>{try{await jsonPost('/api/preferences',{key,value:e.target.checked});toast('تنظیمات ذخیره شد');}catch(err){e.target.checked=!e.target.checked;toast(err.message);}};
 $('rule-form')?.addEventListener('submit',async e=>{e.preventDefault();const btn=e.submitter;if(btn)btn.disabled=true;try{await jsonPost('/api/console/rules',{event:$('rule-event').value,action:$('rule-action').value,enabled:$('rule-enabled').value==='true'});toast('قانون ثبت شد');await loadPreferences();}catch(err){toast(err.message);}finally{if(btn)btn.disabled=false;}});
 $('health-btn').onclick=loadHealth;$('download-btn').onclick=supportZip;$('trend-close').onclick=()=>$('trend').close();
-async function boot(){if(tg){tg.ready();tg.expand();if(document.documentElement?.dataset)document.documentElement.dataset.theme=tg.colorScheme==='light'?'light':'dark';tg.onEvent?.('themeChanged',()=>{if(document.documentElement?.dataset)document.documentElement.dataset.theme=tg.colorScheme==='light'?'light':'dark';});}try{const me=await request('/api/me');state.admin=!!me.admin;$('admin-tab').hidden=!me.admin;setStatus('متصل');tabClick('overview');}catch(e){setStatus('اتصال ناموفق',false);if(!auth)$('web-auth').hidden=false;else toast(e.message);$('last-test').textContent=e.message;}}
+async function boot(){if(tg){tg.ready();tg.expand();if(document.documentElement?.dataset)document.documentElement.dataset.theme=tg.colorScheme==='light'?'light':'dark';tg.onEvent?.('themeChanged',()=>{if(document.documentElement?.dataset)document.documentElement.dataset.theme=tg.colorScheme==='light'?'light':'dark';});}try{const me=await request('/api/me');state.admin=!!me.admin;$('admin-tab').hidden=!me.admin;if($('balancer-tab'))$('balancer-tab').hidden=!me.admin;if($('dashboard-route-panel'))$('dashboard-route-panel').hidden=!me.admin;if($('dashboard-balancer-btn'))$('dashboard-balancer-btn').hidden=!me.admin;if($('dashboard-balancer-quick'))$('dashboard-balancer-quick').hidden=!me.admin;setStatus('متصل');tabClick('overview');}catch(e){setStatus('اتصال ناموفق',false);if(!auth)$('web-auth').hidden=false;else toast(e.message);$('last-test').textContent=e.message;}}
 boot();
 
 // Resource telemetry: historical samples only; no synthetic sensor values.

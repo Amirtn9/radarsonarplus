@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 # Read-only Sonar Radar observability console.
 set -Eeuo pipefail
+# The support log reader is an administrator utility. Re-run under sudo so
+# journalctl and the root-owned installer log are not silently incomplete.
+if [[ $EUID -ne 0 ]]; then
+  command -v sudo >/dev/null 2>&1 || { echo 'sudo is required; run: sudo bash scripts/logs.sh ...' >&2; exit 77; }
+  exec sudo -- bash "$0" "$@"
+fi
 usage() {
   cat <<'USAGE'
 Sonar Radar logs (read-only)
-  bash scripts/logs.sh bot [--follow] [--lines N] [--since TIME] [--grep PATTERN]
-  bash scripts/logs.sh web [--follow] [--lines N] [--since TIME]
-  bash scripts/logs.sh all [--follow] [--lines N]
-  bash scripts/logs.sh errors [--lines N]
-  bash scripts/logs.sh json [--lines N]
-  bash scripts/logs.sh install [--lines N]
+  sudo bash scripts/logs.sh bot [--follow] [--lines N] [--since TIME] [--grep PATTERN]
+  sudo bash scripts/logs.sh web [--follow] [--lines N] [--since TIME]
+  sudo bash scripts/logs.sh all [--follow] [--lines N]
+  sudo bash scripts/logs.sh errors [--lines N]
+  sudo bash scripts/logs.sh json [--lines N]
+  sudo bash scripts/logs.sh install [--lines N]
 USAGE
 }
 [[ $# -eq 0 || "${1:-}" == '--help' ]] && { usage; exit 0; }

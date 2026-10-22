@@ -12,6 +12,8 @@ FP='SHA256:'+'A'*43
 
 
 def onboarding(monkeypatch, direct_ok=False, relay_ok=True):
+    import settings
+    monkeypatch.setattr(settings,'SUPER_ADMIN_ID',1,raising=False)
     calls=[]
     def scan(ip,port,relay=None):
         calls.append(('scan',ip,port,relay and relay['id']))
@@ -24,7 +26,7 @@ def onboarding(monkeypatch, direct_ok=False, relay_ok=True):
     ssh.trust_host_key=lambda *a:calls.append(('trust',a[1]))
     ssh.describe_ssh_error=lambda exc: 'SSH_TIMEOUT' if isinstance(exc,TimeoutError) else 'AUTH_FAILED'
     relay=ModuleType('ssh_relay')
-    relay.eligible_relay_nodes=lambda db,admin_id,exclude_ip=None:[{'id':42,'ip':'8.8.4.4'}]
+    relay.eligible_relay_nodes=lambda db,admin_id,user_id=None,exclude_ip=None,limit=5:[{'id':42,'ip':'8.8.4.4'}]
     relay.retryable_direct_error=lambda code:code=='SSH_TIMEOUT'
     monitor=ModuleType('core')
     class ServerMonitor:

@@ -200,12 +200,13 @@
     const sid=Number(window.SonarConsole?.currentServerId?.());const host=id('reachability-results');
     if(!sid)return;host.textContent='در حال بررسی دسترسی TCP از مسیرهای مجاز…';
     try{const result=await request(`/api/fleet/reachability/${sid}`);
-       const labels={possible_iran_only:'⚠️ احتمال محدودیت دسترسی از خارج (نیازمند بررسی بیشتر)',
+       const labels={possible_iran_only:'⚠️ دسترسی از مسیر اصلی مشکل دارد؛ مسیر ایران پاسخ داده است',
          reachable_from_main:'✅ سرور از میزبان اصلی در دسترس است',
+         reachable_from_agent:'✅ مسیر اصلی ناموفق بود؛ سرور از Agent پشتیبان در دسترس است',
          unreachable_from_available_vantage_points:'🔴 از مسیرهای بررسی‌شده در دسترس نبود؛ قطع کامل هنوز اثبات نشده',
          insufficient_evidence:'⚪️ شواهد کافی برای نتیجه‌گیری وجود ندارد',
          unsupported_port:'⚪️ پورت این سرور برای این آزمون پشتیبانی نمی‌شود'};
-       host.textContent=(labels[result.classification]||result.classification)+` | مسیر اصلی: ${result.main===null?'ناموجود':result.main?'متصل':'قطع'} | مسیر ایران: ${result.iran===null?'ناموجود':result.iran?'متصل':'قطع'}`;
+       host.textContent=(labels[result.classification]||result.classification)+` | مسیر اصلی: ${result.main===null?'ناموجود':result.main?'متصل':'قطع'} | Agentها: ${result.agents===null||result.agents===undefined?'ناموجود':result.agents?'متصل':'قطع'}`;
     }catch(err){host.textContent='❌ '+err.message;}
  });
  const logout=id('web-logout');

@@ -84,7 +84,8 @@
       const card=safeNode('article',null,'fleet-node');
       const title=safeNode('div',null,'fleet-node-title');
       const input=document.createElement('input');input.type='checkbox';input.className='fleet-check';input.value=String(node.id);input.checked=!!node.enabled;input.hidden=!fleetAdmin;title.append(input);
-      title.append(safeNode('strong',`🇮🇷 ${node.name}`));
+      const region=node.location_type==='ir'?'ایران':'خارج';
+      title.append(safeNode('strong',`${region} · ${node.name}`));
       const status=node.last_probe_ok===true?'🟢 WSS تأییدشده':(node.last_probe_ok===false?'🔴 ناموفق':'⚪️ بررسی نشده');
       card.append(title,safeNode('p',`شناسه ${node.id} • پورت ${node.port} • ${status}`,'muted'),
                 safeNode('p',`RTT: ${node.latency_ms==null?'—':node.latency_ms+' ms'} • CPU: ${node.cpu==null?'—':node.cpu+'٪'}`,'muted'));
@@ -99,8 +100,9 @@
     const choice=await request('/api/fleet/choice');el('fleet-choice').textContent=choice.selected_id?`Agent پیشنهادی فعلی: شماره ${choice.selected_id}`:'فعلاً Agent سالم با آزمون اخیر موجود نیست؛ نصب یا سلامت WSS را بررسی کنید.';
     const offered=new Set(fleetData.map(x=>x.id));
     for(const s of Array.isArray(serverList)?serverList:[]){
-      if(offered.has(s.id)||s.location_type!=='ir')continue;
-      const btn=safeNode('button',`🤝 پیشنهاد سرور «${s.name}» برای Agent`,`fleet-offer`);
+      if(offered.has(s.id))continue;
+      const region=s.location_type==='ir'?'ایران':'خارج';
+      const btn=safeNode('button',`🤝 پیشنهاد سرور ${region} «${s.name}» برای Agent`,`fleet-offer`);
       btn.onclick=async()=>{if(!confirm('با اشتراک منابع فنی این سرور با استخر مانیتورینگ موافقید؟'))return;try{await jsonPost('/api/fleet/offer',{server_id:s.id,enabled:true});await loadFleet();}catch(e){toast(e.message);}};
       fleetList.append(btn);
     }
@@ -133,9 +135,9 @@
   const host=byId('fleet-installer');if(!host)return;
   try{const me=await request('/api/me');admin=!!me.admin;host.hidden=!admin;if(!admin)return;
    const candidates=await request('/api/fleet/candidates');const list=byId('fleet-candidates');list.replaceChildren();
-   if(!candidates.length)list.append(element('p','سرور ایران فعالی ثبت نشده است.','muted'));
+   if(!candidates.length)list.append(element('p','سرور فعالی برای نصب Agent ثبت نشده است.','muted'));
    for(const s of candidates){const label=element('label',null,'fleet-candidate');const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.value=String(s.id);
-      label.append(checkbox,element('span',`${s.name} · ${s.ip} · پورت ${s.ws_port}`));list.append(label);}
+      const region=s.location_type==='ir'?'ایران':'خارج';label.append(checkbox,element('span',`${s.name} · ${region} · ${s.ip} · پورت ${s.ws_port}`));list.append(label);}
    const jobs=await request('/api/fleet/install/jobs');const out=byId('fleet-jobs');out.replaceChildren();
    if(!jobs.length)out.append(element('p','هنوز درخواست نصب جدیدی ثبت نشده است.','muted'));
    for(const j of jobs.slice(0,15))out.append(element('article',`#${j.id} · سرور ${j.server_id} · پورت ${j.requested_port} · ${j.state} / ${j.stage} ${j.error_code||''}`,'fleet-result'));
