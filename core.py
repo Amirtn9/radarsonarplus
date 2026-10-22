@@ -229,30 +229,26 @@ class ServerMonitor:
         try:
             client = (ServerMonitor.get_ssh_client(ip, port, user, password) if relay_nodes is None
                       else ServerMonitor.get_ssh_client(ip, port, user, password, relay_nodes=relay_nodes))
-            # Remote commands are executed in a root login shell. For the common
-            # Ubuntu SSH account this requires non-interactive sudo; this prevents
-            # package/service/file operations from silently running as an unprivileged
-            # user. shlex quoting preserves pipelines, redirections and heredocs.
-            script = f"export DEBIAN_FRONTEND=noninteractive; {command}"
-            if str(user).strip() == 'root':
-                full_cmd = '/bin/bash -c ' + shlex.quote(script)
-            else:
-                full_cmd = 'sudo -n -- /bin/bash -c ' + shlex.quote(script)
+            full_cmd = f"export DEBIAN_FRONTEND=noninteractive; {command}"
             _, stdout, stderr = client.exec_command(full_cmd, timeout=timeout)
-            out = stdout.read().decode('utf-8', 'replace').strip()
-            err = stderr.read().decode('utf-8', 'replace').strip()
+            out = stdout.read().decode().strip()
+            err = stderr.read().decode().strip()
             exit_code = stdout.channel.recv_exit_status()
             result = (out + "\n" + err).strip()
-            if exit_code != 0 and str(user).strip() != 'root':
-                low = err.lower()
-                if ('sudo: a password is required' in low or 'a terminal is required to read the password' in low
-                        or 'is not in the sudoers' in low or 'not allowed to execute' in low):
-                    return False, 'SUDO_REQUIRED: حساب SSH باید مجوز sudo غیرتعاملی برای عملیات مدیریتی داشته باشد.'
             return exit_code == 0, result if exit_code == 0 else f"exit={exit_code}: {result}"
         except paramiko.AuthenticationException:
             return False, "AUTH_FAILED: نام کاربری، رمز یا روش ورود SSH پذیرفته نشد."
         except Exception as e:
-            return False, describe_ssh_error(e)
+            try:
+                detail = describe_ssh_error(e)
+            except Exception as formatter_error:
+                # Keep the original SSH failure visible even if error formatting regresses.
+                logger.exception(
+                    "SSH error formatter failed while handling %s (%s)",
+                    type(e).__name__, type(formatter_error).__name__,
+                )
+                detail = f"SSH_CONNECTION_FAILED: {type(e).__name__}"
+            return False, detail
         finally:
             if client is not None:
                 try:
