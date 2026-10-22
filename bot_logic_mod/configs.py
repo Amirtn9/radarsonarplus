@@ -12,7 +12,7 @@ from access_policy import valid_subscription_url
 async def add_config_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """شروع پروسه افزودن کانفیگ - دریافت لینک"""
     if update.callback_query:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
         
     txt = (
         "📥 **افزودن کانفیگ جدید**\n\n"
@@ -28,7 +28,7 @@ async def add_config_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- هندلرهای انتخاب حالت (Mode) ---
 
 async def mode_ask_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
+    await safe_callback_answer(update.callback_query, )
     txt = (
         "📄 **لطفاً کانفیگ JSON خود را ارسال کنید.**\n\n"
         "می‌توانید:\n"
@@ -41,7 +41,7 @@ async def mode_ask_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def mode_ask_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
+    await safe_callback_answer(update.callback_query, )
     txt = (
         "🔗 **لطفاً لینک سابسکریپشن را ارسال کنید.**\n\n"
         "فرمت مثال:\n"

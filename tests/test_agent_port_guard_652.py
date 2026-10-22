@@ -40,3 +40,51 @@ def test_port_argument_is_not_shell_interpolated():
     agent_port_preflight(lambda command, timeout: (seen.append(command) or True,'SONAR_PORT_AVAILABLE'),8080)
     assert 'python3 - 8080' in seen[0]
     assert "<<'SONAR_PORT_PREFLIGHT'" in seen[0]
+
+
+def test_preflight_checks_systemd_cgroup_not_only_main_pid():
+    source=_source.read_text(encoding='utf8')
+    assert "--property=ControlGroup" in source
+    assert "pathlib.Path('/proc',pid,'cgroup')" in source
+    assert 'not all(managed_pid(pid) for pid in pids)' in source
+
+
+def test_port_selector_uses_requested_port_when_free_and_unreserved():
+    tree = ast.parse(_source.read_text(encoding='utf8'))
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'select_available_agent_port')
+    ns = {'agent_port_preflight': lambda run, port: (True, 'SONAR_PORT_AVAILABLE'),
+          'valid_agent_port': lambda value: int(value)}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(_source), 'exec'), ns)
+    port, status = ns['select_available_agent_port'](lambda *a: (True, 'unused'), 8080,
+                                                      reserved=lambda candidate: False)
+    assert port == 8080 and status == 'SONAR_PORT_AVAILABLE'
+
+
+def test_port_selector_falls_back_without_killing_other_listener():
+    tree = ast.parse(_source.read_text(encoding='utf8'))
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'select_available_agent_port')
+    calls = []
+    def preflight(run, port):
+        calls.append(port)
+        if port in (8080, 5542):
+            return False, f'AGENT_PORT_CONFLICT: {port} occupied'
+        return True, 'SONAR_PORT_AVAILABLE'
+    ns = {'agent_port_preflight': preflight, 'valid_agent_port': lambda value: int(value)}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(_source), 'exec'), ns)
+    port, status = ns['select_available_agent_port'](lambda *a: (True, 'unused'), 8080,
+                                                      reserved=lambda candidate: False)
+    assert port == 8443
+    assert 'AGENT_PORT_AUTO_SELECTED' in status
+    assert calls == [8080, 5542, 8443]
+
+
+def test_port_selector_skips_database_reserved_ports():
+    tree = ast.parse(_source.read_text(encoding='utf8'))
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'select_available_agent_port')
+    ns = {'agent_port_preflight': lambda run, port: (True, 'SONAR_PORT_AVAILABLE'),
+          'valid_agent_port': lambda value: int(value)}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(_source), 'exec'), ns)
+    port, status = ns['select_available_agent_port'](lambda *a: (True, 'unused'), 8080,
+                                                      reserved=lambda candidate: candidate in (8080, 5542))
+    assert port == 8443
+    assert 'AGENT_PORT_AUTO_SELECTED' in status

@@ -100,7 +100,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def user_profile_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
-        try: await update.callback_query.answer()
+        try: await safe_callback_answer(update.callback_query, )
         except: pass
     
     uid = update.effective_user.id
@@ -139,7 +139,7 @@ async def web_token_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid=update.effective_user.id
     web_url=os.environ.get('SONAR_WEB_ORIGIN','').rstrip('/')
     if update.effective_chat.type != 'private':
-        await update.callback_query.answer('برای دریافت کد ورود، ربات را در پیام خصوصی باز کنید.',show_alert=True)
+        await safe_callback_answer(update.callback_query, 'برای دریافت کد ورود، ربات را در پیام خصوصی باز کنید.',show_alert=True)
         return
     if not web_url.startswith('https://'):
         await safe_edit_message(update,'ابتدا مدیر باید SONAR_WEB_ORIGIN را با آدرس HTTPS معتبر تنظیم کند.',reply_markup=keyboard.back_btn())
@@ -165,8 +165,8 @@ async def web_logout_all_action(update: Update, context: ContextTypes.DEFAULT_TY
     """Only the logged-in Telegram account can revoke its web sessions."""
     from web_login import logout_all
     if not update.effective_chat or update.effective_chat.type!='private':
-        await update.callback_query.answer('این گزینه فقط در گفت‌وگوی خصوصی فعال است.',show_alert=True)
+        await safe_callback_answer(update.callback_query, 'این گزینه فقط در گفت‌وگوی خصوصی فعال است.',show_alert=True)
         return
     await run_sync(logout_all,db,update.effective_user.id)
-    await update.callback_query.answer('تمام نشست‌های وب لغو شدند.',show_alert=True)
+    await safe_callback_answer(update.callback_query, 'تمام نشست‌های وب لغو شدند.',show_alert=True)
     await safe_edit_message(update,'✅ تمام نشست‌های وب و کدهای استفاده‌نشده باطل شدند. برای ورود دوباره کد جدید بگیرید.',reply_markup=keyboard.back_btn())

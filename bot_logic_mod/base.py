@@ -67,6 +67,10 @@ import cronjobs
 # ✅ یکبار تعریف logger (بعد از imports)
 logger = logging.getLogger(__name__)
 
+
+from telegram_safety import safe_callback_answer
+
+
 logger.debug("📦 bot_logic.py module loaded")
 
 

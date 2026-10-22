@@ -17,7 +17,7 @@ async def tunnel_list_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # --- بخش اصلاح شده برای جلوگیری از کرش ---
         if update.callback_query:
             try:
-                await update.callback_query.answer()
+                await safe_callback_answer(update.callback_query, )
                 logger.debug("Callback answered successfully.")
             except Exception as e:
                 # اگر دکمه منقضی شده بود، فقط در لاگ بنویس و رد شو (کرش نکن)
@@ -118,7 +118,7 @@ async def show_tunnels_by_mode(update: Update, context: ContextTypes.DEFAULT_TYP
     data_parts = target_data.split('_')
     mode = data_parts[2] # single, sub, all
     if mode not in ('single', 'sub', 'all'):
-        await query.answer('فهرست نامعتبر', show_alert=True)
+        await safe_callback_answer(query, 'فهرست نامعتبر', show_alert=True)
         return
     if not custom_data:
         context.user_data['last_config_list_route'] = query.data
@@ -211,7 +211,7 @@ async def manage_single_sub_menu(update: Update, context: ContextTypes.DEFAULT_T
         cur.execute("SELECT * FROM tunnel_configs WHERE id=%s AND owner_id=%s", (sub_id, shared_uid(update)))
         sub = cur.fetchone()
         if not sub:
-            await query.answer("❌ اشتراک یافت نشد.", show_alert=True)
+            await safe_callback_answer(query, "❌ اشتراک یافت نشد.", show_alert=True)
             return
         cur.execute("SELECT id, name, last_status, last_ping FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (sub_id, shared_uid(update)))
         items = cur.fetchall()
@@ -278,17 +278,17 @@ async def get_sub_links_action(update: Update, context: ContextTypes.DEFAULT_TYP
         cur.execute("SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s AND type='sub_source'", (sub_id, shared_uid(update)))
         sub = cur.fetchone()
         if not sub:
-            await query.answer("❌ اشتراک یافت نشد.", show_alert=True)
+            await safe_callback_answer(query, "❌ اشتراک یافت نشد.", show_alert=True)
             return
             
         cur.execute("SELECT link, name FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (sub_id, shared_uid(update)))
         items = cur.fetchall()
         
     if not items:
-        await query.answer("⚠️ هیچ کانفیگی در این اشتراک وجود ندارد.", show_alert=True)
+        await safe_callback_answer(query, "⚠️ هیچ کانفیگی در این اشتراک وجود ندارد.", show_alert=True)
         return
         
-    await query.answer("📤 در حال آماده‌سازی فایل...", show_alert=False)
+    await safe_callback_answer(query, "📤 در حال آماده‌سازی فایل...", show_alert=False)
     
     # ساخت محتوای فایل
     file_content = ""
@@ -329,7 +329,7 @@ async def delete_full_subscription(update: Update, context: ContextTypes.DEFAULT
             
     # 2. Report actual result, never announce a deletion denied by ownership.
     try:
-        await query.answer("✅ اشتراک حذف شد." if sub else "❌ اشتراک پیدا نشد یا اجازه حذف ندارید.", show_alert=True)
+        await safe_callback_answer(query, "✅ اشتراک حذف شد." if sub else "❌ اشتراک پیدا نشد یا اجازه حذف ندارید.", show_alert=True)
     except: pass
     
     # 3. رفرش لیست ساب‌ها (نکته مهم: استفاده از custom_data به جای تغییر query.data)
@@ -339,7 +339,7 @@ async def update_all_configs_status(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     uid = shared_uid(update)
     
-    await query.answer("⏳ درخواست ارسال شد. نتیجه به تدریج بروز می‌شود.", show_alert=True)
+    await safe_callback_answer(query, "⏳ درخواست ارسال شد. نتیجه به تدریج بروز می‌شود.", show_alert=True)
     
     with db.get_connection() as (conn, cur):
         cur.execute("SELECT * FROM tunnel_configs WHERE owner_id=%s", (uid,))
@@ -520,7 +520,7 @@ async def handle_config_type_selection(update: Update, context: ContextTypes.DEF
     link = context.user_data.get('temp_link')
     uid = shared_uid(update)
     
-    await query.answer()
+    await safe_callback_answer(query, )
     
     # --- حالت ۱: سابسکریپشن ---
     if choice == 'type_sub':
@@ -639,11 +639,11 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         cid = int(query.data.split('_')[2])
     except:
-        await query.answer("❌ خطا در دریافت شناسه کانفیگ.", show_alert=True)
+        await safe_callback_answer(query, "❌ خطا در دریافت شناسه کانفیگ.", show_alert=True)
         return
     
     # نمایش لودینگ روی دکمه (بدون تغییر پیام اصلی)
-    try: await query.answer("🔄 آغاز تست دقیق (۱۰ مگابایت)...", cache_time=0)
+    try: await safe_callback_answer(query, "🔄 آغاز تست دقیق (۱۰ مگابایت)...", cache_time=0)
     except: pass
 
     # 1. دریافت اطلاعات کانفیگ و سرور مانیتورینگ
@@ -755,7 +755,7 @@ async def view_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         cfg = cur.fetchone()
         
     if not cfg:
-        await query.answer("❌ کانفیگ یافت نشد.", show_alert=True)
+        await safe_callback_answer(query, "❌ کانفیگ یافت نشد.", show_alert=True)
         return
 
     content = cfg['link']
@@ -776,7 +776,7 @@ async def view_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # ارسال در قالب کد برای کپی راحت
         await query.message.reply_text(f"📝 **کد کانفیگ:**\n\n`{content}`", parse_mode='Markdown')
     
-    try: await query.answer()
+    try: await safe_callback_answer(query, )
     except: pass
 
 async def delete_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -786,7 +786,7 @@ async def delete_config_action(update: Update, context: ContextTypes.DEFAULT_TYP
 
     db.delete_tunnel_config(cid, uid)
 
-    await query.answer('✅ کانفیگ حذف شد.')
+    await safe_callback_answer(query, '✅ کانفیگ حذف شد.')
     route = context.user_data.get('last_config_list_route', 'tunnel_list_menu')
     await safe_edit_message(update, '✅ کانفیگ حذف شد. به فهرست قبلی بازگردید.',
         reply_markup=keyboard.back_btn(route, '⬅️ بازگشت به فهرست'))
@@ -802,7 +802,7 @@ async def advanced_monitoring_settings(update: Update, context: ContextTypes.DEF
     """منوی تنظیمات پیشرفته مانیتورینگ"""
     uid = shared_uid(update)
     if update.callback_query:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
         
     s_size = db.get_setting(uid, 'monitor_small_size') or '0.5'
     b_size = db.get_setting(uid, 'monitor_big_size') or '10'
@@ -853,7 +853,7 @@ async def save_setting_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     parts = data.split('_')
     if len(parts) != 3 or parts[1] not in ('small', 'big', 'int'):
-        await query.answer('❌ تنظیم نامعتبر.', show_alert=True)
+        await safe_callback_answer(query, '❌ تنظیم نامعتبر.', show_alert=True)
         return
     setting_type = parts[1] # small, big, int
     value = parts[2]
@@ -883,11 +883,11 @@ async def save_setting_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         value = monitoring_setting(setting_type, value)
     except ValueError as exc:
-        await query.answer(str(exc), show_alert=True)
+        await safe_callback_answer(query, str(exc), show_alert=True)
         return
     await run_sync(db.set_setting, uid, key_map[setting_type], value)
     
-    await query.answer("✅ ذخیره شد.")
+    await safe_callback_answer(query, "✅ ذخیره شد.")
     await advanced_monitoring_settings(update, context)
 
 
@@ -939,7 +939,7 @@ async def show_config_details(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         cid = int(query.data.split('_')[2])
     except:
-        await query.answer("❌ خطا در شناسه کانفیگ")
+        await safe_callback_answer(query, "❌ خطا در شناسه کانفیگ")
         return
 
     with db.get_connection() as (conn, cur):
@@ -947,7 +947,7 @@ async def show_config_details(update: Update, context: ContextTypes.DEFAULT_TYPE
         cfg = cur.fetchone()
         
     if not cfg:
-        try: await query.answer("❌ کانفیگ یافت نشد یا حذف شده است.", show_alert=True)
+        try: await safe_callback_answer(query, "❌ کانفیگ یافت نشد یا حذف شده است.", show_alert=True)
         except: pass
         await tunnel_list_menu(update, context)
         return
@@ -995,9 +995,9 @@ async def copy_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
     if cfg:
         await query.message.reply_text(f"`{cfg['link']}`", parse_mode='Markdown')
-        await query.answer("✅ لینک کانفیگ ارسال شد.")
+        await safe_callback_answer(query, "✅ لینک کانفیگ ارسال شد.")
     else:
-        await query.answer("❌ کانفیگ پیدا نشد.", show_alert=True)
+        await safe_callback_answer(query, "❌ کانفیگ پیدا نشد.", show_alert=True)
 
 
 async def qr_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1008,14 +1008,14 @@ async def qr_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid=int(shared_uid(update))
     try:cid=int(query.data.split('_')[2])
     except (IndexError,ValueError):
-        await query.answer('شناسه کانفیگ نامعتبر است',show_alert=True);return
+        await safe_callback_answer(query, 'شناسه کانفیگ نامعتبر است',show_alert=True);return
     with db.get_connection() as (conn,cur):
         cur.execute('SELECT link, name FROM tunnel_configs WHERE id=%s AND owner_id=%s', (cid,uid))
         cfg=cur.fetchone()
     if not cfg:
-        await query.answer('کانفیگ یافت نشد یا اجازه دسترسی ندارید',show_alert=True)
+        await safe_callback_answer(query, 'کانفیگ یافت نشد یا اجازه دسترسی ندارید',show_alert=True)
         return
-    await query.answer('در حال ساخت QR امن')
+    await safe_callback_answer(query, 'در حال ساخت QR امن')
     def make_qr():
         img=qrcode.make(cfg['link'])
         out=BytesIO();img.save(out,format='PNG');out.seek(0);out.name='sonar-config.png'
@@ -1037,12 +1037,12 @@ async def manual_update_sub_action(update: Update, context: ContextTypes.DEFAULT
         sub = cur.fetchone()
         monitor = select_monitor_in_cursor(cur,uid,SUPER_ADMIN_ID)
     if not sub:
-        await query.answer("❌ اشتراک یافت نشد.", show_alert=True)
+        await safe_callback_answer(query, "❌ اشتراک یافت نشد.", show_alert=True)
         return
     if not monitor:
-        await query.answer("✅ اشتراک موجود است؛ Agent آماده‌ای برای دریافت و تست نداریم.", show_alert=True)
+        await safe_callback_answer(query, "✅ اشتراک موجود است؛ Agent آماده‌ای برای دریافت و تست نداریم.", show_alert=True)
         return
-    await query.answer("⏳ درخواست آپدیت ثبت شد.")
+    await safe_callback_answer(query, "⏳ درخواست آپدیت ثبت شد.")
     context.application.create_task(run_sub_update_background(context, uid, sub, monitor), update=update)
 
 
@@ -1075,7 +1075,7 @@ async def delete_item_from_list_action(update: Update, context: ContextTypes.DEF
     db.delete_tunnel_config(cid, uid)
     
     try:
-        await query.answer("🗑 حذف شد.", show_alert=False)
+        await safe_callback_answer(query, "🗑 حذف شد.", show_alert=False)
     except: pass
     
     # 2. محاسبه اینکه آیا صفحه فعلی هنوز آیتم دارد یا خیر
@@ -1118,7 +1118,7 @@ async def mass_update_test_start(update: Update, context: ContextTypes.DEFAULT_T
     
     # 1. پاسخ به دکمه (با محافظت ضد کرش)
     try:
-        await query.answer("🚀 عملیات آغاز شد...", show_alert=False)
+        await safe_callback_answer(query, "🚀 عملیات آغاز شد...", show_alert=False)
     except Exception as e:
         logger.warning(f"Callback answer ignored in mass update: {e}")
 
@@ -1161,7 +1161,7 @@ async def mass_update_test_start(update: Update, context: ContextTypes.DEFAULT_T
 async def show_add_service_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """نمایش منوی انتخاب افزودن سرویس"""
     if update.callback_query:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
     
     txt = (
         "➕ **افزودن سرویس جدید**\n\n"
@@ -1174,7 +1174,7 @@ async def show_add_service_menu(update: Update, context: ContextTypes.DEFAULT_TY
 async def show_lists_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """نمایش منوی انتخاب لیست‌ها"""
     if update.callback_query:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
     
     txt = (
         "📂 **مدیریت لیست‌ها**\n\n"
@@ -1186,7 +1186,7 @@ async def show_lists_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_account_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """نمایش اطلاعات حساب کاربری و کیف پول به صورت یکجا"""
     if update.callback_query:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
     
     uid = update.effective_user.id
     user = db.get_user(uid)
@@ -1241,12 +1241,12 @@ async def refresh_conf_dash_action(update: Update, context: ContextTypes.DEFAULT
     
     # 1. بررسی اینکه آیا کاربر تسک فعالی دارد یا خیر (جلوگیری از اسپم توسط یک نفر)
     if uid in USER_ACTIVE_TASKS and not USER_ACTIVE_TASKS[uid].done():
-        try: await query.answer("⚠️ عملیات قبلی هنوز تمام نشده است!", show_alert=True)
+        try: await safe_callback_answer(query, "⚠️ عملیات قبلی هنوز تمام نشده است!", show_alert=True)
         except: pass
         return
 
     # نمایش پیام موقت
-    try: await query.answer("🚀 تست در پس‌زمینه شروع شد...", cache_time=1)
+    try: await safe_callback_answer(query, "🚀 تست در پس‌زمینه شروع شد...", cache_time=1)
     except: pass
     
     status_msg = await query.message.reply_text(
@@ -1362,7 +1362,7 @@ async def run_quick_ping_check(context, uid, configs, monitor):
 
 async def manual_ping_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """شروع پینگ دستی"""
-    await update.callback_query.answer()
+    await safe_callback_answer(update.callback_query, )
     await update.callback_query.message.reply_text(
         "🌐 **آدرس مورد نظر (IP یا دامنه) را ارسال کنید:**", 
         reply_markup=keyboard.get_cancel_markup()
@@ -1386,13 +1386,13 @@ async def perform_manual_ping(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """نمایش منوی تنظیمات"""
-    if update.callback_query: await update.callback_query.answer()
+    if update.callback_query: await safe_callback_answer(update.callback_query, )
     reply_markup = keyboard.settings_main_kb()
     await safe_edit_message(update, "⚙️ **تنظیمات پیشرفته:**", reply_markup=reply_markup)
 
 async def wallet_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """نمایش منوی کیف پول"""
-    if update.callback_query: await update.callback_query.answer()
+    if update.callback_query: await safe_callback_answer(update.callback_query, )
     reply_markup = keyboard.wallet_main_kb()
     await safe_edit_message(update, "💳 **کیف پول و خرید اشتراک:**", reply_markup=reply_markup)
 
@@ -1405,7 +1405,7 @@ async def select_payment_method(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def channels_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت کانال‌ها"""
-    if update.callback_query: await update.callback_query.answer()
+    if update.callback_query: await safe_callback_answer(update.callback_query, )
     channels = db.get_user_channels(shared_uid(update))
     kb = []
     for ch in channels:
@@ -1416,7 +1416,7 @@ async def channels_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def schedules_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """منوی زمان‌بندی‌ها"""
-    if update.callback_query: await update.callback_query.answer()
+    if update.callback_query: await safe_callback_answer(update.callback_query, )
     uid = shared_uid(update)
     # دریافت تنظیمات فعلی برای نمایش تیک
     srv_alert = "✅" if (db.get_setting(uid, 'down_alert_enabled') or '1') == '1' else "❌"
@@ -1451,7 +1451,7 @@ async def toggle_config_alert(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def send_general_report_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ارسال گزارش کلی دستی"""
-    await update.callback_query.answer("⏳ در حال تولید گزارش...")
+    await safe_callback_answer(update.callback_query, "⏳ در حال تولید گزارش...")
     await cronjobs.global_monitor_job(context) # اجرای دستی جاب
     await update.callback_query.message.reply_text("✅ گزارش کلی به کانال‌های تنظیم شده ارسال شد.")
 
@@ -1468,16 +1468,16 @@ async def toggle_server_active_action(update: Update, context: ContextTypes.DEFA
     if srv:
         new_state = db.toggle_server_active(sid, srv['is_active'])
         state_str = "غیرفعال 🔴" if new_state == 0 else "فعال 🟢"
-        await update.callback_query.answer(f"سرور {srv['name']} {state_str} شد.")
+        await safe_callback_answer(update.callback_query, f"سرور {srv['name']} {state_str} شد.")
         await manage_servers_list(update, context)
 
 async def header_none_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """برای دکمه‌های هدر که عملی ندارند"""
-    await update.callback_query.answer()
+    await safe_callback_answer(update.callback_query, )
 
 async def config_stats_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """داشبورد وضعیت کانفیگ‌ها"""
-    if update.callback_query: await update.callback_query.answer()
+    if update.callback_query: await safe_callback_answer(update.callback_query, )
     
     uid = shared_uid(update)
     # آمار کلی
@@ -1519,7 +1519,7 @@ async def set_dns_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     srv = db.get_server_by_id(sid)
     if not srv:
-        await query.answer("❌ سرور یافت نشد.")
+        await safe_callback_answer(query, "❌ سرور یافت نشد.")
         return
 
     await query.message.reply_text(f"⚙️ **در حال تنظیم DNS {dns_type} روی سرور...**")
@@ -1562,9 +1562,9 @@ async def auto_sub_update_menu(update: Update, context: ContextTypes.DEFAULT_TYP
 async def set_auto_sub_update_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hours = int(update.callback_query.data.split('_')[-1])
     if hours not in (0, 12, 24, 48):
-        await update.callback_query.answer('❌ بازه نامعتبر', show_alert=True)
+        await safe_callback_answer(update.callback_query, '❌ بازه نامعتبر', show_alert=True)
         return
     await asyncio.get_running_loop().run_in_executor(EXECUTOR, db.set_setting,
                                                       shared_uid(update), 'auto_sub_update_hours', str(hours))
-    await update.callback_query.answer('✅ تنظیمات ذخیره شد.')
+    await safe_callback_answer(update.callback_query, '✅ تنظیمات ذخیره شد.')
     await auto_sub_update_menu(update, context)

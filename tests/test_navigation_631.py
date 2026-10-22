@@ -16,6 +16,9 @@ def _v6_functions():
           and n.name in {'section', 'return_to_section'}]
     namespace = {}
     exec(compile(ast.Module(body=fn, type_ignores=[]), 'v6_ui.py', 'exec'), namespace)
+    async def safe_answer(query, *args, **kwargs):
+        return await query.answer(*args, **kwargs)
+    namespace['_safe_answer'] = safe_answer
     return namespace
 
 

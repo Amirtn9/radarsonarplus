@@ -36,9 +36,12 @@ case "$action" in
     ;;
   app-file)
     name="${2:-}"
-    [[ "$name" =~ ^(sonar\.log|sonar\.log\.[0-9]+|sonar\.json|sonar\.json\.[0-9]+|sonar_errors\.json|sonar_errors\.json\.[0-9]+|sonar_bot\.log|sonar-web\.log)$ ]] || { echo 'DIAGNOSTIC_FILE_NOT_ALLOWED' >&2; exit 64; }
+    [[ "$name" =~ ^(sonar\.log|sonar\.json|sonar_errors\.json|sonar_bot\.log|sonar-web\.log)(\.[0-9]+)?(\.gz)?$ ]] || { echo 'DIAGNOSTIC_FILE_NOT_ALLOWED' >&2; exit 64; }
     file="/var/log/sonar/$name"
     [[ -f "$file" && ! -L "$file" ]] || { echo "LOG_NOT_FOUND: $name"; exit 0; }
+    if [[ "$name" == *.gz ]]; then
+      exec /usr/bin/gzip -cd -- "$file"
+    fi
     exec /usr/bin/cat -- "$file"
     ;;
   *)

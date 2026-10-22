@@ -47,7 +47,7 @@ async def safe_edit_message(update: Update, text, reply_markup=None, parse_mode=
 async def cancel_handler_func(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         try:
-            await update.callback_query.answer()
+            await safe_callback_answer(update.callback_query, )
         except:
             pass
     # Preserve category/list navigation, but wipe transient flow data (SSH
@@ -69,6 +69,17 @@ async def cancel_handler_func(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     from logging_config import redact
     error=context.error
+    # Telegram frequently expires callback query IDs when a busy event loop delays
+    # an acknowledgement. These are expected transport/UI races, not application
+    # crashes; do not send duplicate admin alerts for them.
+    if isinstance(error, BadRequest):
+        message = str(error).lower()
+        if any(token in message for token in (
+            'query is too old', 'query id is invalid', 'query is not found',
+            'response timeout expired', 'message is not modified',
+        )):
+            logger.debug('Ignored expected Telegram callback/message race')
+            return
     # No update/message text, callback payload, command, credentials or locals are serialized.
     frames=traceback.extract_tb(error.__traceback__) if error and error.__traceback__ else []
     location=' → '.join(f'{os.path.basename(f.filename)}:{f.lineno}:{f.name}' for f in frames[-8:])

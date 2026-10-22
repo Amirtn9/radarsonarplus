@@ -99,3 +99,35 @@ def test_diagnostic_helper_rejects_arbitrary_command():
     result = subprocess.run(['bash', str(helper), 'cat', '/etc/passwd'], capture_output=True, text=True)
     assert result.returncode == 64
     assert 'USAGE' in result.stderr
+
+
+def test_remote_agent_timeout_does_not_cancel_complete_archive(monkeypatch):
+    import time
+    def fake_remote(row, days):
+        if row['id']==2:
+            time.sleep(0.35)
+        return f"server-{row['id']} complete"
+    monkeypatch.setattr(diagnostics,'remote_agent_logs',fake_remote)
+    result=diagnostics.collect_agent_journals(
+        [{'id':1},{'id':2},{'id':3}], days=7, timeout_seconds=0.1, max_workers=2)
+    assert set(result)=={'1','2','3'}
+    assert result['1']=='server-1 complete'
+    assert result['3']=='server-3 complete' or 'REMOTE_AGENT_LOG_TIMEOUT' in result['3']
+    assert 'REMOTE_AGENT_LOG_TIMEOUT' in result['2']
+
+
+def test_diagnostic_helper_allows_gzip_rotations_but_not_arbitrary_paths():
+    helper=(ROOT/'scripts'/'sonar-diagnostic-read.sh').read_text()
+    assert 'gzip -cd -- "$file"' in helper
+    assert 'sonar_errors\\.json' in helper
+    assert 'DIAGNOSTIC_FILE_NOT_ALLOWED' in helper
+
+
+def test_rotated_gzip_log_is_decompressed_without_changing_source(tmp_path):
+    import gzip
+    path=tmp_path/'sonar.log.1.gz'
+    original=b'2026-10-22T11:00:00Z ERROR full-record-in-gzip\n'
+    with gzip.open(path,'wb') as stream: stream.write(original)
+    before=path.read_bytes()
+    assert diagnostics._read_file(path)=='2026-10-22T11:00:00Z ERROR full-record-in-gzip\n'
+    assert path.read_bytes()==before

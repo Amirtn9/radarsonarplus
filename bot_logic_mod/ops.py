@@ -31,7 +31,7 @@ async def global_action_handler(update: Update, context: ContextTypes.DEFAULT_TY
     active_servers = [s for s in servers if s['is_active']]
 
     if not active_servers:
-        await query.answer("❌ هیچ سرور فعالی نداری!", show_alert=True)
+        await safe_callback_answer(query, "❌ هیچ سرور فعالی نداری!", show_alert=True)
         return
 
     await query.message.reply_text(
@@ -49,7 +49,7 @@ async def global_action_handler(update: Update, context: ContextTypes.DEFAULT_TY
 async def auto_update_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """منوی تنظیم زمان‌بندی آپدیت خودکار"""
     if update.callback_query:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
 
     uid = update.effective_user.id
     curr = db.get_setting(uid, 'auto_update_hours') or '0'
@@ -70,7 +70,7 @@ async def auto_update_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def auto_reboot_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """منوی اصلی وضعیت ریبوت خودکار"""
     if update.callback_query:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
 
     uid = update.effective_user.id
     curr_setting = db.get_setting(uid, 'auto_reboot_config')
@@ -103,7 +103,7 @@ async def auto_reboot_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ask_reboot_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """پرسیدن ساعت از کاربر"""
     try:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
     except:
         pass
 
@@ -151,7 +151,7 @@ async def save_auto_reboot_final(update: Update, context: ContextTypes.DEFAULT_T
 
     if data == 'disable_reboot':
         db.set_setting(uid, 'auto_reboot_config', 'OFF')
-        await query.answer("✅ ریبوت خودکار غیرفعال شد.", show_alert=True)
+        await safe_callback_answer(query, "✅ ریبوت خودکار غیرفعال شد.", show_alert=True)
         await auto_reboot_menu(update, context)
         return
 
@@ -163,7 +163,7 @@ async def save_auto_reboot_final(update: Update, context: ContextTypes.DEFAULT_T
     db.set_setting(uid, 'auto_reboot_config', config_str)
     db.set_setting(uid, 'last_reboot_date', '2000-01-01')
 
-    await query.answer(f"✅ تنظیم شد: هر {days} روز ساعت {time_str}")
+    await safe_callback_answer(query, f"✅ تنظیم شد: هر {days} روز ساعت {time_str}")
     await auto_reboot_menu(update, context)
 # --- تابع اجرایی جاب (Job) ---
 
@@ -182,7 +182,7 @@ async def save_auto_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE)
         msg = f"✅ آپدیت خودکار تنظیم شد: هر {hours} ساعت."
 
     try:
-        await query.answer(msg, show_alert=True)
+        await safe_callback_answer(query, msg, show_alert=True)
     except:
         pass
 
@@ -365,7 +365,7 @@ async def admin_reject_payment_action(update: Update, context: ContextTypes.DEFA
 async def referral_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """منوی سیستم دعوت پیشرفته"""
     if update.callback_query:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
 
     uid = update.effective_user.id
     user = db.get_user(uid)
@@ -403,7 +403,7 @@ async def dashboard_sort_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     """نمایش منوی انتخاب نوع مرتب‌سازی"""
     query = update.callback_query
     try:
-        await query.answer()
+        await safe_callback_answer(query, )
     except:
         pass
 
@@ -431,7 +431,7 @@ async def set_dashboard_sort_action(update: Update, context: ContextTypes.DEFAUL
 
     # ترجمه فارسی برای پیام تایید
     names = {'uptime': 'آپتایم', 'traffic': 'ترافیک', 'resource': 'منابع', 'id': 'زمان ثبت'}
-    await query.answer(f"✅ مرتب‌سازی بر اساس {names.get(sort_type)} تنظیم شد.")
+    await safe_callback_answer(query, f"✅ مرتب‌سازی بر اساس {names.get(sort_type)} تنظیم شد.")
 
     # مستقیم برمی‌گردیم به داشبورد با تنظیمات جدید
     await status_dashboard(update, context)
@@ -456,7 +456,7 @@ async def monitor_settings_panel(update: Update, context: ContextTypes.DEFAULT_T
     if uid != SUPER_ADMIN_ID: return
     
     if update.callback_query:
-        try: await update.callback_query.answer()
+        try: await safe_callback_answer(update.callback_query, )
         except: pass
 
     # بررسی اینکه آیا سرور مانیتورینگ وجود دارد یا خیر
@@ -555,11 +555,11 @@ async def delete_monitor_node(update: Update, context: ContextTypes.DEFAULT_TYPE
     """حذف فایل‌ها از سرور ایران و قطع ارتباط"""
     if not update.effective_user or int(update.effective_user.id) != int(SUPER_ADMIN_ID):
         if update.callback_query:
-            await update.callback_query.answer('فقط مدیر اصلی اجازه اجرای این عملیات را دارد',show_alert=True)
+            await safe_callback_answer(update.callback_query, 'فقط مدیر اصلی اجازه اجرای این عملیات را دارد',show_alert=True)
         return
 
     query = update.callback_query
-    await query.answer("🗑 در حال حذف فایل‌ها و قطع ارتباط...", show_alert=True)
+    await safe_callback_answer(query, "🗑 در حال حذف فایل‌ها و قطع ارتباط...", show_alert=True)
     msg = await query.message.reply_text("⏳ **در حال پاکسازی سرور ایران...**")
 
     with db.get_connection() as (conn, cur):
@@ -600,11 +600,11 @@ async def update_monitor_node(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Re-enroll legacy monitor through the secure managed TLS installer."""
     if not update.effective_user or int(update.effective_user.id) != int(SUPER_ADMIN_ID):
         if update.callback_query:
-            await update.callback_query.answer('فقط مدیر اصلی اجازه اجرای این عملیات را دارد',show_alert=True)
+            await safe_callback_answer(update.callback_query, 'فقط مدیر اصلی اجازه اجرای این عملیات را دارد',show_alert=True)
         return
 
     query = update.callback_query
-    await query.answer()
+    await safe_callback_answer(query, )
     with db.get_connection() as (conn, cur):
         cur.execute('SELECT * FROM servers WHERE is_monitor_node=1 AND owner_id=%s', (SUPER_ADMIN_ID,))
         monitor = cur.fetchone()

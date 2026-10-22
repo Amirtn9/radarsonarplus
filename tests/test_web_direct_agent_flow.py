@@ -26,8 +26,12 @@ def onboarding(monkeypatch, direct_ok=False, relay_ok=True):
     ssh.trust_host_key=lambda *a:calls.append(('trust',a[1]))
     ssh.describe_ssh_error=lambda exc: 'SSH_TIMEOUT' if isinstance(exc,TimeoutError) else 'AUTH_FAILED'
     relay=ModuleType('ssh_relay')
-    relay.eligible_relay_nodes=lambda db,admin_id,user_id=None,exclude_ip=None,limit=5:[{'id':42,'ip':'8.8.4.4'}]
+    relay.eligible_relay_nodes=lambda db,admin_id,user_id=None,exclude_ip=None,limit=5:[{'id':42,'ip':'8.8.4.4','ws_port':5542}]
     relay.retryable_direct_error=lambda code:code=='SSH_TIMEOUT'
+    relay.retryable_relay_error=lambda exc,code:code=='SSH_TIMEOUT' or 'RELAY_' in str(exc)
+    relay.stable_relay_order=lambda nodes,key,**kwargs:list(nodes or [])
+    relay.remember_relay_success=lambda *args,**kwargs:None
+    relay.forget_relay_route=lambda *args,**kwargs:None
     monitor=ModuleType('core')
     class ServerMonitor:
         @staticmethod
@@ -54,7 +58,8 @@ def test_onboarding_uses_approved_agent_only_on_network_failure(monkeypatch):
     result=m.confirm_and_connect(object(),12,'8.8.8.8',22,'root','secret',FP)
     assert result=={'route':'agent','agent_id':42}
     assert calls[:2]==[('scan','8.8.8.8',22,None),('scan','8.8.8.8',22,42)]
-    assert [x[0] for x in calls[2:]]==['authenticate','trust','check']
+    assert [x[0] for x in calls[2:]]==['authenticate','trust']
+    assert not any(x[0]=='check' for x in calls)
 
 
 def test_onboarding_mismatched_fingerprint_never_authenticates_or_trusts(monkeypatch):
@@ -100,3 +105,19 @@ def test_web_jobs_tenant_scope_and_pending_guard():
     with pytest.raises(PermissionError):queue(db,55,2,8080,999)
     with pytest.raises(PermissionError):list_for_server(db,55,2,999)
     assert list_for_server(db,54,2,999)[0]['id']==5
+
+
+def test_authentication_transport_failure_after_direct_scan_falls_back_to_relay(monkeypatch):
+    m,calls=onboarding(monkeypatch,direct_ok=True)
+    ssh=sys.modules['ssh_support']
+    attempts=[]
+    def auth(candidate,expected,username,password,node):
+        attempts.append(None if node is None else node['id'])
+        calls.append(('authenticate',None if node is None else node['id']))
+        if node is None:
+            raise TimeoutError('transient direct route loss')
+    ssh.authenticate_candidate=auth
+    result=m.confirm_and_connect(object(),12,'8.8.8.8',22,'root','secret',FP)
+    assert result=={'route':'agent','agent_id':42}
+    assert attempts==[None,42]
+    assert ('trust',FP) in calls

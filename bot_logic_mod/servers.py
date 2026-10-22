@@ -59,12 +59,12 @@ async def add_server_start_menu(update: Update, context: ContextTypes.DEFAULT_TY
     return SELECT_ADD_METHOD
 
 async def add_server_step_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
+    await safe_callback_answer(update.callback_query, )
     await update.callback_query.message.reply_text("🖥 **افزودن سرور | مرحله ۱ از ۷**\n\nیک نام ساده برای سرور انتخاب کنید. مثلاً: سرور تهران", reply_markup=keyboard.get_cancel_markup())
     return GET_NAME
 
 async def add_server_linear_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
+    await safe_callback_answer(update.callback_query, )
     txt = "⚡️ **افزودن سریع سرورها**\n\nلطفاً مشخصات سرورها را به صورت **6 خطی** ارسال کنید.\nهر سرور باید دقیقاً در 6 خط زیر هم باشد:\n1. نام سرور\n2. آی‌پی\n3. پورت\n4. یوزرنیم\n5. پسورد\n6. موقعیت (ir برای ایران / ext برای خارج)\n\n⚠️ **نکته:** اگر چند سرور دارید، بلافاصله بعد از پسورد اولی، اطلاعات سرور دوم را شروع کنید.\n\n💡 **مثال:**\n`Server A`\n`192.168.1.1`\n`22`\n`root`\n`Pass123`\n`ir`\n`Server B`\n`45.33.22.11`\n`2244`\n`admin`\n`Secr3t`\n`ext`\n\n👇 اطلاعات را ارسال کنید:"
     await update.callback_query.message.reply_text(txt, reply_markup=keyboard.get_cancel_markup(), parse_mode='Markdown')
     return GET_LINEAR_DATA
@@ -174,7 +174,7 @@ async def get_srv_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def confirm_ws_port(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Confirm default WS port or ask for a custom one."""
     query = update.callback_query
-    await query.answer()
+    await safe_callback_answer(query, )
 
     data = query.data
     if data == "ws_port_ok":
@@ -220,7 +220,7 @@ async def get_srv_expiry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def select_server_location(update: Update,context: ContextTypes.DEFAULT_TYPE):
     query=update.callback_query
-    await query.answer()
+    await safe_callback_answer(query, )
     location=query.data.removeprefix('srv_location_')
     if location not in ('ir','ext') or not context.user_data.get('srv'):
         await query.edit_message_text('❌ موقعیت نامعتبر است؛ افزودن را از ابتدا شروع کنید.')
@@ -240,7 +240,7 @@ async def get_group_keyboard(uid):
 async def select_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query.data == 'cancel_flow':
         return await cancel_handler_func(update, context)
-    await update.callback_query.answer()
+    await safe_callback_answer(update.callback_query, )
     try:
         context.user_data['srv_group_id'] = int(update.callback_query.data)
     except ValueError:
@@ -250,7 +250,7 @@ async def select_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def list_groups_for_servers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
     except:
         pass
     groups = db.get_user_groups(update.effective_user.id)
@@ -263,7 +263,7 @@ async def list_groups_for_servers(update: Update, context: ContextTypes.DEFAULT_
 
 async def show_servers(update: Update, context: ContextTypes.DEFAULT_TYPE, scope=None):
     try:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
     except:
         pass
     uid, data = update.effective_user.id, scope or update.callback_query.data
@@ -304,7 +304,7 @@ def _build_multidel_kb(servers, selected_ids):
 async def srv_multidel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """شروع حذف دسته‌جمعی از لیست فعلی."""
     try:
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
     except Exception:
         pass
 
@@ -322,7 +322,7 @@ async def srv_multidel_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if not servers:
         try:
-            await update.callback_query.answer("⚠️ لیستی برای حذف وجود ندارد", show_alert=True)
+            await safe_callback_answer(update.callback_query, "⚠️ لیستی برای حذف وجود ندارد", show_alert=True)
         except Exception:
             pass
         return
@@ -340,7 +340,7 @@ async def srv_multidel_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def srv_multidel_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     try:
-        await q.answer()
+        await safe_callback_answer(q, )
     except Exception:
         pass
     uid = update.effective_user.id
@@ -379,14 +379,14 @@ async def srv_multidel_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def srv_multidel_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     try:
-        await q.answer()
+        await safe_callback_answer(q, )
     except Exception:
         pass
     uid = update.effective_user.id
     selected = context.user_data.get('multidel_selected')
     if not selected:
         try:
-            await q.answer("هیچ موردی انتخاب نشده", show_alert=True)
+            await safe_callback_answer(q, "هیچ موردی انتخاب نشده", show_alert=True)
         except Exception:
             pass
         return
@@ -403,7 +403,7 @@ async def srv_multidel_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data.pop('multidel_selected', None)
     scope = context.user_data.pop('multidel_scope', 'list_all')
     try:
-        await q.answer(f"✅ {deleted} سرویس حذف شد", show_alert=True)
+        await safe_callback_answer(q, f"✅ {deleted} سرویس حذف شد", show_alert=True)
     except Exception:
         pass
 
@@ -413,7 +413,7 @@ async def srv_multidel_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def srv_multidel_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        await update.callback_query.answer("انصراف")
+        await safe_callback_answer(update.callback_query, "انصراف")
     except Exception:
         pass
     scope = context.user_data.pop('multidel_scope', None) or context.user_data.get('last_server_list_scope', 'list_all')
@@ -427,7 +427,7 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """داشبورد اصلی با رابط کاربری گرافیکی و تفکیک شده"""
     if update.callback_query:
-        try: await update.callback_query.answer()
+        try: await safe_callback_answer(update.callback_query, )
         except: pass
     
     user = update.effective_user
@@ -459,7 +459,7 @@ async def show_server_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async def background_stats_worker():
         async with GLOBAL_SEMAPHORE: # رعایت صف ۵۰ تایی
             try:
-                servers = db.get_all_user_servers(uid)
+                servers = await run_sync(db.get_all_user_servers, uid)
                 if not servers:
                     await msg.edit_text("❌ سروری یافت نشد.", reply_markup=keyboard.dashboard_main_kb())
                     return
@@ -511,7 +511,7 @@ async def server_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, cust
     query = update.callback_query if update.callback_query else None
     if query:
         try:
-            await query.answer()
+            await safe_callback_answer(query, )
         except Exception:
             pass
 
@@ -565,7 +565,7 @@ async def server_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, cust
                 reply_markup = keyboard.server_detail_kb(sid,srv['ip'],has_premium(profile,update.effective_user.id,SUPER_ADMIN_ID),back_callback=return_to)
 
                 if res.get('status') == 'Online':
-                    db.update_status(sid, "Online")
+                    await run_sync(db.update_status, sid, "Online")
                     
                     # رند کردن اعداد
                     cpu_val = round(res.get('cpu', 0), 1)
@@ -585,18 +585,18 @@ async def server_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, cust
                     err = str(res.get('error', 'Connect Fail'))
                     # اگر احراز هویت اشتباه باشد، وضعیت جداگانه ثبت شود
                     if err.lower().find('auth') != -1:
-                        db.update_status(sid, "Auth Failed")
+                        await run_sync(db.update_status, sid, "Auth Failed")
                         label, marker = "🔐", "Auth Failed"
                     elif err.startswith(('SSH_TIMEOUT', 'SSH_PORT_UNREACHABLE',
                                          'SSH_CONNECTION_REFUSED', 'SSH_CONNECTION_FAILED',
                                          'SSH_DNS_FAILED')):
                         # An unresponsive SSH endpoint does not prove the VPS is down.
-                        db.update_status(sid, "Unknown")
+                        await run_sync(db.update_status, sid, "Unknown")
                         label, marker = "🟠", "SSH Unreachable"
                     else:
-                        db.update_status(sid, "Offline")
+                        await run_sync(db.update_status, sid, "Offline")
                         label, marker = "🔴", "Offline"
-                    db.update_server_error(sid, err)
+                    await run_sync(db.update_server_error, sid, err)
                     txt = (f"{label} **{srv['name']}** `[{marker}]`\n❌ خطا: `{err}`"
                            + ("\nℹ️ دسترسی SSH ممکن است از مسیر سرور مرکزی مسدود باشد؛ خاموشی سرور تأیید نشده است."
                               if marker == "SSH Unreachable" else ""))
@@ -617,12 +617,12 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         act, sid, argument = parse_server_action(data)
     except ValueError:
-        await update.callback_query.answer('❌ عملیات نامعتبر است.',show_alert=True)
+        await safe_callback_answer(update.callback_query, '❌ عملیات نامعتبر است.',show_alert=True)
         return
     uid = update.effective_user.id
     srv = await run_sync(db.get_server_for_user, sid, uid, SUPER_ADMIN_ID)
     if not srv:
-        await update.callback_query.answer('⛔ سرور یافت نشد یا متعلق به شما نیست.',show_alert=True)
+        await safe_callback_answer(update.callback_query, '⛔ سرور یافت نشد یا متعلق به شما نیست.',show_alert=True)
         return
     parts = data.split('_')
     user = db.get_user(uid)
@@ -632,7 +632,7 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if act in LOCKED_FEATURES and not is_premium:
         try:
-            await update.callback_query.answer("🔒 این قابلیت مخصوص کاربران پریمیوم است!", show_alert=True)
+            await safe_callback_answer(update.callback_query, "🔒 این قابلیت مخصوص کاربران پریمیوم است!", show_alert=True)
         except:
             pass
         return
@@ -647,14 +647,14 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if act == 'del':
         db.delete_server(sid, update.effective_user.id)
         try:
-            await update.callback_query.answer("✅ سرور با موفقیت حذف شد.")
+            await safe_callback_answer(update.callback_query, "✅ سرور با موفقیت حذف شد.")
         except:
             pass
         await list_groups_for_servers(update, context)
 
     elif act == 'reboot':
         try:
-            await update.callback_query.answer("⚠️ دستور ریبوت ارسال شد.")
+            await safe_callback_answer(update.callback_query, "⚠️ دستور ریبوت ارسال شد.")
         except:
             pass
         # عملیات اجرایی در پس‌زمینه (بدون بلاک کردن ربات)
@@ -795,7 +795,7 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif act == 'clearcache':
         try:
-            await update.callback_query.answer("🧹 کش رم پاکسازی شد.")
+            await safe_callback_answer(update.callback_query, "🧹 کش رم پاکسازی شد.")
         except:
             pass
         
@@ -834,17 +834,17 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif act == 'locked_terminal':
         try:
-            await update.callback_query.answer("🔒 ترمینال مخصوص کاربران پریمیوم است.\nبرای دسترسی ارتقا دهید.",
+            await safe_callback_answer(update.callback_query, "🔒 ترمینال مخصوص کاربران پریمیوم است.\nبرای دسترسی ارتقا دهید.",
                                                show_alert=True)
         except:
             pass
 
     elif act in ('installscript', 'installagent'):
-        await update.callback_query.answer('نصب/تعمیر ایجنت در پس‌زمینه آغاز شد.')
+        await safe_callback_answer(update.callback_query, 'نصب/تعمیر ایجنت در پس‌زمینه آغاز شد.')
         message = await update.effective_message.reply_text('⏳ بررسی SSH، نصب ایجنت و آزمون WSS آغاز شد.')
         spawn_background(context, _install_saved_server(context, uid, dict(srv), message), name=f'agent-{sid}')
     elif act == 'agentlog':
-        await update.callback_query.answer()
+        await safe_callback_answer(update.callback_query, )
         async def show_log():
             ok, text = await run_sync(ServerMonitor._ssh_exec_sync,srv['ip'],srv['port'],srv['username'],real_pass,
                                       'journalctl -u sonar-agent -n 50 --no-pager --output=short',30)
@@ -861,7 +861,7 @@ async def set_config_cron_action(update: Update, context: ContextTypes.DEFAULT_T
     db.set_setting(update.effective_user.id, 'config_report_interval', minutes)
     
     msg = "✅ گزارش کانفیگ غیرفعال شد." if minutes == '0' else f"✅ تنظیم شد: هر {minutes} دقیقه."
-    try: await query.answer(msg, show_alert=True)
+    try: await safe_callback_answer(query, msg, show_alert=True)
     except: pass
     
     await config_cron_menu(update, context)
@@ -869,7 +869,7 @@ async def set_config_cron_action(update: Update, context: ContextTypes.DEFAULT_T
 async def set_cron_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.set_setting(update.effective_user.id, 'report_interval', int(update.callback_query.data.split('_')[1]) // 60)
     try:
-        await update.callback_query.answer("ذخیره شد.")
+        await safe_callback_answer(update.callback_query, "ذخیره شد.")
     except:
         pass
     await settings_cron_menu(update, context)
@@ -880,7 +880,7 @@ async def resource_settings_menu(update: Update, context: ContextTypes.DEFAULT_T
     uid = update.effective_user.id
     if update.callback_query:
         try:
-            await update.callback_query.answer()
+            await safe_callback_answer(update.callback_query, )
         except:
             pass
 
@@ -1057,7 +1057,7 @@ async def get_channel_forward(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def set_channel_type_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
-        await query.answer()
+        await safe_callback_answer(query, )
     except:
         pass
     usage = query.data.split('_')[1]
@@ -1076,7 +1076,7 @@ async def delete_channel_action(update: Update, context: ContextTypes.DEFAULT_TY
 async def edit_expiry_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
-        await query.answer()
+        await safe_callback_answer(query, )
     except:
         pass
     sid = query.data.split('_')[2]
@@ -1121,7 +1121,7 @@ async def edit_expiry_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ask_terminal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
-        await query.answer()
+        await safe_callback_answer(query, )
     except:
         pass
 
@@ -1189,7 +1189,7 @@ async def run_terminal_action(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def close_terminal_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         try:
-            await update.callback_query.answer()
+            await safe_callback_answer(update.callback_query, )
         except:
             pass
     sid = context.user_data.get('term_sid')
@@ -1350,9 +1350,9 @@ async def existing_ssh_host_start(update: Update, context: ContextTypes.DEFAULT_
     uid=update.effective_user.id
     saved=await run_sync(db.get_server_for_user,sid,uid,SUPER_ADMIN_ID)
     if not saved:
-        await update.callback_query.answer('دسترسی به این سرور وجود ندارد.',show_alert=True)
+        await safe_callback_answer(update.callback_query, 'دسترسی به این سرور وجود ندارد.',show_alert=True)
         return ConversationHandler.END
-    await update.callback_query.answer()
+    await safe_callback_answer(update.callback_query, )
     await update.effective_message.reply_text('در حال خواندن کلید SSH از مسیر مرکزی و در صورت لزوم Agent مجاز…')
     try:
         from server_onboarding import probe_saved_server

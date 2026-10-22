@@ -54,9 +54,12 @@ def test_operation_boundary_rechecks_owner_before_remote_command():
     from access_policy import parse_server_action
     answers = AsyncMock()
     remote = AsyncMock()
+    async def safe_answer(query, *args, **kwargs):
+        return await query.answer(*args, **kwargs)
     scope = {'asyncio': asyncio, 'parse_server_action': parse_server_action,
              'db': types.SimpleNamespace(get_server_for_user=lambda *a: None), 'run_sync': direct,
-             'SUPER_ADMIN_ID': 777, 'ServerMonitor': types.SimpleNamespace(run_remote_command=remote)}
+             'safe_callback_answer': safe_answer, 'SUPER_ADMIN_ID': 777,
+             'ServerMonitor': types.SimpleNamespace(run_remote_command=remote)}
     fn = isolated('bot_logic_mod/servers.py', 'server_actions', scope)
     update = types.SimpleNamespace(callback_query=types.SimpleNamespace(data='act_reboot_5', answer=answers),
                                    effective_user=types.SimpleNamespace(id=15))
@@ -67,7 +70,7 @@ def test_operation_boundary_rechecks_owner_before_remote_command():
 
 @pytest.fixture
 def local_ssh(monkeypatch, tmp_path):
-    import paramiko
+    paramiko = pytest.importorskip('paramiko')
     import ssh_support
     monkeypatch.setattr(ssh_support, 'KNOWN_HOSTS_FILE', str(tmp_path / 'trust' / 'known_hosts'))
     key = paramiko.RSAKey.generate(2048)
@@ -147,6 +150,7 @@ def test_wrong_ssh_password_does_not_persist_candidate(local_ssh):
 
 
 def test_ssh_port_443_and_agent_port_validation_are_distinct():
+    pytest.importorskip('paramiko')
     from ssh_support import ssh_port
     from access_policy import valid_agent_port
     assert ssh_port(443) == 443
@@ -407,7 +411,7 @@ def test_error_summary_excludes_update_contents_and_exception_text():
     except RuntimeError as exc:
         error = exc
     send = AsyncMock()
-    scope = {'traceback': __import__('traceback'), 'os': os, 'SUPER_ADMIN_ID': 777, 'logger': logging.getLogger('test')}
+    scope = {'traceback': __import__('traceback'), 'os': os, 'SUPER_ADMIN_ID': 777, 'logger': logging.getLogger('test'), 'BadRequest': type('BadRequest', (Exception,), {})}
     fn = isolated('bot_logic_mod/ui.py', 'error_handler', scope)
     context = types.SimpleNamespace(error=error, bot=types.SimpleNamespace(send_message=send))
     asyncio.run(fn(Update(), context))
@@ -446,6 +450,7 @@ def test_monitoring_options_match_agent_limits():
 
 @pytest.mark.parametrize('healthy', [False, True])
 def test_deployment_commits_actual_port_only_after_wss_and_runtime_health(monkeypatch, tmp_path, healthy):
+    pytest.importorskip('paramiko')
     import agent_deploy
     import ws_client
     import ssh_support
@@ -477,13 +482,15 @@ def test_deployment_commits_actual_port_only_after_wss_and_runtime_health(monkey
     monkeypatch.setattr(ws_client.WebSocketPool, 'request', request)
     def run(ip, port, user, password, command, timeout):
         calls.append(command)
+        if 'SONAR_PORT_PREFLIGHT' in command:
+            return True, 'SONAR_PORT_AVAILABLE'
         if command == 'cat /etc/sonar-agent/tls.crt':
             return True, 'test-certificate'
         return True, ''
     monitor = types.SimpleNamespace(_run_ssh_command=run, get_bot_public_ip=lambda: '8.8.8.8',
         whitelist_bot_ip=lambda *args: (firewall.append(args) or (True, 'rule accepted')))
     db = types.SimpleNamespace(get_or_create_agent_token=lambda *args: 'local-only-token',
-        store_agent_certificate=lambda *args: commits.append(args))
+        store_agent_certificate=lambda *args: commits.append(args), execute=lambda *args, **kwargs: None)
     ok, detail = agent_deploy.deploy_agent(monitor, db, '127.0.0.1', 22, 'audit', 'local-only', 9090)
     assert ok == healthy, detail
     assert commits == ([('127.0.0.1', 22, 'test-certificate', 9090)] if healthy else [])
@@ -507,6 +514,7 @@ def test_deployment_commits_actual_port_only_after_wss_and_runtime_health(monkey
 
 
 def test_real_telegram_handler_registration_and_conversation_states(tmp_path):
+    pytest.importorskip('telegram')
     import sys
     code = r'''
 import os, sys, types

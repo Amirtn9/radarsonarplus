@@ -148,7 +148,8 @@ def test_no_qr_third_party_and_no_destructive_tmp_cleanup():
 
 def test_doctor_does_not_block_ordered_updates():
     source=(ROOT/'v6_ui.py').read_text()
-    assert 'background_callback(diag_zip)' in source
+    assert "spawn_background(context, diag_zip(update, context), name='diag-zip')" in source
+    assert 'SecureCallbackQueryHandler(diag_zip_entry' in source
     disp=(ROOT/'dispatcher.py').read_text()
     assert "CallbackQueryHandler(background_callback(bot_logic.update_monitor_node)" in disp
     assert "CallbackQueryHandler(background_callback(bot_logic.delete_monitor_node)" in disp

@@ -40,7 +40,8 @@ def test_ssh_failure_returns_false_and_closes_client():
     c = FakeClient()
     source = 'class ServerMonitor:\n    get_ssh_client = staticmethod(lambda *args: CLIENT)\n'
     source += textwrap.indent(ast.unparse(fn), '    ')
-    scope = {'CLIENT':c, 'paramiko':types.SimpleNamespace(AuthenticationException=Exception)}
+    scope = {'CLIENT':c, 'paramiko':types.SimpleNamespace(AuthenticationException=type('AuthenticationException',(Exception,),{})),
+             'shlex':__import__('shlex'), 'describe_ssh_error':lambda exc:type(exc).__name__}
     exec(source, scope)
     ok, detail = scope['ServerMonitor']._run_ssh_command('127.0.0.1',22,'u','p','false')
     assert not ok and 'exit=17' in detail and c.closed
@@ -170,3 +171,50 @@ def test_forged_admin_and_foreign_resource_callbacks_denied(monkeypatch):
     assert sec._access_sync(15,'act_reboot_4','server_actions')
     assert not sec._access_sync(15,'get_sub_links_12','get_sub_links_action')
     assert sec._access_sync(777,'admin_u_ban_20','admin_user_actions')
+
+
+def test_remote_ssh_commands_use_noninteractive_sudo_for_ubuntu():
+    module = ast.parse((ROOT/'core.py').read_text())
+    cls = next(n for n in module.body if isinstance(n, ast.ClassDef) and n.name == 'ServerMonitor')
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == '_run_ssh_command')
+    class Stream:
+        def __init__(self, data, status=0):
+            self.data=data; self.channel=types.SimpleNamespace(recv_exit_status=lambda:status)
+        def read(self, *args): return self.data
+    class Client:
+        def __init__(self): self.commands=[]; self.closed=False
+        def exec_command(self, command, timeout):
+            self.commands.append(command)
+            return None, Stream(b'SONAR_SSH_OK'), Stream(b'')
+        def close(self): self.closed=True
+    client=Client()
+    source='class ServerMonitor:\n    get_ssh_client = staticmethod(lambda *args: CLIENT)\n'
+    source+=textwrap.indent(ast.unparse(fn),'    ')
+    scope={'CLIENT':client,'paramiko':types.SimpleNamespace(AuthenticationException=type('AuthenticationException',(Exception,),{})),
+           'shlex':__import__('shlex'),'describe_ssh_error':lambda exc:type(exc).__name__}
+    exec(source,scope)
+    ok,detail=scope['ServerMonitor']._run_ssh_command('8.8.8.8',22,'ubuntu','secret','printf SONAR_SSH_OK')
+    assert ok and detail=='SONAR_SSH_OK'
+    assert client.commands[0].startswith('sudo -n -- /bin/bash -c ')
+    assert 'export DEBIAN_FRONTEND=noninteractive; printf SONAR_SSH_OK' in client.commands[0]
+    assert client.closed
+
+
+def test_remote_ssh_command_reports_password_prompting_sudo():
+    module = ast.parse((ROOT/'core.py').read_text())
+    cls = next(n for n in module.body if isinstance(n, ast.ClassDef) and n.name == 'ServerMonitor')
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == '_run_ssh_command')
+    class Stream:
+        def __init__(self,data,status=1): self.data=data; self.channel=types.SimpleNamespace(recv_exit_status=lambda:status)
+        def read(self,*args): return self.data
+    class Client:
+        closed=False
+        def exec_command(self,command,timeout): return None,Stream(b''),Stream(b'sudo: a password is required')
+        def close(self): self.closed=True
+    source='class ServerMonitor:\n    get_ssh_client = staticmethod(lambda *args: CLIENT)\n'
+    source+=textwrap.indent(ast.unparse(fn),'    ')
+    scope={'CLIENT':Client(),'paramiko':types.SimpleNamespace(AuthenticationException=type('AuthenticationException',(Exception,),{})),
+           'shlex':__import__('shlex'),'describe_ssh_error':lambda exc:type(exc).__name__}
+    exec(source,scope)
+    ok,detail=scope['ServerMonitor']._run_ssh_command('8.8.8.8',22,'ubuntu','secret','systemctl restart sonar-agent')
+    assert not ok and detail.startswith('SUDO_REQUIRED:')

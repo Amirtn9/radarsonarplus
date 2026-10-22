@@ -59,3 +59,10 @@ body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Tahom
 .diagnostic-controls{display:flex;align-items:end;gap:20px;flex-wrap:wrap;padding:16px;border:1px solid var(--outline);border-radius:16px;background:var(--surface2)}.diagnostic-controls label{display:grid;gap:8px}.diagnostic-controls .checkline{display:flex;align-items:center;gap:9px}.diagnostic-controls input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent)}.diagnostic-controls select{min-width:210px;padding:11px;border-radius:10px;border:1px solid var(--outline);background:var(--surface);color:var(--text)}
 @media(max-width:640px){.route-primary{align-items:flex-start;flex-wrap:wrap}.route-status{margin-right:62px}.relay-order-card{align-items:flex-start}.diagnostic-controls{align-items:stretch}.diagnostic-controls select{width:100%;min-width:0}}
 .route-dashboard{border-color:color-mix(in srgb,var(--accent) 22%,var(--outline))}.route-dashboard-primary{padding:13px 15px;border-radius:12px;background:var(--surface2);border:1px solid var(--outline);font-weight:700}.route-dashboard-count{margin:12px 0;color:var(--sub);font-size:13px}.route-dashboard-agent{padding:10px 14px;border-bottom:1px solid var(--outline);font-size:13px}.route-dashboard-agent:last-child{border-bottom:0}
+
+/* Official SONAR RADAR brand assets */
+.brandmark{width:54px;height:44px;flex:0 0 54px;padding:0;overflow:hidden;border-radius:10px;background:#030405;border:1px solid rgba(31,211,226,.22);box-shadow:0 8px 24px rgba(0,0,0,.22)}
+.brandmark img{display:block;width:100%;height:100%;object-fit:contain}
+.auth-card .auth-emblem{display:block;width:min(180px,100%);aspect-ratio:1;margin:0 auto 22px;padding:0;overflow:hidden;background:#030405;border:1px solid rgba(31,211,226,.25);border-radius:25px;box-shadow:0 12px 34px rgba(0,0,0,.18)}
+.auth-card .auth-emblem img{display:block;width:100%;height:100%;object-fit:contain}
+@media(max-width:950px) and (min-width:641px){.brandmark{width:52px;height:42px;flex-basis:52px}}

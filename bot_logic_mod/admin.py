@@ -159,7 +159,7 @@ async def admin_payment_settings(update: Update, context: ContextTypes.DEFAULT_T
 async def delete_payment_method_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     p_id = int(update.callback_query.data.split('_')[3])
     db.delete_payment_method(p_id)
-    await update.callback_query.answer("🗑 حذف شد.")
+    await safe_callback_answer(update.callback_query, "🗑 حذف شد.")
     await admin_payment_settings(update, context)
 
 async def add_pay_method_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
