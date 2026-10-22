@@ -63,6 +63,8 @@ SONAR_PROBE'''
 def probe(run, progress=None):
     _emit(progress, 'preflight', 'سیستم‌عامل، Python، معماری و دیسک')
     ok, out = run(PREFLIGHT, 35)
+    if not ok and _is_ssh_transport_failure(ok, out):
+        raise RuntimeError('SSH_TRANSPORT_UNAVAILABLE: مسیر SSH/Agent هنگام بررسی اولیه مقصد در دسترس نبود. ' + str(out)[-170:])
     if not ok: raise RuntimeError('PREFLIGHT_FAILED: Python 3 or SSH/sudo unavailable: ' + str(out)[-170:])
     try:
         raw = next(line.partition('=')[2] for line in str(out).splitlines() if line.startswith('SONAR_PROBE='))
@@ -194,7 +196,33 @@ def _download_apt_bundle(run, host, port, username, password, packages, progress
     return (True,'CENTRAL_APT_BUNDLE_INSTALLED') if ok and 'SONAR_VENV_READY' in str(out) else (False,'CENTRAL_APT_BUNDLE_INSTALLED_BUT_VENV_PREFLIGHT_FAILED: '+str(out)[-220:])
 
 
-def _ensure_os_tools(run, progress, host=None, port=22, username=None, password=None, connector=None):
+def _is_ssh_transport_failure(ok, output):
+    """Distinguish a lost SSH/Agent route from a remote Python/apt failure.
+
+    A transport failure must not be reported as a missing Python version or
+    ensurepip package. _run_ssh_command normally returns these stable prefixes;
+    tolerate a small wrapper prefix such as ``exit=255:`` as well.
+    """
+    if ok:
+        return False
+    text = str(output or '')
+    return bool(re.search(
+        r'(?<![A-Z0-9_])(?:SSH_TIMEOUT|SSH_PORT_UNREACHABLE|SSH_CONNECTION_FAILED|'
+        r'SSH_CONNECTION_REFUSED|SSH_DNS_FAILED|SSH_TRANSPORT_UNAVAILABLE|'
+        r'RELAY_CONNECT_FAILED|RELAY_UNAVAILABLE)\s*:',
+        text,
+        flags=re.IGNORECASE,
+    ))
+
+
+def _ensure_os_tools(run, progress, host=None, port=22, username=None, password=None,
+                     connector=None, target_python=None):
+    """Verify OS prerequisites, using the already-probed Python version when available.
+
+    ``target_python`` avoids a second version-discovery SSH call during an
+    intermittent Agent relay. If the relay drops, report a transport failure;
+    do not mislabel it as a broken Python installation.
+    """
     _emit(progress, 'system_packages', 'بررسی واقعی python3-venv، pip و ابزارهای سیستم با sudo')
     basic = ('command -v python3 >/dev/null && command -v openssl >/dev/null && '
              'command -v curl >/dev/null && command -v ss >/dev/null && '
@@ -202,6 +230,8 @@ def _ensure_os_tools(run, progress, host=None, port=22, username=None, password=
     ok, out = run(basic, 20)
     if not ok and 'SUDO_REQUIRED' in str(out):
         raise RuntimeError('SUDO_REQUIRED: SSH account must have passwordless sudo for Agent installation')
+    if not ok and _is_ssh_transport_failure(ok, out):
+        raise RuntimeError('SSH_TRANSPORT_UNAVAILABLE: مسیر SSH/Agent هنگام بررسی ابزارهای سیستم قطع شد؛ نصب بسته‌ها شروع نشد. ' + str(out)[-180:])
     if not ok:
         _emit(progress, 'system_packages', 'نصب پیش‌نیازهای سیستم با دسترسی مدیر')
         update = ('export DEBIAN_FRONTEND=noninteractive; '
@@ -209,25 +239,41 @@ def _ensure_os_tools(run, progress, host=None, port=22, username=None, password=
                   '-o Acquire::https::Timeout=12 update && '
                   'timeout 110s apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=12 '
                   '-o Acquire::https::Timeout=12 install -y python3-venv ca-certificates curl openssl iproute2')
-        ok, out = run(update, 230)
+        update_ok, update_out = run(update, 230)
+        if _is_ssh_transport_failure(update_ok, update_out):
+            raise RuntimeError('SSH_TRANSPORT_UNAVAILABLE: مسیر SSH/Agent هنگام نصب پیش‌نیازها قطع شد. ' + str(update_out)[-180:])
         ok, out = run(basic, 20)
+        if not ok and _is_ssh_transport_failure(ok, out):
+            raise RuntimeError('SSH_TRANSPORT_UNAVAILABLE: مسیر SSH/Agent هنگام تأیید ابزارهای سیستم قطع شد. ' + str(out)[-180:])
         if not ok:
             central_ok, central_out = _download_apt_bundle(run,host,port,username,password,
                 ['python3-venv','ca-certificates','curl','openssl','iproute2'],progress,connector)
             if not central_ok:
+                if _is_ssh_transport_failure(False, central_out):
+                    raise RuntimeError('SSH_TRANSPORT_UNAVAILABLE: مسیر انتقال بسته‌های تأییدشده از Agent برقرار نشد. ' + str(central_out)[-180:])
                 raise RuntimeError('SYSTEM_PACKAGES_UNAVAILABLE: target apt and central verified package transfer failed: '+str(central_out)[-240:])
             ok,out=run(basic,20)
+            if not ok and _is_ssh_transport_failure(ok, out):
+                raise RuntimeError('SSH_TRANSPORT_UNAVAILABLE: مسیر SSH/Agent پس از انتقال بسته‌ها قطع شد. ' + str(out)[-180:])
             if not ok: raise RuntimeError('SYSTEM_PACKAGES_UNAVAILABLE_AFTER_CENTRAL_TRANSFER: '+str(out)[-200:])
     # --help alone is insufficient: actually create a temporary venv and verify pip.
     ok, out = _venv_preflight(run, 40)
     if ok and 'SONAR_VENV_READY' in str(out):
         return
+    if _is_ssh_transport_failure(ok, out):
+        raise RuntimeError('SSH_TRANSPORT_UNAVAILABLE: ارتباط SSH مستقیم و مسیر Agent هنگام بررسی venv قطع شد؛ نصب Python بررسی نشد. ' + str(out)[-180:])
+
     _emit(progress, 'system_packages', 'محیط مجازی ناقص است؛ نصب بسته نسخه دقیق Python با sudo')
-    version_script = "python3 -c 'import sys; print(\"%s.%s\" % sys.version_info[:2])'"
-    version_ok, version = run(version_script, 15)
-    pyver = str(version).strip().splitlines()[-1] if version_ok and str(version).strip() else ''
+    pyver = str(target_python or '').strip()
     if not re.fullmatch(r'3\.[0-9]{1,2}', pyver):
-        raise RuntimeError('VENV_PREREQUISITE_FAILED: python3-venv did not provide ensurepip and Python version could not be identified')
+        version_script = "python3 -c 'import sys; print(\"%s.%s\" % sys.version_info[:2])'"
+        version_ok, version = run(version_script, 15)
+        if _is_ssh_transport_failure(version_ok, version):
+            raise RuntimeError('SSH_TRANSPORT_UNAVAILABLE: مسیر SSH/Agent هنگام شناسایی نسخه Python قطع شد؛ خطای venv قابل تشخیص نیست. ' + str(version)[-180:])
+        pyver = str(version).strip().splitlines()[-1] if version_ok and str(version).strip() else ''
+    if not re.fullmatch(r'3\.[0-9]{1,2}', pyver):
+        detail = str(version if 'version' in locals() else out).strip().replace('\x00', '')[-160:]
+        raise RuntimeError('VENV_PREREQUISITE_FAILED: نسخه Python مقصد از خروجی بررسی اولیه قابل استخراج نبود؛ بررسی SSH و اجرای python3 را تکرار کنید. ' + detail)
     exact_package = 'python' + pyver + '-venv'
     exact = ('export DEBIAN_FRONTEND=noninteractive; '
              '(timeout 100s apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=12 '
@@ -425,7 +471,11 @@ def install_agent_dependencies(run, host, port, username, password, progress=Non
     never removed until the replacement is verified and activated.
     """
     target = probe(run, progress)
-    _ensure_os_tools(run, progress, host, port, username, password, connector)
+    # Reuse the successful target probe: a second SSH call just to discover the
+    # same Python version can fail when the destination is reachable only via an
+    # approved Agent relay (for example, when inbound TCP/22 is filtered).
+    _ensure_os_tools(run, progress, host, port, username, password, connector,
+                     target_python=target['py'])
     marker = secrets.token_hex(6)
     staged = f'/opt/sonar-agent-venv.stage-{marker}'
     live = '/opt/sonar-agent-venv'
