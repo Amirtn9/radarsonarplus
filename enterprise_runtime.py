@@ -83,6 +83,11 @@ def install_runtime_schema(db):
     with db.get_connection() as (conn, cur):
         for sql in RUNTIME_SCHEMA:
             cur.execute(sql)
+        # Legacy service_down restart rules had no reliable mapping from a
+        # monitored HTTP/TCP probe to a managed host. Disable those old rules;
+        # new rules are notification-only until an explicit mapping exists.
+        cur.execute("UPDATE rs_automation_rules SET enabled=FALSE "
+                    "WHERE event='service_down' AND action='restart_managed_service' AND enabled=TRUE")
         conn.commit()
 
 def _safe_destination(destination: str) -> Path:
@@ -613,6 +618,10 @@ async def recovery_worker(db, stop):
     """Evaluate allow-listed rules against the actual source table for each event."""
     while not stop.is_set():
         try:
+            await asyncio.to_thread(db.execute, """UPDATE rs_automation_runs r
+              SET status=o.status,detail=COALESCE(o.status,'unknown')
+              FROM rs_operations o WHERE r.operation_id=o.id AND r.status IN ('queued','running')
+                AND o.status IN ('succeeded','failed','cancelled')""")
             rules=await asyncio.to_thread(db.execute,"""SELECT id,owner_id,event,action,max_attempts FROM rs_automation_rules
               WHERE enabled=TRUE""",fetch='all')
             for rule in rules:

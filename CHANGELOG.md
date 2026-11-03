@@ -1,19 +1,22 @@
-# Installer hotfix — systemd / Python EXEC (2026-11-03)
+# RadarSonarPlus 6.9 — Installer UI and full-purge patch
 
-- Added a non-destructive repair path that checks virtualenv execution as the actual `sonar-bot` service user.
-- Detects `noexec` on the resolved Python interpreter mount and stops with a specific remediation message instead of retrying a doomed service start.
-- Repairs virtualenv traversal/read/execute permissions created under a restrictive umask.
-- Regenerates the legacy `sonar-bot.service` unit with `StartLimitIntervalSec` and `StartLimitBurst` in `[Unit]`, backs up the prior unit, validates the replacement, reloads systemd and restarts the bot.
-- Adds regression coverage for the repair script and unit layout.
+- Added a full-screen `whiptail` deployment menu with a colored terminal fallback when `whiptail` is unavailable.
+- Added a separate irreversible `--purge` action that inventories and removes only local Sonar-owned files, services, configuration, runtime state, backups, logs, the local Sonar PostgreSQL database/role, and the dedicated service account when its home matches the managed install path.
+- Full purge requires an interactive two-step confirmation and exits without reinstalling. It refuses symlinked or mounted project directories and refuses remote PostgreSQL targets before deleting local files.
+- Shared PostgreSQL/Nginx packages, unrelated databases/sites, SSH, TLS certificates, remote Agents, and the shared systemd journal are intentionally preserved.
+- Added release/source identity and SHA-256 manifest verification to preflight so operators can identify stale or mixed checkouts before installation.
+- Added regression tests for purge scope, destructive confirmation, menu fallback, and systemd start-limit placement.
 
 # RadarSonarPlus 6.9 — Post-audit reliability and installer recovery patch
 
 - Fixed health timestamp parsing for legacy TEXT agent timestamps and stopped treating missing CPU/RAM/Disk data as zero load.
-- Corrected `service_down` automation to query HTTP/TCP probe records; unsafe restart actions without an explicit server mapping are rejected.
+- Corrected `service_down` automation to query HTTP/TCP probe records; unsafe legacy restart rules are disabled and unsupported event/action pairs are rejected by both API validation and the service layer.
+- Added the missing HTTP/TCP service-monitor schema migration to both Telegram Bot and Web API startup.
 - Added automatic Agent Rollout rollback for successful hosts after a later batch fails, plus restart-safe rollback reservations and manual retry after rollback failure.
 - Made signed Agent release identities immutable by version/channel.
 - Moved synchronous database work out of async Webhook, Recovery and Rollout workers.
 - Removed the unreachable per-server Backup operation path; scheduled PostgreSQL backups remain on their dedicated scheduler.
+- Fixed venv permissions under the installer umask; added exact interpreter/mount diagnostics, systemd ExecStartPre checks and corrected Unit-level start limits.
 - Added service-account bot import preflight, a post-migration startup readiness marker, bounded installer readiness wait and richer startup diagnostics.
 - Added a non-destructive resume path when a first installation rolls back code but leaves PostgreSQL/runtime state intact.
 

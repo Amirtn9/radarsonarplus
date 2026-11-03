@@ -263,6 +263,236 @@ reset_project_components() {
   if command -v nginx >/dev/null 2>&1 && nginx -t >> "$INSTALL_LOG" 2>&1;then systemctl reload nginx || true;fi
   ok 'Previous Sonar deployment and its database removed. Backups remain available.'
 }
+
+# Full purge is deliberately separate from --clean-install and --uninstall:
+# it deletes project data AND existing backups, then returns to the shell.
+# It never removes PostgreSQL/nginx packages or resources owned by other apps.
+purge_list_item() {
+  local path="$1" label="$2"
+  if [[ -e "$path" || -L "$path" ]]; then say "$label: $path"; fi
+}
+purge_check_tree() {
+  local path="$1" expected="$2" mounted=''
+  [[ "$path" == "$expected" ]] || die "Internal purge path mismatch: $path"
+  [[ ! -L "$path" ]] || die "Refusing to follow symlink during purge: $path"
+  [[ -d "$path" ]] || return 0
+  if command -v findmnt >/dev/null 2>&1; then
+    mounted="$(findmnt -rn -o TARGET 2>/dev/null | awk -v p="$path" '$0==p || index($0,p "/")==1')"
+    [[ -z "$mounted" ]] || die "Mounted filesystem found under $path; unmount it before purging: $mounted"
+  fi
+}
+purge_remove_tree() {
+  local path="$1" expected="$2" mounted=''
+  [[ "$path" == "$expected" ]] || die "Internal purge path mismatch: $path"
+  [[ ! -L "$path" ]] || die "Refusing to follow symlink during purge: $path"
+  [[ -d "$path" ]] || { [[ ! -e "$path" ]] || die "Expected a directory: $path"; return 0; }
+  if command -v findmnt >/dev/null 2>&1; then
+    mounted="$(findmnt -rn -o TARGET 2>/dev/null | awk -v p="$path" '$0==p || index($0,p "/")==1')"
+    [[ -z "$mounted" ]] || die "Mounted filesystem found under $path; unmount it before purging: $mounted"
+  fi
+  rm -rf --one-file-system -- "$path" || die "Could not remove project directory: $path"
+}
+purge_remove_file() {
+  local path="$1" expected="$2"
+  [[ "$path" == "$expected" ]] || die "Internal purge file mismatch: $path"
+  [[ ! -d "$path" || -L "$path" ]] || die "Expected a file, not a directory: $path"
+  rm -f -- "$path" || die "Could not remove project file: $path"
+}
+purge_database() {
+  local db_name db_user db_host db_port db_exists role_exists
+  db_name="$(read_env SONAR_DB_NAME)"; db_name="${db_name:-$DB_NAME}"
+  db_user="$(read_env SONAR_DB_USER)"; db_user="${db_user:-$DB_USER}"
+  db_host="$(read_env SONAR_DB_HOST)"; db_host="${db_host:-127.0.0.1}"
+  db_port="$(read_env SONAR_DB_PORT)"; db_port="${db_port:-5432}"
+  [[ "$db_name" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]] || die 'Configured PostgreSQL database name is unsafe; refusing automatic deletion.'
+  [[ "$db_user" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]] || die 'Configured PostgreSQL role name is unsafe; refusing automatic deletion.'
+  [[ "$db_port" =~ ^[0-9]{1,5}$ ]] && (( 10#$db_port >= 1 && 10#$db_port <= 65535 )) || die 'Configured PostgreSQL port is invalid; refusing automatic deletion.'
+  case "${db_host,,}" in
+    127.0.0.1|localhost|::1|'') ;;
+    *) die "Remote PostgreSQL host $db_host is configured. Purge stopped without deleting project files; remove the remote DB separately first.";;
+  esac
+  if ! id -u postgres >/dev/null 2>&1; then
+    warn 'Local PostgreSQL account is absent; no local database/role can be removed.'
+    return 0
+  fi
+  command -v psql >/dev/null 2>&1 || die 'PostgreSQL client is missing; cannot verify database deletion safely.'
+  if systemctl cat postgresql.service >/dev/null 2>&1; then
+    systemctl start postgresql >> "$INSTALL_LOG" 2>&1 || die 'PostgreSQL did not start; refusing to claim database removal.'
+  fi
+  runuser -u postgres -- psql -p "$db_port" -v ON_ERROR_STOP=1 -tAc 'SELECT 1' >> "$INSTALL_LOG" 2>&1 || die 'Cannot connect to local PostgreSQL; database purge stopped before deleting files.'
+  db_exists="$(runuser -u postgres -- psql -p "$db_port" -v ON_ERROR_STOP=1 -v db="$db_name" -tAc "SELECT 1 FROM pg_database WHERE datname = :'db'")" || die 'Could not inspect local PostgreSQL databases.'
+  role_exists="$(runuser -u postgres -- psql -p "$db_port" -v ON_ERROR_STOP=1 -v role="$db_user" -tAc "SELECT 1 FROM pg_roles WHERE rolname = :'role'")" || die 'Could not inspect local PostgreSQL roles.'
+  if [[ "$db_exists" == 1 ]]; then
+    runuser -u postgres -- psql -p "$db_port" -v ON_ERROR_STOP=1 -v db="$db_name" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :'db' AND pid <> pg_backend_pid()" >> "$INSTALL_LOG" 2>&1 || die "Could not disconnect sessions from $db_name."
+    runuser -u postgres -- dropdb -p "$db_port" --if-exists -- "$db_name" >> "$INSTALL_LOG" 2>&1 || die "Could not drop Sonar database $db_name."
+    ok "Removed local PostgreSQL database: $db_name"
+  fi
+  if [[ "$role_exists" == 1 ]]; then
+    if runuser -u postgres -- dropuser -p "$db_port" -- "$db_user" >> "$INSTALL_LOG" 2>&1; then
+      ok "Removed local PostgreSQL role: $db_user"
+    else
+      warn "PostgreSQL role $db_user still owns or is referenced by objects in another database; it was retained to protect unrelated data."
+    fi
+  fi
+}
+purge_inventory() {
+  section 'FULL PURGE  ·  Project inventory'
+  local target_db target_role target_host
+  target_db="$(read_env SONAR_DB_NAME)";target_db="${target_db:-$DB_NAME}"
+  target_role="$(read_env SONAR_DB_USER)";target_role="${target_role:-$DB_USER}"
+  target_host="$(read_env SONAR_DB_HOST)";target_host="${target_host:-127.0.0.1}"
+  say "PostgreSQL target (no password shown): database=$target_db role=$target_role host=$target_host"
+  purge_list_item "$APP_DIR" 'Application code and virtualenv'
+  purge_list_item "$STATE_DIR" 'Runtime state, keys, SSH trust and local backups'
+  purge_list_item "$ENV_FILE" 'Private environment / database credentials'
+  purge_list_item "$BOT_UNIT" 'Bot systemd unit'
+  purge_list_item "$WEB_UNIT" 'Web systemd unit'
+  purge_list_item "${BOT_UNIT}.d" 'Bot systemd overrides'
+  purge_list_item "${WEB_UNIT}.d" 'Web systemd overrides'
+  purge_list_item "$NGINX_SITE" 'Sonar nginx site'
+  purge_list_item "$NGINX_LINK" 'Sonar nginx enabled link'
+  purge_list_item "$BACKUP_DIR" 'Installer backups and database dumps'
+  purge_list_item "$LOG_DIR" 'Application logs'
+  purge_list_item "$INSTALL_LOG" 'Installer log'
+  purge_list_item '/usr/local/sbin/sonar-diagnostic-read' 'Restricted diagnostics helper'
+  purge_list_item '/etc/sudoers.d/sonar-diagnostics' 'Diagnostics sudoers rule'
+  if [[ "$SOURCE_DIR" == /root/* && "${SOURCE_DIR##*/}" =~ ^(radarsonarplus|radar-sonar|radarsonarplus-[A-Za-z0-9._-]+)$ ]]; then
+    purge_list_item "$SOURCE_DIR" 'Current Git/source checkout (optional)'
+  fi
+  if id -u "$APP_USER" >/dev/null 2>&1; then say "Dedicated service account detected: $APP_USER"; fi
+  if app_database_exists; then say "Local PostgreSQL database detected: $DB_NAME"; fi
+  if app_role_exists; then say "Local PostgreSQL role detected: $DB_USER"; fi
+  say 'Shared OS packages, PostgreSQL server, nginx server, SSH and other apps are outside the purge scope.'
+}
+purge_project() {
+  require_root
+  command -v systemctl >/dev/null 2>&1 || die 'systemd is required for safe service shutdown.'
+  [[ ! -L "$APP_DIR" && ! -L "$STATE_DIR" && ! -L "$BACKUP_DIR" && ! -L "$LOG_DIR" ]] || die 'A project directory is a symlink. Refusing unsafe purge.'
+  [[ ! -L "$ENV_FILE" ]] || die 'Environment file is a symlink. Refusing unsafe purge.'
+  [[ ! -L "$BOT_UNIT" && ! -L "$WEB_UNIT" ]] || die 'A systemd unit path is a symlink. Refusing unsafe purge.'
+  [[ ! -L "$INSTALL_LOG" ]] || die 'Installer log is a symlink. Refusing unsafe purge.'
+  purge_check_tree "$APP_DIR" '/opt/radar-sonar'
+  purge_check_tree "$STATE_DIR" '/var/lib/sonar-radar'
+  purge_check_tree "$BACKUP_DIR" '/var/backups/sonar-radar'
+  purge_check_tree "$LOG_DIR" '/var/log/sonar'
+  purge_check_tree "${BOT_UNIT}.d" '/etc/systemd/system/sonar-bot.service.d'
+  purge_check_tree "${WEB_UNIT}.d" '/etc/systemd/system/sonar-web.service.d'
+  local purge_db_host
+  purge_db_host="$(read_env SONAR_DB_HOST)"; purge_db_host="${purge_db_host:-127.0.0.1}"
+  case "${purge_db_host,,}" in 127.0.0.1|localhost|::1|'') ;; *) die "Remote PostgreSQL host $purge_db_host is configured. No changes were made; remove the remote database separately first.";; esac
+  install -d -m 0750 "$LOG_DIR"
+  touch "$INSTALL_LOG";chmod 0600 "$INSTALL_LOG"
+  purge_inventory
+  [[ -t 0 && -t 1 ]] || die 'Full purge requires an interactive terminal; no files were removed.'
+  local confirm='' answer='' remove_source=0 source_candidate=''
+  if command -v whiptail >/dev/null 2>&1; then
+    whiptail --title 'DANGER  |  FULL SONAR PURGE' --yesno       'This permanently deletes Sonar source, database, credentials, encryption keys, runtime state, logs and ALL local backups. It does not uninstall shared PostgreSQL/nginx packages or touch unrelated databases.' 18 78 || { warn 'Purge cancelled; no data was deleted.'; return 2; }
+    confirm="$(whiptail --title 'FINAL CONFIRMATION' --inputbox 'Type exactly: DELETE ALL SONAR DATA' 10 72 3>&1 1>&2 2>&3)" || { warn 'Purge cancelled; no data was deleted.'; return 2; }
+  else
+    warn 'IRREVERSIBLE: no backup will be retained. Project DB, secrets, keys, source, logs and backups will be deleted.'
+    read -r -p '  Continue? [y/N]: ' answer
+    [[ "$answer" =~ ^[Yy]$ ]] || { warn 'Purge cancelled; no data was deleted.'; return 2; }
+    read -r -p '  Type exactly DELETE ALL SONAR DATA: ' confirm
+  fi
+  [[ "$confirm" == 'DELETE ALL SONAR DATA' ]] || die 'Confirmation did not match. Nothing was deleted.'
+
+  # Only offer to remove the current checkout when it is clearly a project
+  # directory under /root. Never remove /root itself or an arbitrary cwd.
+  if [[ "$SOURCE_DIR" != "$APP_DIR" && "$SOURCE_DIR" == /root/* && "${SOURCE_DIR##*/}" =~ ^(radarsonarplus|radar-sonar|radarsonarplus-[A-Za-z0-9._-]+)$ && ! -L "$SOURCE_DIR" && "$(readlink -f -- "$SOURCE_DIR" 2>/dev/null || true)" == "$SOURCE_DIR" ]]; then
+    source_candidate="$SOURCE_DIR"
+    if command -v whiptail >/dev/null 2>&1; then
+      whiptail --title 'SOURCE CHECKOUT' --yesno "Also delete this Git/source checkout?
+
+$source_candidate" 12 76 && remove_source=1 || true
+    else
+      read -r -p "  Also delete source checkout $source_candidate? [y/N]: " answer
+      [[ "$answer" =~ ^[Yy]$ ]] && remove_source=1 || true
+    fi
+  fi
+
+  # Recheck the optional source checkout before deleting it.
+  if (( remove_source == 1 )); then purge_check_tree "$source_candidate" "$source_candidate"; fi
+
+  # Stop the project before terminating its database sessions. If PostgreSQL
+  # cannot be inspected, the app code is still present for a safe retry.
+  systemctl stop "$SERVICE" "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1 || true
+  purge_database
+  systemctl disable "$SERVICE" "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1 || true
+
+  # Remove only the exact resources owned by this installer.
+  purge_remove_tree "$APP_DIR" '/opt/radar-sonar'
+  purge_remove_tree "$STATE_DIR" '/var/lib/sonar-radar'
+  purge_remove_tree "$BACKUP_DIR" '/var/backups/sonar-radar'
+  purge_remove_tree "$LOG_DIR" '/var/log/sonar'
+  purge_remove_tree "${BOT_UNIT}.d" '/etc/systemd/system/sonar-bot.service.d'
+  purge_remove_tree "${WEB_UNIT}.d" '/etc/systemd/system/sonar-web.service.d'
+  purge_remove_file "$ENV_FILE" '/etc/sonar-bot.env'
+  purge_remove_file "$BOT_UNIT" '/etc/systemd/system/sonar-bot.service'
+  purge_remove_file "$WEB_UNIT" '/etc/systemd/system/sonar-web.service'
+  purge_remove_file '/usr/local/sbin/sonar-diagnostic-read' '/usr/local/sbin/sonar-diagnostic-read'
+  purge_remove_file '/etc/sudoers.d/sonar-diagnostics' '/etc/sudoers.d/sonar-diagnostics'
+  if [[ -L "$NGINX_LINK" ]]; then
+    if [[ "$(readlink -f -- "$NGINX_LINK" 2>/dev/null || true)" == "$NGINX_SITE" ]]; then rm -f -- "$NGINX_LINK"; else warn 'Sonar nginx link points elsewhere; it was preserved.'; fi
+  elif [[ -e "$NGINX_LINK" ]]; then warn 'Sonar nginx enabled path is not a symlink; it was preserved for manual review.'; fi
+  purge_remove_file "$NGINX_SITE" '/etc/nginx/sites-available/sonar-radar.conf'
+
+  # Clean only temporary directories/files created with the installer's
+  # private prefixes. Environment staging files are regular files, not dirs.
+  local orphan temp_file
+  for orphan in /opt/.sonar-stage.* /opt/.sonar-bootstrap.* /run/sonar-diagnostic-helper.*; do
+    [[ -e "$orphan" || -L "$orphan" ]] || continue
+    [[ -d "$orphan" && ! -L "$orphan" ]] || { warn "Skipped non-directory temporary path: $orphan"; continue; }
+    case "$orphan" in
+      /opt/.sonar-stage.[A-Za-z0-9]*|/opt/.sonar-bootstrap.[A-Za-z0-9]*|/run/sonar-diagnostic-helper.[A-Za-z0-9]*) purge_check_tree "$orphan" "$orphan"; rm -rf --one-file-system -- "$orphan";;
+      *) warn "Skipped unexpected temporary path: $orphan";;
+    esac
+  done
+  for temp_file in /etc/.sonar-env.*; do
+    [[ -e "$temp_file" || -L "$temp_file" ]] || continue
+    [[ -f "$temp_file" && ! -L "$temp_file" && "$temp_file" =~ ^/etc/\.sonar-env\.[A-Za-z0-9]+$ ]] || { warn "Skipped unexpected environment staging path: $temp_file"; continue; }
+    rm -f -- "$temp_file"
+  done
+
+  # Delete the dedicated service account only if its passwd home proves that
+  # it was created for this exact Sonar installation.
+  if id -u "$APP_USER" >/dev/null 2>&1; then
+    local service_home service_gid service_uid other_primary group_members
+    service_home="$(getent passwd "$APP_USER" | cut -d: -f6)"
+    service_uid="$(id -u "$APP_USER")"
+    service_gid="$(id -g "$APP_USER")"
+    if [[ "$service_home" == "$APP_DIR" ]]; then
+      pkill -TERM -u "$APP_USER" 2>/dev/null || true
+      sleep 1
+      pkill -KILL -u "$APP_USER" 2>/dev/null || true
+      if userdel "$APP_USER" >> "$INSTALL_LOG" 2>&1; then
+        other_primary="$(getent passwd | awk -F: -v gid="$service_gid" -v name="$APP_USER" '$4==gid && $1!=name {print $1}')"
+        if [[ -z "$other_primary" ]] && getent group "$APP_USER" >/dev/null 2>&1; then
+          group_members="$(getent group "$APP_USER" | cut -d: -f4)"
+          [[ -n "$group_members" ]] || groupdel "$APP_USER" >> /dev/null 2>&1 || true
+        fi
+        ok "Removed dedicated service account $APP_USER (uid $service_uid)."
+      else
+        warn "Could not remove dedicated service account $APP_USER."
+      fi
+    else
+      warn "Service account $APP_USER has a different home ($service_home); it was retained."
+    fi
+  fi
+
+  # Remove installer log last: database and user cleanup above still append
+  # diagnostics to it.
+  purge_remove_file "$INSTALL_LOG" '/var/log/sonar-install.log'
+  systemctl daemon-reload >> /dev/null 2>&1 || true
+  if command -v nginx >/dev/null 2>&1; then
+    if nginx -t >> /dev/null 2>&1; then systemctl reload nginx >> /dev/null 2>&1 || true; else warn 'Nginx config test failed after removing the Sonar site; inspect nginx -t.'; fi
+  fi
+  if (( remove_source == 1 )); then
+    purge_remove_tree "$source_candidate" "$source_candidate"
+    ok "Removed source checkout: $source_candidate"
+  fi
+  ok 'Full Sonar purge completed. The installer will now exit.'
+  warn 'Shared PostgreSQL/nginx packages, external database hosts, remote Agents, TLS certificates and unrelated server files were intentionally preserved.'
+}
 select_install_strategy() {
   # Return code 0 = fresh/resume install, 2 = upgrade, 1 = abort.
   if existing_components;then
@@ -371,7 +601,13 @@ PY
 preflight() {
   section 'PREFLIGHT  ·  Source and environment'
   [[ -f "$SOURCE_DIR/bot.py" && -f "$SOURCE_DIR/settings.py" && -f "$SOURCE_DIR/requirements.txt" && -f "$SOURCE_DIR/pro_portal.py" && -f "$SOURCE_DIR/install_web_panel.sh" ]] || die "Run from a complete repository checkout ($SOURCE_DIR)."
-  local check_script
+  local release='unknown' revision='archive-unknown' check_script
+  [[ ! -f "$SOURCE_DIR/VERSION" ]] || release="$(tr -d '[:space:]' < "$SOURCE_DIR/VERSION")"
+  [[ ! -f "$SOURCE_DIR/SOURCE_REVISION" ]] || revision="$(tr -d '[:space:]' < "$SOURCE_DIR/SOURCE_REVISION")"
+  if command -v git >/dev/null 2>&1 && git -C "$SOURCE_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+    revision="$(git -C "$SOURCE_DIR" rev-parse --short=12 HEAD)"
+  fi
+  say "Release: $release | Source: $SOURCE_DIR | Revision: $revision"
   for check_script in "$SOURCE_DIR/install.sh" "$SOURCE_DIR/install_web_panel.sh" "$SOURCE_DIR"/scripts/*.sh;do bash -n "$check_script" || die 'Bash syntax check failed';done
   command -v python3 >/dev/null || die 'Python3 is required for preflight. Install python3 then retry.'
   python3 - "$SOURCE_DIR" <<'PY'
@@ -387,6 +623,11 @@ if p.exists():
   raise SystemExit('Refusing source with embedded bot credentials. Use an empty sonar_config.json in Git.')
 print('Validated',count,'Python sources and configuration')
 PY
+  if [[ -f "$SOURCE_DIR/scripts/verify_manifest.py" && -f "$SOURCE_DIR/MANIFEST_SHA256.txt" ]]; then
+    python3 "$SOURCE_DIR/scripts/verify_manifest.py" || die 'Source manifest verification failed; files may be mixed between releases.'
+  else
+    warn 'Source manifest is missing; release integrity could not be verified.'
+  fi
   if [[ -f /etc/os-release ]]; then require_service_host; else warn 'Not a systemd OS; source validation only'; fi
   ok 'Source preflight completed. It does not verify live network services.'
 }
@@ -399,7 +640,7 @@ PY
 install_deps() {
   say 'Installing operating-system dependencies (logs stored locally)'
   spinner_run 'Refreshing package repositories' run_logged_command env DEBIAN_FRONTEND=noninteractive apt-get update || die "apt update failed; $INSTALL_LOG"
-  spinner_run 'Installing OS prerequisites' run_logged_command env DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv python3-dev build-essential libssl-dev libffi-dev git curl openssh-client ca-certificates tar postgresql postgresql-contrib libpq-dev libpango-1.0-0 libpangoft2-1.0-0 fonts-dejavu-core || die "Dependency installation failed; $INSTALL_LOG"
+  spinner_run 'Installing OS prerequisites' run_logged_command env DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv python3-dev build-essential libssl-dev libffi-dev git curl openssh-client ca-certificates tar postgresql postgresql-contrib libpq-dev libpango-1.0-0 libpangoft2-1.0-0 fonts-dejavu-core whiptail || die "Dependency installation failed; $INSTALL_LOG"
   ensure_python_version
 }
 ask_new_credentials() {
@@ -458,6 +699,12 @@ if not re.fullmatch(r'[0-9]{6,15}:[A-Za-z0-9_-]{20,}',str(t)) or not re.fullmatc
 PY
 }
 create_venv() {
+  # Venv executables and package files must be traversable by the unprivileged
+  # systemd account. The installer itself keeps umask 077 for credentials;
+  # use 022 only while constructing this non-secret runtime environment.
+  local previous_umask
+  previous_umask="$(umask)"
+  umask 022
   say 'Building an isolated Python environment'
   spinner_run 'Creating isolated Python environment' python3 -m venv "$STATE_STAGE/venv" || die 'venv creation failed.'
   spinner_run 'Installing pip tooling' run_logged_command "$STATE_STAGE/venv/bin/python" -m pip install -U pip setuptools wheel || die 'pip bootstrap failed.'
@@ -490,6 +737,10 @@ from cryptography.fernet import Fernet
 import pathlib,sys
 Fernet(pathlib.Path(sys.argv[1]).read_bytes().strip())
 PY
+  # The venv is non-secret and may be readable by the service user; the
+  # encryption key must remain private before the staging directory is opened.
+  chmod 0600 "$STATE_STAGE/secret.key"
+  umask "$previous_umask"
 }
 ensure_db() {
   say 'Preparing local PostgreSQL with a dedicated account'
@@ -540,6 +791,47 @@ normalize_source_permissions() {
   find "$source" -type f -not -path "$source/venv/*"     ! -name sonar_config.json ! -name secret.key ! -name known_hosts ! -name .env     -exec chmod 0644 {} +
   find "$source" -type f -name '*.sh' -not -path "$source/venv/*" -exec chmod 0755 {} +
 }
+diagnose_service_exec() {
+  local executable="${1:-$APP_DIR/venv/bin/python}" resolved=''
+  printf '\n--- Sonar interpreter execution diagnostics ---\n' >&2
+  printf 'Requested path: %s\n' "$executable" >&2
+  if command -v namei >/dev/null 2>&1; then namei -l "$executable" >&2 || true; fi
+  resolved="$(readlink -f -- "$executable" 2>/dev/null || true)"
+  printf 'Resolved path: %s\n' "${resolved:-unresolved}" >&2
+  stat -Lc 'mode=%A (%a) owner=%U:%G file=%n' "$executable" "$resolved" 2>&1 || true
+  if command -v findmnt >/dev/null 2>&1; then
+    findmnt -no TARGET,OPTIONS -T "$executable" 2>&1 || true
+    [[ -z "$resolved" ]] || findmnt -no TARGET,OPTIONS -T "$resolved" 2>&1 || true
+  fi
+  if id -u "$APP_USER" >/dev/null 2>&1; then
+    runuser -u "$APP_USER" -- test -x "$executable" 2>&1 || true
+    runuser -u "$APP_USER" -- "$executable" -c 'import sys; print(sys.executable)' 2>&1 || true
+  fi
+  systemctl show "$SERVICE" -p FragmentPath -p User -p ExecStart -p ActiveState -p ExecMainCode -p ExecMainStatus 2>&1 || true
+  printf '%s\n' '--- End interpreter diagnostics ---' >&2
+}
+normalize_venv_permissions() {
+  local venv="$1" resolved options candidate
+  [[ -d "$venv" && ! -L "$venv" ]] || { warn "Virtual environment directory is missing or unsafe: $venv"; return 1; }
+  # Open only the venv's code/runtime tree. Secrets and application config live
+  # outside the venv and retain their 0600 permissions.
+  find "$venv" -type d -exec chmod 0755 {} + || return 1
+  find "$venv" -type f -perm /111 -exec chmod a+rx {} + || return 1
+  find "$venv" -type f ! -perm /111 -exec chmod a+r {} + || return 1
+  for candidate in "$venv/bin/python" "$venv/bin/python3" "$venv"/bin/python3.*; do
+    [[ -f "$candidate" && ! -L "$candidate" ]] || continue
+    chmod 0755 "$candidate" || return 1
+  done
+  [[ -x "$venv/bin/python" ]] || { warn "Venv interpreter is not executable: $venv/bin/python"; return 1; }
+  resolved="$(readlink -f -- "$venv/bin/python" 2>/dev/null || true)"
+  [[ -n "$resolved" && -f "$resolved" && -x "$resolved" ]] || { warn "Venv interpreter target is missing or not executable: ${resolved:-unresolved}"; return 1; }
+  if command -v findmnt >/dev/null 2>&1; then
+    options="$(findmnt -no OPTIONS -T "$venv/bin/python" 2>/dev/null || true)"
+    if printf '%s\n' "$options" | tr ',' '\n' | grep -qx noexec; then
+      warn "The filesystem containing $venv/bin/python is mounted noexec ($options)."; return 1
+    fi
+  fi
+}
 prepare_runtime_state() {
   [[ "$STATE_DIR" == /var/lib/sonar-radar && ! -L "$STATE_DIR" ]] || die 'Unsafe runtime directory'
   install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$STATE_DIR"
@@ -588,7 +880,10 @@ User=$APP_USER
 Group=$APP_USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$ENV_FILE
-ExecStart=$APP_DIR/venv/bin/python $APP_DIR/bot.py
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/usr/bin/test -x $APP_DIR/venv/bin/python
+ExecStartPre=/usr/bin/test -r $APP_DIR/bot.py
+ExecStart=$APP_DIR/venv/bin/python -u $APP_DIR/bot.py
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sonar-bot
@@ -606,16 +901,27 @@ EOF
   chmod 0644 "$BOT_UNIT"
 }
 wait_for_bot_ready() {
-  local timeout="${1:-120}" attempt=0 ready_file="$STATE_DIR/bot-ready"
+  local timeout="${1:-120}" attempt=0 ready_file="$STATE_DIR/bot-ready" main_status active_state
   while (( attempt < timeout )); do
     if [[ -s "$ready_file" ]] && systemctl is-active --quiet "$SERVICE"; then
       ok "Bot startup readiness verified after ${attempt}s"
       return 0
     fi
+    # 203/EXEC is a deterministic launch failure, not a slow startup. Stop
+    # waiting and expose the path/mount diagnostics immediately.
+    main_status="$(systemctl show -p ExecMainStatus --value "$SERVICE" 2>/dev/null || true)"
+    active_state="$(systemctl show -p ActiveState --value "$SERVICE" 2>/dev/null || true)"
+    if [[ "$main_status" == 203 || "$active_state" == failed ]]; then
+      warn "Bot process cannot start (ActiveState=${active_state:-unknown}, ExecMainStatus=${main_status:-unknown})."
+      diagnose_service_exec "$APP_DIR/venv/bin/python"
+      journalctl -u "$SERVICE" -n 60 --no-pager >&2 || true
+      return 1
+    fi
     attempt=$((attempt+1))
     sleep 1
   done
   warn "BOT_STARTUP_READINESS_TIMEOUT: no readiness marker after ${timeout}s."
+  diagnose_service_exec "$APP_DIR/venv/bin/python"
   systemctl status "$SERVICE" --no-pager -l >&2 || true
   warn 'Last 60 Bot journal lines:'
   journalctl -u "$SERVICE" -n 60 --no-pager >&2 || true
@@ -721,11 +1027,12 @@ install_app() {
   chown -R root:root "$STATE_STAGE"
   normalize_source_permissions "$STATE_STAGE"
   chmod 0755 "$STATE_STAGE"
-  # Python venv created with umask 077 has 0700 directories. Fix traversability.
-  # This ONLY opens read/execute on the venv; config and secret.key stay 0600.
-  chmod -R a+rX "$STATE_STAGE/venv"
+  # Normalize permissions even on hosts whose Python venv builder or package
+  # installer ignores the caller's umask. Never leave systemd with a root-only
+  # interpreter or a noexec runtime path.
+  normalize_venv_permissions "$STATE_STAGE/venv" || { diagnose_service_exec "$STATE_STAGE/venv/bin/python"; die 'Virtual environment permissions or mount options prevent execution.'; }
   # Explicitly check the service account can run the EXACT promoted interpreter.
-  runuser -u "$APP_USER" -- "$STATE_STAGE/venv/bin/python" -c 'import sys, telegram, psycopg2, websockets, fastapi, uvicorn; print(sys.version.split()[0])' >> "$INSTALL_LOG" 2>&1 || die 'Service user cannot execute Python/dependencies (permission or import failure).'
+  runuser -u "$APP_USER" -- "$STATE_STAGE/venv/bin/python" -c 'import sys, telegram, psycopg2, websockets, fastapi, uvicorn; print(sys.version.split()[0])' >> "$INSTALL_LOG" 2>&1 || { diagnose_service_exec "$STATE_STAGE/venv/bin/python"; die 'Service user cannot execute Python/dependencies (permission or import failure).'; }
   chown "$APP_USER:$APP_USER" "$STATE_STAGE/sonar_config.json" "$STATE_STAGE/secret.key"
   chmod 0600 "$STATE_STAGE/sonar_config.json" "$STATE_STAGE/secret.key"
   if [[ -f "$STATE_STAGE/.ssh/known_hosts" ]]; then
@@ -745,8 +1052,9 @@ install_app() {
   prepare_runtime_state
   create_unit
   systemctl daemon-reload
-  systemd-analyze verify "$BOT_UNIT" >> "$INSTALL_LOG" 2>&1 || die 'Invalid systemd unit generated.'
-  runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import telegram, psycopg2, websockets' >> "$INSTALL_LOG" 2>&1 || die 'Installed interpreter is not executable by the service user.'
+  systemd-analyze verify "$BOT_UNIT" >> "$INSTALL_LOG" 2>&1 || { diagnose_service_exec "$APP_DIR/venv/bin/python"; die 'Invalid systemd unit generated; inspect systemd-analyze output.'; }
+  normalize_venv_permissions "$APP_DIR/venv" || { diagnose_service_exec "$APP_DIR/venv/bin/python"; die 'Promoted virtual environment is not executable.'; }
+  runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import telegram, psycopg2, websockets' >> "$INSTALL_LOG" 2>&1 || { diagnose_service_exec "$APP_DIR/venv/bin/python"; die 'Installed interpreter is not executable by the service user.'; }
   # Import the real bot entry point as the service account before changing the
   # live service. This catches missing modules and import-time exceptions while
   # rollback is still straightforward and before Telegram/network startup.
@@ -757,7 +1065,12 @@ install_app() {
       die 'Bot source could not be imported by the service account.'
     }
   rm -f -- "$STATE_DIR/bot-ready"
-  systemctl enable --now "$SERVICE" >> "$INSTALL_LOG" 2>&1 || die 'Bot service did not start.'
+  systemctl reset-failed "$SERVICE" >/dev/null 2>&1 || true
+  if ! systemctl enable --now "$SERVICE" >> "$INSTALL_LOG" 2>&1; then
+    diagnose_service_exec "$APP_DIR/venv/bin/python"
+    journalctl -u "$SERVICE" -n 60 --no-pager >&2 || true
+    die 'Bot service could not be executed or started; diagnostics are shown above.'
+  fi
   if ! spinner_run 'Waiting for Telegram, PostgreSQL migrations and Bot readiness' wait_for_bot_ready 120; then
     journalctl -u "$SERVICE" -n 60 --no-pager >&2 || true
     die 'Bot process did not reach startup readiness; diagnostics are shown above.'
@@ -1210,35 +1523,124 @@ settings_menu() {
     esac
   done
 }
-run() { bash "$SOURCE_DIR/install.sh" "$@" || warn "Action failed (exit $?). See logs and diagnostics."; }
-menu() {
-  require_root
-  while true;do
+run() {
+  local rc=0
+  bash "$SOURCE_DIR/install.sh" "$@" || rc=$?
+  (( rc == 0 )) || warn "Action failed (exit $rc). See logs and diagnostics."
+  return "$rc"
+}
+ui_input() {
+  local title="$1" prompt="$2" default="${3:-}" value=''
+  if command -v whiptail >/dev/null 2>&1 && [[ -t 0 && -t 1 ]]; then
+    value="$(whiptail --title "$title" --inputbox "$prompt" 10 76 "$default" 3>&1 1>&2 2>&3)" || return 1
+  else
+    read -r -p "  $prompt " value || return 1
+    [[ -n "$value" ]] || value="$default"
+  fi
+  printf '%s' "$value"
+}
+menu_whiptail() {
+  local choice domain email action service path source
+  while true; do
+    choice="$(whiptail --title 'SONAR RADAR PRO 6.9' --backtitle 'Deployment  |  Operations  |  Recovery' \
+      --menu 'Select an operation. Destructive actions are clearly marked.' 24 88 16 \
+      '01' 'Install / Resume full stack (preserve existing data)' \
+      '02' 'Safe update (backup + rollback)' \
+      '03' 'Install / Repair Mini App panel' \
+      '04' 'Domain, Nginx and HTTPS setup' \
+      '05' 'Settings and Telegram credentials' \
+      '06' 'Service control' \
+      '07' 'Logs and live journal' \
+      '08' 'Create verified backup' \
+      '09' 'Restore database backup' \
+      '10' 'Diagnostics and health checks' \
+      '11' 'Preflight / source integrity check' \
+      '12' 'Uninstall application (keep DB and backups)' \
+      '13' 'Repair services and permissions' \
+      '14' 'Clean reset + reinstall (archive first)' \
+      '15' 'FULL PURGE: delete all Sonar data and EXIT' \
+      '16' 'Create redacted support bundle' \
+      '00' 'Exit' 3>&1 1>&2 2>&3)" || break
+    case "$choice" in
+      01) run --install;;
+      02) run --update;;
+      03) run --panel;;
+      04)
+        domain="$(ui_input 'DOMAIN / HTTPS' 'Domain name (FQDN): ' '')" || continue
+        email="$(ui_input 'DOMAIN / HTTPS' 'ACME email (optional): ' '')" || continue
+        run --wizard "$domain" "$email";;
+      05) settings_menu;;
+      06)
+        service="$(whiptail --title 'SERVICE CONTROL' --menu 'Choose service' 12 64 2 bot 'Telegram Bot' web 'Mini App API' 3>&1 1>&2 2>&3)" || continue
+        action="$(whiptail --title 'SERVICE CONTROL' --menu 'Choose action' 12 64 4 start 'Start' stop 'Stop' restart 'Restart' status 'Status' 3>&1 1>&2 2>&3)" || continue
+        if [[ "$service" == bot ]]; then service=sonar-bot; else service=sonar-web; fi
+        run --service "$service" "$action";;
+      07)
+        service="$(whiptail --title 'LOGS' --menu 'Select log stream' 16 68 6 bot 'Bot journal' web 'Web journal' all 'Bot + Web' errors 'Errors only' json 'JSON application log' install 'Installer log' 3>&1 1>&2 2>&3)" || continue
+        if whiptail --title 'LOGS' --yesno 'Follow logs live?' 8 56; then bash "$SOURCE_DIR/scripts/logs.sh" "$service" --follow; else bash "$SOURCE_DIR/scripts/logs.sh" "$service"; fi;;
+      08) run --backup;;
+      09) path="$(ui_input 'RESTORE DATABASE' 'Path to verified .dump file:' '')" || continue;run --restore "$path";;
+      10) run --doctor;;
+      11) run --check;;
+      12) run --uninstall;;
+      13) run --repair;;
+      14) run --clean-install;;
+      15) if run --purge; then break; fi;;
+      16) run --support;;
+      00) break;;
+    esac
+  done
+}
+menu_text() {
+  local choice service action domain email path
+  while true; do
     clear 2>/dev/null || true
-    printf '\n%b  ╭────────────────────────────────────────────────────────╮%b\n' "$C_BLUE" "$C_RESET"
-    printf '%b  │%b    /\  /\        SONAR  /  RADAR                  %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
-    printf '%b  │%b   ( \__/ )       PRO 6.6 Control      %b│%b\n' "$C_BLUE" "$C_DIM" "$C_BLUE" "$C_RESET"
-    printf '%b  ╰────────────────────────────────────────────────────────╯%b\n' "$C_BLUE" "$C_RESET"
-    printf '  ─────── DEPLOY ────────────────────────────────────────\n  01  Install Full Stack (Bot + DB + Mini App)\n  02  Update application safely\n  03  Install / repair Mini App panel\n  04  Configure domain + HTTPS\n  05  Settings & credentials\n  06  Service management\n  07  Professional logs (live/filter/JSON)\n  08  Create verified backup\n  09  Restore database from .dump\n  10  Diagnostics / health\n  11  Preflight source check\n  12  Uninstall (archive only)\n  13  Repair installed services\n  14  Clean reset + reinstall (includes Sonar database)\n  00  Exit\n\n'
-    local choice s a d e p
+    printf '\n%b  ╭──────────────────────────────────────────────────────────────────────╮%b\n' "$C_BLUE" "$C_RESET"
+    printf '%b  │%b  SONAR RADAR PRO 6.9  ·  DEPLOYMENT & OPERATIONS CONSOLE             %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
+    printf '%b  ╰──────────────────────────────────────────────────────────────────────╯%b\n' "$C_BLUE" "$C_RESET"
+    printf '  %-37s %-37s\n' 'INSTALL & UPDATE' 'OPERATIONS'
+    printf '  01  Install / Resume full stack     06  Service control\n'
+    printf '  02  Safe update                     07  Logs / live journal\n'
+    printf '  03  Mini App panel                  08  Create verified backup\n'
+    printf '  04  Domain / HTTPS                  09  Restore database backup\n'
+    printf '  05  Settings / credentials          10  Diagnostics / health\n'
+    printf '  ────────────────────────────────────────────────────────────────────────\n'
+    printf '  11  Preflight / source integrity\n  12  Uninstall application (keep DB and backups)\n  13  Repair services and permissions\n  14  Clean reset + reinstall (archive first)\n'
+    printf '%b  15  FULL PURGE: delete all Sonar data and EXIT%b\n' "$C_RED" "$C_RESET"
+    printf '  16  Create redacted support bundle\n  00  Exit\n\n'
     read -r -p '  SONAR › ' choice || break
     case "$choice" in
-      1|01) run --install;;2|02) run --update;;3|03) run --panel;;
-      4|04) read -r -p '  FQDN: ' d;read -r -p '  ACME email (optional): ' e;run --wizard "$d" "$e";;
+      1|01) run --install;;
+      2|02) run --update;;
+      3|03) run --panel;;
+      4|04) read -r -p '  FQDN: ' domain;read -r -p '  ACME email (optional): ' email;run --wizard "$domain" "$email";;
       5|05) settings_menu;;
-      6|06) read -r -p '  Service [bot/web]: ' s;read -r -p '  Action [start/stop/restart/status]: ' a;case "$s" in bot) s="$SERVICE";;web) s="$WEB_SERVICE";;esac;run --service "$s" "$a";;
-      7|07) printf '  Logs [bot/web/all/errors/json/install]: ';read -r s
-            [[ "$s" =~ ^(bot|web|all|errors|json|install)$ ]] || { warn 'Invalid log source';continue; }
-            read -r -p '  Follow live? [y/N]: ' a
-            [[ "$a" =~ ^[Yy]$ ]] && bash "$SOURCE_DIR/scripts/logs.sh" "$s" --follow || bash "$SOURCE_DIR/scripts/logs.sh" "$s";;
+      6|06) read -r -p '  Service [bot/web]: ' service;read -r -p '  Action [start/stop/restart/status]: ' action;case "$service" in bot) service=sonar-bot;;web) service=sonar-web;;esac;run --service "$service" "$action";;
+      7|07) read -r -p '  Logs [bot/web/all/errors/json/install]: ' service;[[ "$service" =~ ^(bot|web|all|errors|json|install)$ ]] || { warn 'Invalid log source';continue; };read -r -p '  Follow live? [y/N]: ' action;[[ "$action" =~ ^[Yy]$ ]] && bash "$SOURCE_DIR/scripts/logs.sh" "$service" --follow || bash "$SOURCE_DIR/scripts/logs.sh" "$service";;
       8|08) run --backup;;
-      9|09) read -r -p '  Path to verified .dump: ' p;run --restore "$p";;
-      10) run --doctor;;11) run --check;;12) run --uninstall;;13) run --repair;;14) run --clean-install;;15) run --support;;
-      0|00) break;; *) warn 'Unknown option.';;
+      9|09) read -r -p '  Path to verified .dump: ' path;run --restore "$path";;
+      10) run --doctor;;
+      11) run --check;;
+      12) run --uninstall;;
+      13) run --repair;;
+      14) run --clean-install;;
+      15) if run --purge; then break; fi;;
+      16) run --support;;
+      0|00) break;;
+      *) warn 'Unknown option.';;
     esac
     printf '\n';read -r -p '  Press Enter to continue...' _ || break
   done
 }
+menu() {
+  require_root
+  if [[ -t 0 && -t 1 ]] && command -v whiptail >/dev/null 2>&1; then
+    menu_whiptail
+  else
+    menu_text
+  fi
+}
+
 case "${1:-}" in
   '') menu;;
   --check) preflight;;
@@ -1263,14 +1665,16 @@ case "${1:-}" in
   --status) require_root;status;;
   --logs) require_root;shift;bash "$SOURCE_DIR/scripts/logs.sh" "${1:-bot}" "${@:2}";;
   --uninstall) uninstall_app;;
+  --purge) purge_project;;
   --help|-h) cat <<'USAGE'
 Sonar Radar Pro 6.9 | Deployment Manager
-  sudo bash install.sh                 Interactive Apple-inspired terminal UI
+  sudo bash install.sh                 Interactive whiptail/ANSI deployment console
   sudo bash install.sh --check         Offline source and OS checks
   sudo bash install.sh --install       Fresh FULL installation: Bot + DB + Mini App
   sudo bash install.sh --update        Upgrade whole stack; archive code and DB
   sudo bash install.sh --inventory     Detect leftover application services and database
   sudo bash install.sh --clean-install Archive and reset Sonar data+DB with explicit typed approval, then install
+  sudo bash install.sh --purge         Irreversible full project purge; leaves shared OS services intact
   sudo bash install.sh --panel         Install local Telegram Mini App API
   sudo bash install.sh --wizard DOMAIN EMAIL  Configure DNS, nginx, HTTPS, origin and web health
   sudo bash install.sh --font          Install licensed Vazirmatn font on VPS
@@ -1285,7 +1689,8 @@ Sonar Radar Pro 6.9 | Deployment Manager
   sudo bash install.sh --logs [bot|web|all|errors|json|install] [--follow] [--lines N] [--since TIME] [--grep TEXT]
   sudo bash install.sh --backup
   sudo bash install.sh --restore /path/backup.dump
-  sudo bash install.sh --uninstall     Archive installation, leave DB intact
+  sudo bash install.sh --uninstall     Archive application, leave DB and backups intact
+  sudo bash install.sh --purge         IRREVERSIBLE: delete Sonar code, DB, keys, logs and backups; then exit
 For GitHub upload: .gitignore excludes credentials, keys, dumps, venv and logs.
 USAGE
     ;;
