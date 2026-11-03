@@ -36,7 +36,20 @@ except Exception as e:
     logger.critical(f"❌ خواندن فایل کانفیگ ناموفق بود / Failed to read config file ({CONFIG_PATH}): {e}", exc_info=True)
     TOKEN = None
 
+def _readiness_file():
+    from pathlib import Path
+    state_dir = os.getenv("SONAR_STATE_DIR", os.path.join(BASE_DIR, "runtime"))
+    return Path(os.getenv("SONAR_READY_FILE", os.path.join(state_dir, "bot-ready")))
+
+
 def main():
+    ready_file = _readiness_file()
+    try:
+        ready_file.unlink(missing_ok=True)
+    except OSError:
+        logger.exception("Cannot clear stale bot readiness marker: %s", ready_file)
+        raise
+
     if not isinstance(TOKEN, str) or not TOKEN.strip():
         logger.critical("Telegram bot token is missing. Configure bot_token in sonar_config.json.")
         raise SystemExit(2)
@@ -53,6 +66,7 @@ def main():
     except OSError:
         version = "unknown"
     logger.info("Starting Sonar Radar Pro %s", version)
+    logger.info("BOT_BOOTSTRAP_BEGIN python=%s", __import__("sys").version.split()[0])
 
     async def _startup_step(name, callback, *args):
         logger.info("STARTUP_STAGE_BEGIN stage=%s", name)
@@ -114,6 +128,7 @@ def main():
         from web_login import install_schema as web_schema
         from monitor_fleet import install_schema as fleet_schema, install_job_schema
         from agent_traffic import install_schema as install_meter
+        from service_monitor import install_schema as service_monitor_schema
 
         migrations = (
             ("subscription_health", subscription_schema),
@@ -121,6 +136,7 @@ def main():
             ("monitor_fleet", fleet_schema),
             ("monitor_fleet_jobs", install_job_schema),
             ("agent_traffic", install_meter),
+            ("service_monitor", service_monitor_schema),
         )
         for name, migration in migrations:
             await _startup_step(name, migration, db)
@@ -137,7 +153,17 @@ def main():
                 name="enterprise-backups"
             ),
         ]
+        # The installer waits for this marker instead of guessing readiness
+        # from systemd's ActiveState (Type=simple becomes active before Python
+        # has validated Telegram credentials or completed database migrations).
+        ready_file = _readiness_file()
+        ready_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = ready_file.with_name(ready_file.name + f".{os.getpid()}.tmp")
+        temporary.write_text(dt.datetime.now(dt.timezone.utc).isoformat() + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, ready_file)
         logger.info("All startup migrations completed; enterprise workers started.")
+        logger.info("BOT_STARTUP_READY marker=%s", ready_file)
 
     async def _post_shutdown(application):
         stop = application.bot_data.get("enterprise_stop")
@@ -159,6 +185,7 @@ def main():
         except Exception:
             logger.exception("Shared executor shutdown failed")
 
+    logger.info("Building Telegram application")
     app = (
         ApplicationBuilder()
         .token(TOKEN)
@@ -173,6 +200,7 @@ def main():
         .build()
     )
     
+    logger.info("Telegram application constructed; registering handlers")
     # اضافه کردن ارور هندلر از فایل لاجیک
     app.add_error_handler(bot_logic.error_handler)
 
@@ -215,7 +243,8 @@ def main():
         app.job_queue.run_repeating(service_check_job, interval=30, first=35,
                                     job_kwargs={'max_instances':1,'coalesce':True})
     else:
-        logger.error("JobQueue not available.")
+        logger.critical("PTB_JOB_QUEUE_UNAVAILABLE: install python-telegram-bot[job-queue].")
+        raise RuntimeError("PTB_JOB_QUEUE_UNAVAILABLE")
 
     try:
         app.run_polling(

@@ -1,3 +1,16 @@
+# RadarSonarPlus 6.9 — Post-audit reliability and installer recovery patch
+
+- Fixed health timestamp parsing for legacy TEXT agent timestamps and stopped treating missing CPU/RAM/Disk data as zero load.
+- Corrected `service_down` automation to query HTTP/TCP probe records; unsafe legacy restart rules are disabled and unsupported event/action pairs are rejected by both API validation and the service layer.
+- Added the missing HTTP/TCP service-monitor schema migration to both Telegram Bot and Web API startup.
+- Added automatic Agent Rollout rollback for successful hosts after a later batch fails, plus restart-safe rollback reservations and manual retry after rollback failure.
+- Made signed Agent release identities immutable by version/channel.
+- Moved synchronous database work out of async Webhook, Recovery and Rollout workers.
+- Removed the unreachable per-server Backup operation path; scheduled PostgreSQL backups remain on their dedicated scheduler.
+- Fixed venv permissions under the installer umask; added exact interpreter/mount diagnostics, systemd ExecStartPre checks and corrected Unit-level start limits.
+- Added service-account bot import preflight, a post-migration startup readiness marker, bounded installer readiness wait and richer startup diagnostics.
+- Added a non-destructive resume path when a first installation rolls back code but leaves PostgreSQL/runtime state intact.
+
 # RadarSonarPlus 6.9.1 — Startup and transport reliability patch
 
 - Deferred PostgreSQL initialization until the first real query and added bounded pool/schema retry after transient database startup races.

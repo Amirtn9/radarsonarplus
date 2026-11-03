@@ -84,44 +84,81 @@ class EnterpriseStore:
     def __init__(self, pro_store): self.pro=pro_store; self.db=pro_store.db
 
     def health(self, actor, owner=None, stale_seconds=None):
+        """Return health only when every weighted signal has usable source data.
+
+        Legacy agent_last_seen values are TEXT, while last_checked_at is a
+        PostgreSQL TIMESTAMPTZ. Normalize both explicitly and fail closed when
+        timestamps or metric values are absent/invalid; missing data must never
+        be converted into a healthy zero-load reading.
+        """
+        import math
+
+        def as_utc(value):
+            if isinstance(value, datetime):
+                return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+            if isinstance(value, str) and value.strip():
+                raw = value.strip()
+                try:
+                    parsed = datetime.fromisoformat(raw[:-1] + '+00:00' if raw.endswith(('Z', 'z')) else raw)
+                except ValueError:
+                    return None
+                return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+            return None
+
+        def numeric(value):
+            if value is None or isinstance(value, bool):
+                return None
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return max(0.0, min(100.0, number)) if math.isfinite(number) else None
+
         owner=self.pro.workspace(actor,owner)
         policy=self.db.execute("SELECT weights,thresholds,stale_seconds FROM rs_health_policies WHERE owner_id=%s",(owner,),fetch="one")
-        weights=dict(policy["weights"]) if policy else {"agent":25,"cpu":25,"ram":25,"disk":25}
-        thresholds=dict(policy["thresholds"]) if policy else {"cpu":90,"ram":90,"disk":90}
+        defaults={"agent":25,"cpu":25,"ram":25,"disk":25}
+        weights={key:float((policy or {}).get('weights',{}).get(key,default)) for key,default in defaults.items()}
+        threshold_defaults={"cpu":90,"ram":90,"disk":90}
+        thresholds={key:max(1.0,float((policy or {}).get('thresholds',{}).get(key,default)))
+                    for key,default in threshold_defaults.items()}
         stale_seconds=int(stale_seconds or (policy["stale_seconds"] if policy else 180))
         rows=self.db.execute("""SELECT id,name,last_status,last_agent_status,last_cpu,last_ram,last_disk,
             last_checked_at,agent_last_seen FROM servers WHERE owner_id=%s ORDER BY id""",(owner,),fetch='all')
         result=[]
+        now=datetime.now(timezone.utc)
         for r in rows:
-            stamp=r.get('last_checked_at') or r.get('agent_last_seen')
-            age=(datetime.now(timezone.utc)-stamp.replace(tzinfo=timezone.utc) if stamp and stamp.tzinfo is None else
-                 datetime.now(timezone.utc)-stamp if stamp else None)
+            stamp=as_utc(r.get('last_checked_at')) or as_utc(r.get('agent_last_seen'))
+            age=(now-stamp) if stamp else None
             stale=age is None or age.total_seconds()>stale_seconds
-            agent=str(r.get('last_agent_status') or '').lower()
-            status=str(r.get('last_status') or '').lower()
-            if stale or status in ('offline','down','fail') or agent in ('offline','down','disconnected','fail'):
-                score=None; state='unknown' if stale else 'critical'
+            agent=str(r.get('last_agent_status') or '').strip().lower()
+            status=str(r.get('last_status') or '').strip().lower()
+            offline=status in ('offline','down','fail','failed') or agent in ('offline','down','disconnected','fail','failed')
+            metric_values={
+                'agent':100.0 if agent in ('online','up','ok','connected','healthy') else None,
+                'cpu':None,
+                'ram':None,
+                'disk':None,
+            }
+            for key in ('cpu','ram','disk'):
+                raw=numeric(r.get('last_'+key))
+                if raw is not None:
+                    metric_values[key]=max(0.0,100.0-min(100.0,raw/thresholds[key]*100.0))
+            missing=[key for key,value in metric_values.items() if value is None]
+            if offline:
+                score=None; state='critical'
+            elif stale or missing:
+                score=None; state='unknown'
             else:
-                values={
-                    "agent":100 if agent in ('online','up','ok','connected','healthy') else 0,
-                    "cpu":max(0,100-min(100,float(r.get('last_cpu') or 0)/float(thresholds['cpu'])*100)),
-                    "ram":max(0,100-min(100,float(r.get('last_ram') or 0)/float(thresholds['ram'])*100)),
-                    "disk":max(0,100-min(100,float(r.get('last_disk') or 0)/float(thresholds['disk'])*100)),
-                }
-                score=round(sum(float(weights[k])*values[k] for k in values)/100)
+                score=round(sum(weights[key]*metric_values[key] for key in metric_values)/100)
                 state='healthy' if score>=85 else 'warning' if score>=60 else 'critical'
             result.append({'server_id':r['id'],'name':r['name'],'score':score,'state':state,'stale':stale,
-                           'last_checked_at':stamp.isoformat() if stamp else None})
+                           'missing_metrics':missing,'last_checked_at':stamp.isoformat() if stamp else None})
         return {'owner_id':owner,'policy':{'weights':weights,'thresholds':thresholds,'stale_seconds':stale_seconds},
                 'servers':result,'healthy':sum(x['state']=='healthy' for x in result),
                 'warning':sum(x['state']=='warning' for x in result),'critical':sum(x['state']=='critical' for x in result),
                 'unknown':sum(x['state']=='unknown' for x in result)}
 
     def create_operation(self, actor, owner, kind, resource_ids, idempotency_key, payload=None):
-        if kind=='backup':
-            from settings import SUPER_ADMIN_ID
-            if int(actor)!=int(SUPER_ADMIN_ID) or int(owner)!=int(SUPER_ADMIN_ID):
-                raise PermissionError('Full PostgreSQL backup operation is platform-admin only')
         if self.pro.role(actor,owner) not in ('owner','manager','operator'): raise PermissionError('Operation role required')
         allowed,_=self.db.check_access(owner)
         if not allowed: raise PermissionError('Workspace owner is inactive')
@@ -459,7 +496,7 @@ class EnterpriseStore:
 
     def create_automation_rule(self,actor,owner,event,action,max_attempts=1):
         self.pro.require(actor,owner,write=True)
-        allowed={'agent_unreachable':{'notify','restart_managed_service'},'service_down':{'notify','restart_managed_service'},'disk_pressure':{'notify'}}
+        allowed={'agent_unreachable':{'notify','restart_managed_service'},'service_down':{'notify'},'disk_pressure':{'notify'}}
         if action not in allowed.get(event,set()):raise ValueError('Automation action is not allowlisted for this event')
         if not 1<=int(max_attempts)<=3:raise ValueError('Attempts must be 1-3')
         row=self.db.execute('''INSERT INTO rs_automation_rules(owner_id,actor_id,event,action,max_attempts) VALUES(%s,%s,%s,%s,%s)
@@ -480,11 +517,23 @@ class EnterpriseStore:
         if len(artifact)>2_000_000: raise ValueError("Agent artifact exceeds 2 MB")
         from enterprise_runtime import verify_agent_release_bytes
         verify_agent_release_bytes(version,sha256,signature,artifact)
+        # A release identity is immutable. Re-registering identical bytes is
+        # idempotent; changing bytes under the same version/channel is rejected.
         row=self.db.execute("""INSERT INTO rs_agent_releases(version,artifact_url,sha256,signature,artifact,channel,created_by)
           VALUES(%s,'db://signed-artifact',%s,%s,%s,%s,%s)
-          ON CONFLICT(version,channel) DO UPDATE SET sha256=EXCLUDED.sha256,signature=EXCLUDED.signature,
-          artifact=EXCLUDED.artifact,created_by=EXCLUDED.created_by,created_at=NOW()
-          RETURNING id""",(version,str(sha256).lower(),signature,artifact,channel,actor),fetch="one")
+          ON CONFLICT(version,channel) DO NOTHING RETURNING id""",
+          (version,str(sha256).lower(),signature,artifact,channel,actor),fetch="one")
+        if row is None:
+            existing=self.db.execute("""SELECT id,sha256,signature,artifact FROM rs_agent_releases
+              WHERE version=%s AND channel=%s""",(version,channel),fetch="one")
+            if not existing:
+                raise RuntimeError("RELEASE_CONFLICT_LOOKUP_FAILED")
+            same=(str(existing.get('sha256') or '').lower()==str(sha256).lower()
+                  and str(existing.get('signature') or '')==str(signature)
+                  and bytes(existing.get('artifact') or b'')==artifact)
+            if not same:
+                raise ValueError("RELEASE_VERSION_IMMUTABLE: publish changed Agent content under a new version")
+            row={'id':existing['id']}
         self.pro.audit(owner,actor,'agent_release_registered',str(row['id']),version+":"+channel)
         return {'id':row['id'],'version':version,'sha256':str(sha256).lower(),'channel':channel,'signature_verified':True}
 
@@ -519,7 +568,7 @@ class EnterpriseStore:
     def control_agent_rollout(self,actor,owner,rollout_id,action):
         self.pro.require(actor,owner,write=True)
         if action not in {"pause","resume","cancel","rollback"}: raise ValueError("Invalid rollout action")
-        row=self.db.execute("""SELECT id,state,server_ids,batch_offset,active_operation_id,previous_release_id
+        row=self.db.execute("""SELECT id,state,server_ids,batch_offset,active_operation_id,previous_release_id,rollback_attempts
           FROM rs_agent_rollouts WHERE id=%s AND owner_id=%s""",(int(rollout_id),owner),fetch="one")
         if not row: raise ValueError("Rollout not found")
         if action=="pause":
@@ -535,19 +584,30 @@ class EnterpriseStore:
                 except ValueError: pass
             self.db.execute("UPDATE rs_agent_rollouts SET state='cancelled',lease_until=NULL,updated_at=NOW() WHERE id=%s",(int(rollout_id),))
         elif action=="rollback":
-            if row["state"] not in ("completed","failed"): raise ValueError("Only completed or failed rollouts can be rolled back")
-            if not row.get("previous_release_id"): raise ValueError("No previous signed release is available for rollback")
-            successful=list(row["server_ids"] or [])[:int(row["batch_offset"] or 0)]
+            if row["state"] not in ("completed","failed","cancelled","rollback_failed"):
+                raise ValueError("Only completed, failed, cancelled or rollback_failed rollouts can be rolled back")
             if row.get("active_operation_id"):
-                completed=self.db.execute("SELECT resource_id FROM rs_operation_items WHERE operation_id=%s AND status='succeeded'",
-                                           (row["active_operation_id"],),fetch="all")
-                successful.extend(int(x["resource_id"]) for x in completed)
-            successful=sorted(set(successful))
+                active=self.db.execute("SELECT status FROM rs_operations WHERE id=%s AND owner_id=%s",
+                    (row["active_operation_id"],owner),fetch="one")
+                if active and active.get("status") not in ("succeeded","failed","cancelled"):
+                    raise ValueError("The active rollout batch has not settled; wait for it to finish before rollback")
+            if not row.get("previous_release_id"): raise ValueError("No previous signed release is available for rollback")
+            completed=self.db.execute("""SELECT DISTINCT i.resource_id FROM rs_operation_items i
+              JOIN rs_operations o ON o.id=i.operation_id
+              WHERE o.owner_id=%s AND o.idempotency_key LIKE %s AND i.status='succeeded'""",
+              (owner,f"rollout:{int(rollout_id)}:%"),fetch="all")
+            successful=sorted({int(x["resource_id"]) for x in completed})
             if not successful: raise ValueError("No successfully updated servers are available to roll back")
-            op=self.create_operation(actor,owner,"agent_update",successful,
-                f"rollout-rollback:{int(rollout_id)}",{"release_id":int(row["previous_release_id"]),"rollback_of":int(rollout_id)})
-            self.db.execute("UPDATE rs_agent_rollouts SET state='rolling_back',rollback_operation_id=%s,lease_until=NULL,updated_at=NOW() WHERE id=%s",
-                (op["id"],int(rollout_id)))
+            # Reserve the retry atomically. The worker resumes rollback_pending
+            # rows, so a process crash between reservation and queue insertion
+            # cannot strand the rollout or create duplicate rollback operations.
+            reservation=self.db.execute("""UPDATE rs_agent_rollouts SET state='rollback_pending',
+              rollback_attempts=rollback_attempts+1,rollback_operation_id=NULL,lease_until=NULL,
+              detail=%s::jsonb,updated_at=NOW()
+              WHERE id=%s AND owner_id=%s AND state IN ('completed','failed','cancelled','rollback_failed')
+              RETURNING rollback_attempts""",
+              (json.dumps({'reason':'manual_rollback','rollback':'pending'}),int(rollout_id),owner),fetch="one")
+            if not reservation: raise ValueError("Rollout state changed; refresh and retry")
         self.pro.audit(owner,actor,"agent_rollout_"+action,str(rollout_id))
         return {"id":int(rollout_id),"action":action}
 

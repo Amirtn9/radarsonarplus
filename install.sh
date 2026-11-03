@@ -264,21 +264,36 @@ reset_project_components() {
   ok 'Previous Sonar deployment and its database removed. Backups remain available.'
 }
 select_install_strategy() {
-  # Return code 0 = proceed fresh, 2 = upgrade, 1 = abort.
+  # Return code 0 = fresh/resume install, 2 = upgrade, 1 = abort.
   if existing_components;then
     return 0
   fi
-  [[ -t 0 ]] || die 'Existing Sonar resources found. Run interactively to choose upgrade or clean reset.'
-  printf '\n  [1] Keep existing data and update (requires installed application)\n'
-  printf '  [2] Archive + REMOVE Sonar code, config, services and DATABASE, then install\n'
-  printf '  [0] Cancel\n'
+  [[ -t 0 ]] || die 'Existing Sonar resources found. Run interactively to choose resume, upgrade or clean reset.'
   local choice
-  read -r -p '  Select [0-2]: ' choice
-  case "$choice" in
-    1) if [[ -f "$APP_DIR/bot.py" ]];then return 2;else die 'Application missing. Choose archive and reset for a clean installation.';fi;;
-    2) reset_project_components || return 1;return 0;;
-    0|*) die 'Installation cancelled. Nothing changed.';;
-  esac
+  if [[ -f "$APP_DIR/bot.py" ]];then
+    printf '\n  [1] Keep existing data and update the installed application\n'
+    printf '  [2] Archive + REMOVE Sonar code, config, services and DATABASE, then install\n'
+    printf '  [0] Cancel\n'
+    read -r -p '  Select [0-2]: ' choice
+    case "$choice" in
+      1) return 2;;
+      2) reset_project_components || return 1;return 0;;
+      0|*) die 'Installation cancelled. Nothing changed.';;
+    esac
+  else
+    # A failed first install rolls application code back but deliberately keeps
+    # PostgreSQL, the private environment and encryption key. Let the next run
+    # resume with those resources instead of forcing a destructive clean reset.
+    printf '\n  [1] Resume installation and PRESERVE existing database/runtime data\n'
+    printf '  [2] Archive + REMOVE Sonar code, config, services and DATABASE, then install\n'
+    printf '  [0] Cancel\n'
+    read -r -p '  Select [0-2]: ' choice
+    case "$choice" in
+      1) say 'Resuming fresh deployment; existing PostgreSQL, environment and runtime key will be reused.';return 0;;
+      2) reset_project_components || return 1;return 0;;
+      0|*) die 'Installation cancelled. Nothing changed.';;
+    esac
+  fi
 }
 
 valid_port() { [[ "$1" =~ ^[0-9]{2,5}$ ]] && (( 10#$1 >= 1024 && 10#$1 <= 65535 )); }
@@ -443,6 +458,12 @@ if not re.fullmatch(r'[0-9]{6,15}:[A-Za-z0-9_-]{20,}',str(t)) or not re.fullmatc
 PY
 }
 create_venv() {
+  # Venv executables and package files must be traversable by the unprivileged
+  # systemd account. The installer itself keeps umask 077 for credentials;
+  # use 022 only while constructing this non-secret runtime environment.
+  local previous_umask
+  previous_umask="$(umask)"
+  umask 022
   say 'Building an isolated Python environment'
   spinner_run 'Creating isolated Python environment' python3 -m venv "$STATE_STAGE/venv" || die 'venv creation failed.'
   spinner_run 'Installing pip tooling' run_logged_command "$STATE_STAGE/venv/bin/python" -m pip install -U pip setuptools wheel || die 'pip bootstrap failed.'
@@ -475,6 +496,10 @@ from cryptography.fernet import Fernet
 import pathlib,sys
 Fernet(pathlib.Path(sys.argv[1]).read_bytes().strip())
 PY
+  # The venv is non-secret and may be readable by the service user; the
+  # encryption key must remain private before the staging directory is opened.
+  chmod 0600 "$STATE_STAGE/secret.key"
+  umask "$previous_umask"
 }
 ensure_db() {
   say 'Preparing local PostgreSQL with a dedicated account'
@@ -525,6 +550,47 @@ normalize_source_permissions() {
   find "$source" -type f -not -path "$source/venv/*"     ! -name sonar_config.json ! -name secret.key ! -name known_hosts ! -name .env     -exec chmod 0644 {} +
   find "$source" -type f -name '*.sh' -not -path "$source/venv/*" -exec chmod 0755 {} +
 }
+diagnose_service_exec() {
+  local executable="${1:-$APP_DIR/venv/bin/python}" resolved=''
+  printf '\n--- Sonar interpreter execution diagnostics ---\n' >&2
+  printf 'Requested path: %s\n' "$executable" >&2
+  if command -v namei >/dev/null 2>&1; then namei -l "$executable" >&2 || true; fi
+  resolved="$(readlink -f -- "$executable" 2>/dev/null || true)"
+  printf 'Resolved path: %s\n' "${resolved:-unresolved}" >&2
+  stat -Lc 'mode=%A (%a) owner=%U:%G file=%n' "$executable" "$resolved" 2>&1 || true
+  if command -v findmnt >/dev/null 2>&1; then
+    findmnt -no TARGET,OPTIONS -T "$executable" 2>&1 || true
+    [[ -z "$resolved" ]] || findmnt -no TARGET,OPTIONS -T "$resolved" 2>&1 || true
+  fi
+  if id -u "$APP_USER" >/dev/null 2>&1; then
+    runuser -u "$APP_USER" -- test -x "$executable" 2>&1 || true
+    runuser -u "$APP_USER" -- "$executable" -c 'import sys; print(sys.executable)' 2>&1 || true
+  fi
+  systemctl show "$SERVICE" -p FragmentPath -p User -p ExecStart -p ActiveState -p ExecMainCode -p ExecMainStatus 2>&1 || true
+  printf '%s\n' '--- End interpreter diagnostics ---' >&2
+}
+normalize_venv_permissions() {
+  local venv="$1" resolved options candidate
+  [[ -d "$venv" && ! -L "$venv" ]] || { warn "Virtual environment directory is missing or unsafe: $venv"; return 1; }
+  # Open only the venv's code/runtime tree. Secrets and application config live
+  # outside the venv and retain their 0600 permissions.
+  find "$venv" -type d -exec chmod 0755 {} + || return 1
+  find "$venv" -type f -perm /111 -exec chmod a+rx {} + || return 1
+  find "$venv" -type f ! -perm /111 -exec chmod a+r {} + || return 1
+  for candidate in "$venv/bin/python" "$venv/bin/python3" "$venv"/bin/python3.*; do
+    [[ -f "$candidate" && ! -L "$candidate" ]] || continue
+    chmod 0755 "$candidate" || return 1
+  done
+  [[ -x "$venv/bin/python" ]] || { warn "Venv interpreter is not executable: $venv/bin/python"; return 1; }
+  resolved="$(readlink -f -- "$venv/bin/python" 2>/dev/null || true)"
+  [[ -n "$resolved" && -f "$resolved" && -x "$resolved" ]] || { warn "Venv interpreter target is missing or not executable: ${resolved:-unresolved}"; return 1; }
+  if command -v findmnt >/dev/null 2>&1; then
+    options="$(findmnt -no OPTIONS -T "$venv/bin/python" 2>/dev/null || true)"
+    if printf '%s\n' "$options" | tr ',' '\n' | grep -qx noexec; then
+      warn "The filesystem containing $venv/bin/python is mounted noexec ($options)."; return 1
+    fi
+  fi
+}
 prepare_runtime_state() {
   [[ "$STATE_DIR" == /var/lib/sonar-radar && ! -L "$STATE_DIR" ]] || die 'Unsafe runtime directory'
   install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$STATE_DIR"
@@ -573,7 +639,10 @@ User=$APP_USER
 Group=$APP_USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$ENV_FILE
-ExecStart=$APP_DIR/venv/bin/python $APP_DIR/bot.py
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/usr/bin/test -x $APP_DIR/venv/bin/python
+ExecStartPre=/usr/bin/test -r $APP_DIR/bot.py
+ExecStart=$APP_DIR/venv/bin/python -u $APP_DIR/bot.py
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sonar-bot
@@ -590,6 +659,38 @@ WantedBy=multi-user.target
 EOF
   chmod 0644 "$BOT_UNIT"
 }
+wait_for_bot_ready() {
+  local timeout="${1:-120}" attempt=0 ready_file="$STATE_DIR/bot-ready" main_status active_state
+  while (( attempt < timeout )); do
+    if [[ -s "$ready_file" ]] && systemctl is-active --quiet "$SERVICE"; then
+      ok "Bot startup readiness verified after ${attempt}s"
+      return 0
+    fi
+    # 203/EXEC is a deterministic launch failure, not a slow startup. Stop
+    # waiting and expose the path/mount diagnostics immediately.
+    main_status="$(systemctl show -p ExecMainStatus --value "$SERVICE" 2>/dev/null || true)"
+    active_state="$(systemctl show -p ActiveState --value "$SERVICE" 2>/dev/null || true)"
+    if [[ "$main_status" == 203 || "$active_state" == failed ]]; then
+      warn "Bot process cannot start (ActiveState=${active_state:-unknown}, ExecMainStatus=${main_status:-unknown})."
+      diagnose_service_exec "$APP_DIR/venv/bin/python"
+      journalctl -u "$SERVICE" -n 60 --no-pager >&2 || true
+      return 1
+    fi
+    attempt=$((attempt+1))
+    sleep 1
+  done
+  warn "BOT_STARTUP_READINESS_TIMEOUT: no readiness marker after ${timeout}s."
+  diagnose_service_exec "$APP_DIR/venv/bin/python"
+  systemctl status "$SERVICE" --no-pager -l >&2 || true
+  warn 'Last 60 Bot journal lines:'
+  journalctl -u "$SERVICE" -n 60 --no-pager >&2 || true
+  if [[ -f "$INSTALL_LOG" ]]; then
+    warn 'Last 100 installer log lines:'
+    tail -n 100 "$INSTALL_LOG" >&2 || true
+  fi
+  return 1
+}
+
 # Generates a bounded/redacted report regardless of whether system services are up.
 # Never reads env files, SSH keys, raw DB records or private configuration values.
 support_report() {
@@ -685,11 +786,12 @@ install_app() {
   chown -R root:root "$STATE_STAGE"
   normalize_source_permissions "$STATE_STAGE"
   chmod 0755 "$STATE_STAGE"
-  # Python venv created with umask 077 has 0700 directories. Fix traversability.
-  # This ONLY opens read/execute on the venv; config and secret.key stay 0600.
-  chmod -R a+rX "$STATE_STAGE/venv"
+  # Normalize permissions even on hosts whose Python venv builder or package
+  # installer ignores the caller's umask. Never leave systemd with a root-only
+  # interpreter or a noexec runtime path.
+  normalize_venv_permissions "$STATE_STAGE/venv" || { diagnose_service_exec "$STATE_STAGE/venv/bin/python"; die 'Virtual environment permissions or mount options prevent execution.'; }
   # Explicitly check the service account can run the EXACT promoted interpreter.
-  runuser -u "$APP_USER" -- "$STATE_STAGE/venv/bin/python" -c 'import sys, telegram, psycopg2, websockets, fastapi, uvicorn; print(sys.version.split()[0])' >> "$INSTALL_LOG" 2>&1 || die 'Service user cannot execute Python/dependencies (permission or import failure).'
+  runuser -u "$APP_USER" -- "$STATE_STAGE/venv/bin/python" -c 'import sys, telegram, psycopg2, websockets, fastapi, uvicorn; print(sys.version.split()[0])' >> "$INSTALL_LOG" 2>&1 || { diagnose_service_exec "$STATE_STAGE/venv/bin/python"; die 'Service user cannot execute Python/dependencies (permission or import failure).'; }
   chown "$APP_USER:$APP_USER" "$STATE_STAGE/sonar_config.json" "$STATE_STAGE/secret.key"
   chmod 0600 "$STATE_STAGE/sonar_config.json" "$STATE_STAGE/secret.key"
   if [[ -f "$STATE_STAGE/.ssh/known_hosts" ]]; then
@@ -709,14 +811,28 @@ install_app() {
   prepare_runtime_state
   create_unit
   systemctl daemon-reload
-  systemd-analyze verify "$BOT_UNIT" >> "$INSTALL_LOG" 2>&1 || die 'Invalid systemd unit generated.'
-  runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import telegram, psycopg2, websockets' >> "$INSTALL_LOG" 2>&1 || die 'Installed interpreter is not executable by the service user.'
-  systemctl enable --now "$SERVICE" >> "$INSTALL_LOG" 2>&1 || die 'Bot service did not start.'
-  spinner_run 'Checking bot startup' sleep 5
-  if ! systemctl is-active --quiet "$SERVICE";then
-    warn 'Bot startup failed. Last 60 log lines:'
+  systemd-analyze verify "$BOT_UNIT" >> "$INSTALL_LOG" 2>&1 || { diagnose_service_exec "$APP_DIR/venv/bin/python"; die 'Invalid systemd unit generated; inspect systemd-analyze output.'; }
+  normalize_venv_permissions "$APP_DIR/venv" || { diagnose_service_exec "$APP_DIR/venv/bin/python"; die 'Promoted virtual environment is not executable.'; }
+  runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import telegram, psycopg2, websockets' >> "$INSTALL_LOG" 2>&1 || { diagnose_service_exec "$APP_DIR/venv/bin/python"; die 'Installed interpreter is not executable by the service user.'; }
+  # Import the real bot entry point as the service account before changing the
+  # live service. This catches missing modules and import-time exceptions while
+  # rollback is still straightforward and before Telegram/network startup.
+  runuser -u "$APP_USER" -- env SONAR_STATE_DIR="$STATE_DIR" SONAR_LOG_DIR="$LOG_DIR" PYTHONPATH="$APP_DIR" \
+    "$APP_DIR/venv/bin/python" -c 'import bot; print("BOT_IMPORT_PREFLIGHT_OK")' >> "$INSTALL_LOG" 2>&1 || {
+      warn 'Bot import preflight failed. Last 100 installer log lines:'
+      tail -n 100 "$INSTALL_LOG" >&2 || true
+      die 'Bot source could not be imported by the service account.'
+    }
+  rm -f -- "$STATE_DIR/bot-ready"
+  systemctl reset-failed "$SERVICE" >/dev/null 2>&1 || true
+  if ! systemctl enable --now "$SERVICE" >> "$INSTALL_LOG" 2>&1; then
+    diagnose_service_exec "$APP_DIR/venv/bin/python"
     journalctl -u "$SERVICE" -n 60 --no-pager >&2 || true
-    die 'Bot process exited after startup.'
+    die 'Bot service could not be executed or started; diagnostics are shown above.'
+  fi
+  if ! spinner_run 'Waiting for Telegram, PostgreSQL migrations and Bot readiness' wait_for_bot_ready 120; then
+    journalctl -u "$SERVICE" -n 60 --no-pager >&2 || true
+    die 'Bot process did not reach startup readiness; diagnostics are shown above.'
   fi
   # A full installation includes the Mini App API, not just the Telegram Bot.
   # Keep this inside the rollback transaction: failure restores the old code/units.
@@ -1079,7 +1195,10 @@ doctor() {
     if [[ "$(read_cfg admin_id 0)" != 0 ]]; then ok 'Admin configured';else warn 'No admin configured';((problems+=1));fi
     if [[ "$(stat -c '%a' "$APP_DIR/sonar_config.json")" == 600 ]];then ok 'Config permissions 0600';else warn 'Config not 0600';((problems+=1));fi
   fi
-  if systemctl is-active --quiet "$SERVICE";then ok 'Bot service active';else warn 'Bot not active';((problems+=1));fi
+  if systemctl is-active --quiet "$SERVICE";then
+    ok 'Bot service active'
+    if [[ -s "$STATE_DIR/bot-ready" ]];then ok 'Bot startup migrations/readiness marker present';else warn 'Bot has not reported startup readiness';((problems+=1));fi
+  else warn 'Bot not active';((problems+=1));fi
   if [[ -x "$APP_DIR/venv/bin/python" ]]; then
     if id -u "$APP_USER" >/dev/null 2>&1 && runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import sys;print(sys.version)' >/dev/null 2>&1;then
       ok 'Python executable works as sonar-bot (not root)'

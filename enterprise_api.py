@@ -1,6 +1,11 @@
 """Authenticated API surface for RadarSonarPlus enterprise services."""
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+try:  # FastAPI 0.115 supports both Pydantic generations.
+    from pydantic import model_validator
+except ImportError:  # Pydantic v1 compatibility
+    model_validator = None
+    from pydantic import root_validator
 from typing import Literal
 
 class OperationCreate(BaseModel):
@@ -34,6 +39,24 @@ class AutomationRule(BaseModel):
     event: Literal['agent_unreachable','service_down','disk_pressure']
     action: Literal['notify','restart_managed_service']
     max_attempts: int = Field(default=1,ge=1,le=3)
+
+    if model_validator is not None:
+        @model_validator(mode='after')
+        def validate_event_action_pair(self):
+            if self.event == 'service_down' and self.action != 'notify':
+                raise ValueError('service_down supports notify only until a monitored-service-to-server mapping exists')
+            if self.event == 'disk_pressure' and self.action != 'notify':
+                raise ValueError('disk_pressure supports notify only')
+            return self
+    else:
+        @root_validator(skip_on_failure=True)
+        def validate_event_action_pair(cls, values):
+            event, action = values.get('event'), values.get('action')
+            if event == 'service_down' and action != 'notify':
+                raise ValueError('service_down supports notify only until a monitored-service-to-server mapping exists')
+            if event == 'disk_pressure' and action != 'notify':
+                raise ValueError('disk_pressure supports notify only')
+            return values
 class TokenCreate(BaseModel):
     owner: int | None = None
     label: str = Field(min_length=1,max_length=80)

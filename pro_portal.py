@@ -29,7 +29,7 @@ from pro_auth import verify_init_data
 from pro_store import ProStore, install_schema as install_pro_schema
 from enterprise_services import install_schema as install_enterprise_schema
 from enterprise_runtime import install_runtime_schema, operations_worker, webhook_worker, recovery_worker, scheduled_backup_worker, rollout_worker
-from service_monitor import ServiceStore
+from service_monitor import ServiceStore, install_schema as install_service_monitor_schema
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
@@ -230,6 +230,7 @@ async def bootstrap_additive_schemas():
     # The API can start independently of the Telegram bot; provision its additive
     # Pro/service tables here as well so /readyz and service endpoints are usable.
     await asyncio.to_thread(install_pro_schema,store.db)
+    await asyncio.to_thread(install_service_monitor_schema,store.db)
     await asyncio.to_thread(install_enterprise_schema,store.db)
     await asyncio.to_thread(install_runtime_schema,store.db)
     await asyncio.to_thread(install_subscription_schema,store.db)

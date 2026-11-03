@@ -50,6 +50,7 @@ RUNTIME_SCHEMA = (
 """ALTER TABLE rs_agent_rollouts ADD COLUMN IF NOT EXISTS lease_until TIMESTAMPTZ""",
 """ALTER TABLE rs_agent_rollouts ADD COLUMN IF NOT EXISTS previous_release_id BIGINT REFERENCES rs_agent_releases(id)""",
 """ALTER TABLE rs_agent_rollouts ADD COLUMN IF NOT EXISTS rollback_operation_id UUID""",
+"""ALTER TABLE rs_agent_rollouts ADD COLUMN IF NOT EXISTS rollback_attempts INTEGER NOT NULL DEFAULT 0""",
 """ALTER TABLE rs_agent_releases ADD COLUMN IF NOT EXISTS artifact BYTEA""",
 """ALTER TABLE rs_agent_releases ADD COLUMN IF NOT EXISTS signature TEXT""",
 """CREATE INDEX IF NOT EXISTS rs_operation_items_claim ON rs_operation_items(status,next_attempt_at,lease_until)""",
@@ -82,6 +83,11 @@ def install_runtime_schema(db):
     with db.get_connection() as (conn, cur):
         for sql in RUNTIME_SCHEMA:
             cur.execute(sql)
+        # Legacy service_down restart rules had no reliable mapping from a
+        # monitored HTTP/TCP probe to a managed host. Disable those old rules;
+        # new rules are notification-only until an explicit mapping exists.
+        cur.execute("UPDATE rs_automation_rules SET enabled=FALSE "
+                    "WHERE event='service_down' AND action='restart_managed_service' AND enabled=TRUE")
         conn.commit()
 
 def _safe_destination(destination: str) -> Path:
@@ -326,11 +332,6 @@ def _execute_operation(db, job):
         if not ok:
             raise RuntimeError("AGENT_UPDATE_FAILED")
         return "agent_update_deployed:" + str(detail)[:180]
-    if kind == "backup":
-        from settings import DB_CONFIG
-        name = "workspace-" + str(job["owner_id"]) + "-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".dump.enc"
-        result = create_encrypted_backup(DB_CONFIG, name)
-        return "backup_created:" + result["sha256"]
     if kind == "maintenance":
         # Explicitly bounded read-only check; no arbitrary maintenance scripts.
         return "maintenance_check_only"
@@ -427,10 +428,12 @@ async def webhook_worker(db, stop):
                     key=os.getenv("SONAR_WEBHOOK_ENCRYPTION_KEY") or os.getenv("SONAR_BACKUP_ENCRYPTION_KEY","")
                     secret=Fernet(key.encode()).decrypt(row["secret_ciphertext"].encode()).decode()
                     http_status=await asyncio.to_thread(deliver_webhook,row["url"],secret,row["payload"])
-                    db.execute("UPDATE rs_webhook_deliveries SET delivered_at=NOW(),last_status=%s,last_error=NULL,lease_until=NULL WHERE id=%s",(http_status,row["id"]))
+                    await asyncio.to_thread(db.execute,
+                        "UPDATE rs_webhook_deliveries SET delivered_at=NOW(),last_status=%s,last_error=NULL,lease_until=NULL WHERE id=%s",
+                        (http_status,row["id"]))
                 except Exception as exc:
                     delay=min(3600,15*(2**min(int(row["attempts"]),8)))
-                    db.execute("""UPDATE rs_webhook_deliveries SET next_attempt_at=NOW()+(%s||' seconds')::interval,
+                    await asyncio.to_thread(db.execute, """UPDATE rs_webhook_deliveries SET next_attempt_at=NOW()+(%s||' seconds')::interval,
                        last_error=%s,lease_until=NULL,dead_at=CASE WHEN attempts>=8 THEN NOW() ELSE NULL END WHERE id=%s""",
                        (delay,type(exc).__name__.upper()[:80],row["id"]))
                 continue
@@ -502,45 +505,161 @@ def scheduled_backup_worker(db, stop):
 def awaitable_backup(db_config, name):
     return create_encrypted_backup(db_config,name)
 
+def _claim_rollouts(db):
+    """Claim a small batch of rollouts without blocking the asyncio loop."""
+    with db.get_connection() as (conn,cur):
+        cur.execute("""SELECT r.*,a.version,a.sha256 FROM rs_agent_rollouts r
+          JOIN rs_agent_releases a ON a.id=r.release_id
+          WHERE r.state IN ('queued','running','rollback_pending','rolling_back') AND (r.lease_until IS NULL OR r.lease_until<NOW())
+          ORDER BY r.id FOR UPDATE OF r SKIP LOCKED LIMIT 5""")
+        rows=[dict(x) for x in cur.fetchall()]
+        for claimed in rows:
+            cur.execute("UPDATE rs_agent_rollouts SET lease_until=NOW()+INTERVAL '2 minutes' WHERE id=%s",
+                        (claimed['id'],))
+        conn.commit()
+    return rows
+
+
+def _rollout_successful_servers(db, owner_id, rollout_id):
+    rows=db.execute("""SELECT DISTINCT i.resource_id FROM rs_operation_items i
+      JOIN rs_operations o ON o.id=i.operation_id
+      WHERE o.owner_id=%s AND o.idempotency_key LIKE %s AND i.status='succeeded'""",
+      (int(owner_id),f"rollout:{int(rollout_id)}:%"),fetch='all')
+    return sorted({int(row['resource_id']) for row in rows})
+
+
+def _resume_rollout_rollback(db, rollout, reason=None):
+    """Finish a reserved rollback. Safe to retry after a worker/process restart."""
+    rollout_id=int(rollout['id'])
+    owner_id=int(rollout['owner_id'])
+    previous_release_id=rollout.get('previous_release_id')
+    attempt=max(1,int(rollout.get('rollback_attempts') or 1))
+    successful=_rollout_successful_servers(db,owner_id,rollout_id)
+    if not previous_release_id or not successful:
+        detail={'reason':reason or 'rollback_unavailable',
+                'rollback':'unavailable' if not previous_release_id else 'no_successful_hosts'}
+        db.execute("UPDATE rs_agent_rollouts SET state='failed',lease_until=NULL,detail=%s::jsonb,updated_at=NOW() WHERE id=%s",
+                   (json.dumps(detail),rollout_id))
+        return {'state':'failed','servers':len(successful)}
+    try:
+        from enterprise_services import EnterpriseStore
+        from pro_store import ProStore
+        store=EnterpriseStore(ProStore(db))
+        operation=store.create_operation(owner_id,owner_id,'agent_update',successful,
+            f'rollout-rollback:{rollout_id}:attempt:{attempt}',
+            {'release_id':int(previous_release_id),'rollback_of':rollout_id,
+             'automatic_rollback':bool((rollout.get('detail') or {}).get('automatic_rollback',False))})
+    except Exception as exc:
+        detail={'reason':reason or 'rollback_enqueue_failed','rollback':'enqueue_failed','error':type(exc).__name__}
+        db.execute("UPDATE rs_agent_rollouts SET state='rollback_failed',lease_until=NULL,detail=%s::jsonb,updated_at=NOW() WHERE id=%s",
+                   (json.dumps(detail),rollout_id))
+        log.exception("Agent rollback could not be queued rollout=%s attempt=%s",rollout_id,attempt)
+        return {'state':'rollback_failed','servers':len(successful)}
+    detail={'reason':reason or 'manual_rollback','rollback':'queued','servers':successful,'attempt':attempt}
+    db.execute("""UPDATE rs_agent_rollouts SET state='rolling_back',rollback_operation_id=%s,
+      active_operation_id=NULL,active_batch_size=0,lease_until=NULL,detail=%s::jsonb,updated_at=NOW() WHERE id=%s""",
+      (operation['id'],json.dumps(detail),rollout_id))
+    log.warning("Agent rollback queued rollout=%s hosts=%s attempt=%s",rollout_id,len(successful),attempt)
+    return {'state':'rolling_back','servers':len(successful),'operation_id':operation['id']}
+
+
+def _begin_automatic_rollout_rollback(db, rollout, reason):
+    """Reserve and queue rollback for every host already updated by this rollout."""
+    rollout_id=int(rollout['id'])
+    owner_id=int(rollout['owner_id'])
+    previous_release_id=rollout.get('previous_release_id')
+    successful=_rollout_successful_servers(db,owner_id,rollout_id)
+    if not previous_release_id or not successful:
+        detail={'reason':reason,'rollback':'unavailable' if not previous_release_id else 'no_successful_hosts'}
+        db.execute("UPDATE rs_agent_rollouts SET state='failed',lease_until=NULL,detail=%s::jsonb,updated_at=NOW() WHERE id=%s",
+                   (json.dumps(detail),rollout_id))
+        return {'state':'failed','servers':len(successful)}
+    detail={'reason':reason,'rollback':'pending','automatic_rollback':True}
+    reservation=db.execute("""UPDATE rs_agent_rollouts SET state='rollback_pending',
+      rollback_attempts=rollback_attempts+1,rollback_operation_id=NULL,active_operation_id=NULL,
+      active_batch_size=0,lease_until=NULL,detail=%s::jsonb,updated_at=NOW()
+      WHERE id=%s AND state IN ('queued','running') RETURNING rollback_attempts""",
+      (json.dumps(detail),rollout_id),fetch='one')
+    if not reservation:
+        current=db.execute("SELECT state,rollback_attempts,previous_release_id FROM rs_agent_rollouts WHERE id=%s",
+                           (rollout_id,),fetch='one')
+        if current and current.get('state')=='rollback_pending':
+            rollout=dict(rollout,rollback_attempts=current.get('rollback_attempts'),
+                         previous_release_id=current.get('previous_release_id'))
+            return _resume_rollout_rollback(db,rollout,reason)
+        return {'state':(current or {}).get('state','failed'),'servers':len(successful)}
+    rollout=dict(rollout,rollback_attempts=reservation['rollback_attempts'],
+                 detail={'automatic_rollback':True})
+    return _resume_rollout_rollback(db,rollout,reason)
+
+
+
+def _process_service_down_rule(db, rule):
+    """Notify from pro_services, the authoritative table for HTTP/TCP probes."""
+    services=db.execute("""SELECT id,name,last_detail FROM pro_services
+      WHERE owner_id=%s AND enabled=TRUE AND status='down'
+        AND last_checked_at>NOW()-INTERVAL '10 minutes'
+      ORDER BY last_checked_at DESC LIMIT 20""",(rule['owner_id'],),fetch='all')
+    if rule['action']!='notify':
+        log.warning("Ignoring legacy service_down action without a server mapping rule=%s",rule['id'])
+        return 0
+    created=0
+    for service in services:
+        event_key=f"automation:{rule['id']}:service:{service['id']}:{datetime.now(timezone.utc).strftime('%Y%m%d%H')}"
+        message=f"Automation rule {rule['id']}: monitored service {service['name']} is DOWN ({service.get('last_detail') or 'no detail'})"
+        db.execute("""INSERT INTO pro_notification_outbox(owner_id,event_key,event_type,message)
+          VALUES(%s,%s,'automation',%s) ON CONFLICT(event_key) DO NOTHING""",
+          (rule['owner_id'],event_key,message[:500]))
+        created+=1
+    return created
+
+
 async def recovery_worker(db, stop):
-    """Evaluate only explicit allow-listed rules; one attempt per event generation."""
+    """Evaluate allow-listed rules against the actual source table for each event."""
     while not stop.is_set():
         try:
-            db.execute("""UPDATE rs_automation_runs r SET status=o.status,detail=COALESCE(o.status,'unknown')
+            await asyncio.to_thread(db.execute, """UPDATE rs_automation_runs r
+              SET status=o.status,detail=COALESCE(o.status,'unknown')
               FROM rs_operations o WHERE r.operation_id=o.id AND r.status IN ('queued','running')
                 AND o.status IN ('succeeded','failed','cancelled')""")
-            rules=db.execute("""SELECT id,owner_id,event,action,max_attempts FROM rs_automation_rules
+            rules=await asyncio.to_thread(db.execute,"""SELECT id,owner_id,event,action,max_attempts FROM rs_automation_rules
               WHERE enabled=TRUE""",fetch='all')
             for rule in rules:
-                if rule['event']=='agent_unreachable':
-                    condition="COALESCE(last_agent_status,'') ILIKE ANY(ARRAY['offline','disconnected','down'])"
-                elif rule['event']=='service_down':
-                    condition="COALESCE(last_status,'') ILIKE ANY(ARRAY['offline','down','failed'])"
-                elif rule['event']=='disk_pressure':
+                event=rule['event']
+                if event=='service_down':
+                    # Service probes have no guaranteed one-to-one server mapping,
+                    # so the safe supported action is notification only.
+                    await asyncio.to_thread(_process_service_down_rule,db,rule)
+                    continue
+                if event=='agent_unreachable':
+                    condition="COALESCE(last_agent_status,'') ILIKE ANY(ARRAY['offline','disconnected','down','failed'])"
+                elif event=='disk_pressure':
                     condition="COALESCE(last_disk,0)>=85"
                 else:
                     continue
-                servers=db.execute(f"""SELECT id,name,last_disk FROM servers WHERE owner_id=%s AND is_active=1
+                servers=await asyncio.to_thread(db.execute,f"""SELECT id,name,last_disk FROM servers WHERE owner_id=%s AND is_active=1
                   AND {condition} AND last_checked_at>NOW()-INTERVAL '10 minutes' LIMIT 20""",
                   (rule['owner_id'],),fetch='all')
                 for server in servers:
                     if rule['action']=='notify':
-                        db.execute("""INSERT INTO pro_notification_outbox(owner_id,event_key,event_type,message)
+                        await asyncio.to_thread(db.execute,"""INSERT INTO pro_notification_outbox(owner_id,event_key,event_type,message)
                           VALUES(%s,%s,%s,%s) ON CONFLICT(event_key) DO NOTHING""",
                           (rule['owner_id'],f"automation:{rule['id']}:{server['id']}:{datetime.now(timezone.utc).strftime('%Y%m%d%H')}",
-                           'automation',f"Automation rule {rule['id']}: {rule['event']} on {server['name']}"))
+                           'automation',f"Automation rule {rule['id']}: {event} on {server['name']}"))
                         continue
-                    if rule['action']!='restart_managed_service': continue
+                    if event!='agent_unreachable' or rule['action']!='restart_managed_service':
+                        continue
                     event_key=f"recovery:{rule['id']}:{server['id']}:"+datetime.now(timezone.utc).strftime("%Y%m%d%H")
-                    existing=db.execute("SELECT id FROM rs_automation_runs WHERE rule_id=%s AND server_id=%s AND created_at>NOW()-INTERVAL '1 hour' AND status IN ('queued','running','succeeded','failed')",
+                    existing=await asyncio.to_thread(db.execute,"SELECT id FROM rs_automation_runs WHERE rule_id=%s AND server_id=%s AND created_at>NOW()-INTERVAL '1 hour' AND status IN ('queued','running','succeeded','failed')",
                       (rule['id'],server['id']),fetch='one')
                     if existing: continue
-                    from enterprise_services import EnterpriseStore
-                    svc=EnterpriseStore(__import__('pro_store').ProStore(db))
                     try:
-                        op=svc.create_operation(int(rule['owner_id']),int(rule['owner_id']),'service_restart',
+                        from enterprise_services import EnterpriseStore
+                        from pro_store import ProStore
+                        svc=EnterpriseStore(ProStore(db))
+                        op=await asyncio.to_thread(svc.create_operation,int(rule['owner_id']),int(rule['owner_id']),'service_restart',
                            [int(server['id'])],event_key,{'service':'sonar-agent','recovery_rule':int(rule['id']),'max_attempts':int(rule['max_attempts'])})
-                        db.execute("INSERT INTO rs_automation_runs(owner_id,rule_id,server_id,status,operation_id) VALUES(%s,%s,%s,'queued',%s)",
+                        await asyncio.to_thread(db.execute,"INSERT INTO rs_automation_runs(owner_id,rule_id,server_id,status,operation_id) VALUES(%s,%s,%s,'queued',%s)",
                           (rule['owner_id'],rule['id'],server['id'],op['id']))
                     except Exception:
                         log.exception("Auto recovery enqueue failed rule=%s server=%s",rule['id'],server['id'])
@@ -551,55 +670,52 @@ async def recovery_worker(db, stop):
 
 
 async def rollout_worker(db, stop):
-    """Canary-first rollout using the existing deployment routine with per-host rollback."""
+    """Canary-first rollout; failed batches trigger rollback of all successful hosts."""
     while not stop.is_set():
         try:
-            with db.get_connection() as (conn,cur):
-                cur.execute("""SELECT r.*,a.version,a.sha256 FROM rs_agent_rollouts r
-                  JOIN rs_agent_releases a ON a.id=r.release_id
-                  WHERE r.state IN ('queued','running','rolling_back') AND (r.lease_until IS NULL OR r.lease_until<NOW())
-                  ORDER BY r.id FOR UPDATE OF r SKIP LOCKED LIMIT 5""")
-                rows=[dict(x) for x in cur.fetchall()]
-                for claimed in rows:
-                    cur.execute("UPDATE rs_agent_rollouts SET lease_until=NOW()+INTERVAL '2 minutes' WHERE id=%s",(claimed['id'],))
-                conn.commit()
+            rows=await asyncio.to_thread(_claim_rollouts,db)
             progressed=False
             for rollout in rows:
+                if rollout['state']=='rollback_pending':
+                    await asyncio.to_thread(_resume_rollout_rollback,db,rollout,'reserved_rollback')
+                    progressed=True; continue
                 if rollout['state']=='rolling_back':
                     rollback_id=rollout.get('rollback_operation_id')
-                    op=db.execute("SELECT status FROM rs_operations WHERE id=%s",(rollback_id,),fetch='one') if rollback_id else None
+                    op=await asyncio.to_thread(db.execute,"SELECT status FROM rs_operations WHERE id=%s",
+                        (rollback_id,),fetch='one') if rollback_id else None
                     if op and op['status'] in ('succeeded','failed','cancelled'):
                         final='rolled_back' if op['status']=='succeeded' else 'rollback_failed'
-                        db.execute("UPDATE rs_agent_rollouts SET state=%s,lease_until=NULL,updated_at=NOW() WHERE id=%s",(final,rollout['id']))
+                        await asyncio.to_thread(db.execute,"UPDATE rs_agent_rollouts SET state=%s,lease_until=NULL,updated_at=NOW() WHERE id=%s",
+                            (final,rollout['id']))
                         progressed=True
                     else:
-                        db.execute("UPDATE rs_agent_rollouts SET lease_until=NULL WHERE id=%s",(rollout['id'],))
+                        await asyncio.to_thread(db.execute,"UPDATE rs_agent_rollouts SET lease_until=NULL WHERE id=%s",(rollout['id'],))
                     continue
                 ids=list(rollout['server_ids'] or [])
                 offset=int(rollout['batch_offset'] or 0)
                 active=rollout.get('active_operation_id')
                 if active:
-                    op=db.execute("SELECT status FROM rs_operations WHERE id=%s",(active,),fetch='one')
+                    op=await asyncio.to_thread(db.execute,"SELECT status FROM rs_operations WHERE id=%s",(active,),fetch='one')
                     if not op or op['status'] in ('failed','cancelled'):
-                        db.execute("UPDATE rs_agent_rollouts SET state='failed',lease_until=NULL,updated_at=NOW(),detail=%s::jsonb WHERE id=%s",
-                          (json.dumps({'reason':'batch_failed','offset':offset}),rollout['id']))
+                        await asyncio.to_thread(_begin_automatic_rollout_rollback,db,rollout,'batch_failed')
                         progressed=True; continue
                     if op['status']!='succeeded':
-                        db.execute('UPDATE rs_agent_rollouts SET lease_until=NULL WHERE id=%s',(rollout['id'],)); continue
+                        await asyncio.to_thread(db.execute,'UPDATE rs_agent_rollouts SET lease_until=NULL WHERE id=%s',(rollout['id'],))
+                        continue
                     offset += min(int(rollout.get('active_batch_size') or rollout['batch_size']),len(ids)-offset)
-                    db.execute("UPDATE rs_agent_rollouts SET batch_offset=%s,active_operation_id=NULL,active_batch_size=0,updated_at=NOW() WHERE id=%s",
+                    await asyncio.to_thread(db.execute,"UPDATE rs_agent_rollouts SET batch_offset=%s,active_operation_id=NULL,active_batch_size=0,updated_at=NOW() WHERE id=%s",
                       (offset,rollout['id']))
                 if offset>=len(ids):
-                    db.execute("UPDATE rs_agent_rollouts SET state='completed',lease_until=NULL,updated_at=NOW() WHERE id=%s",(rollout['id'],))
+                    await asyncio.to_thread(db.execute,"UPDATE rs_agent_rollouts SET state='completed',lease_until=NULL,updated_at=NOW() WHERE id=%s",(rollout['id'],))
                     progressed=True; continue
-                release=db.execute("SELECT artifact,signature FROM rs_agent_releases WHERE id=%s",(rollout['release_id'],),fetch='one')
+                release=await asyncio.to_thread(db.execute,"SELECT artifact,signature FROM rs_agent_releases WHERE id=%s",
+                    (rollout['release_id'],),fetch='one')
                 try:
                     if not release or not release.get('artifact') or not release.get('signature'):
                         raise ValueError("signed_artifact_missing")
                     verify_agent_release_bytes(rollout['version'],rollout['sha256'],release['signature'],bytes(release['artifact']))
                 except Exception as exc:
-                    db.execute("UPDATE rs_agent_rollouts SET state='failed',lease_until=NULL,detail=%s::jsonb,updated_at=NOW() WHERE id=%s",
-                      (json.dumps({'reason':type(exc).__name__}),rollout['id']))
+                    await asyncio.to_thread(_begin_automatic_rollout_rollback,db,rollout,'release_verification_failed:'+type(exc).__name__)
                     progressed=True; continue
                 batch_size=int(rollout['canary_count']) if offset==0 else int(rollout['batch_size'])
                 batch=ids[offset:offset+batch_size]
@@ -607,9 +723,9 @@ async def rollout_worker(db, stop):
                 from pro_store import ProStore
                 svc=EnterpriseStore(ProStore(db))
                 key=f"rollout:{rollout['id']}:offset:{offset}"
-                op=svc.create_operation(int(rollout['owner_id']),int(rollout['owner_id']),
+                op=await asyncio.to_thread(svc.create_operation,int(rollout['owner_id']),int(rollout['owner_id']),
                     'agent_update',batch,key,{'release_id':int(rollout['release_id']),'version':rollout['version']})
-                db.execute("UPDATE rs_agent_rollouts SET state='running',active_operation_id=%s,active_batch_size=%s,lease_until=NULL,updated_at=NOW() WHERE id=%s",
+                await asyncio.to_thread(db.execute,"UPDATE rs_agent_rollouts SET state='running',active_operation_id=%s,active_batch_size=%s,lease_until=NULL,updated_at=NOW() WHERE id=%s",
                   (op['id'],len(batch),rollout['id']))
                 progressed=True
             if not progressed: await asyncio.sleep(8)
