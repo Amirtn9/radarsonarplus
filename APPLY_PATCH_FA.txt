@@ -1,11 +1,22 @@
-RadarSonarPlus 6.9 — Patch-only package
+RadarSonarPlus 6.9 — Full source repair package
 
-Extract this ZIP over the matching project source root (the folder containing bot.py, install.sh, and enterprise_services.py), preserving the relative paths. It contains only files changed in this patch plus the integrity manifest.
+This ZIP contains the complete project source plus the installer fixes identified
+during the 2026-11-03 audit. Extract it to a separate directory; do not extract
+over /opt/radar-sonar while a service is running.
 
-For deployment, the full project archive is safer: extract it to a directory separate from /opt/radar-sonar, then run:
+Changes in this package:
+- Restores .gitattributes and .gitignore and includes both in the integrity manifest.
+- Fixes the web systemd unit so ExecStart is a real directive, not part of a comment.
+- Grants the web service write access to its private runtime directory for scheduled backups.
+- Makes systemd-analyze verification of the web unit a hard pre-install check.
+
+Safe verification and installation:
   sudo bash install.sh --check
   sudo bash install.sh --install
 
-If the previous first installation rolled back code but retained PostgreSQL/runtime state, choose option 1 (Resume / Preserve existing database and runtime data). Do not choose Clean Reset unless you intentionally want to delete Sonar data.
+If an earlier installation rolled back its application code but retained PostgreSQL
+and runtime state, choose the Resume / Preserve existing database and runtime data
+option. Do not choose Clean Reset unless you intentionally want to delete Sonar data.
 
-The installer may create/upgrade PostgreSQL schema; database migrations are not automatically reverted by code rollback.
+The installer may apply PostgreSQL schema migrations. Database migrations are not
+automatically reversed by code rollback. Keep a verified backup before upgrading.

@@ -34,10 +34,10 @@ case "${1:-}" in
   *)
     if (( EUID != 0 )); then
       if command -v sudo >/dev/null 2>&1; then
-        printf 'Sonar Radar Pro needs administrator privileges; requesting sudo…\\n' >&2
+        printf 'Sonar Radar Pro needs administrator privileges; requesting sudo…\n' >&2
         exec sudo -- bash "$SOURCE_DIR/install.sh" "$@"
       fi
-      printf 'Administrator access required. Install sudo or run: su -c "bash %q %s"\\n' "$SOURCE_DIR/install.sh" "${*:-}" >&2
+      printf 'Administrator access required. Install sudo or run: su -c "bash %q %s"\n' "$SOURCE_DIR/install.sh" "${*:-}" >&2
       exit 1
     fi
     ;;
@@ -1113,7 +1113,8 @@ User=$APP_USER
 Group=$APP_USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$ENV_FILE
-# Background workers are started from FastAPI startup; keep one process until they are split into a dedicated worker service.\nExecStart=$APP_DIR/venv/bin/python -m uvicorn pro_portal:app --host 127.0.0.1 --port $port --workers 1 --access-log
+# Background workers are started from FastAPI startup; keep one process until they are split into a dedicated worker service.
+ExecStart=$APP_DIR/venv/bin/python -m uvicorn pro_portal:app --host 127.0.0.1 --port $port --workers 1 --access-log
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sonar-web
@@ -1121,7 +1122,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=$LOG_DIR
+ReadWritePaths=$LOG_DIR $STATE_DIR
 UMask=0077
 Restart=on-failure
 RestartSec=5
@@ -1157,10 +1158,16 @@ install_web() {
   valid_port "$port" || die 'Invalid configured web API port.'
   say "Installing Mini App API (loopback port $port)"
   runuser -u "$APP_USER" -- "$APP_DIR/venv/bin/python" -c 'import fastapi, uvicorn' >> "$INSTALL_LOG" 2>&1 || die 'Mini App dependencies missing. Run full installer repair/update.'
+  runuser -u "$APP_USER" -- env SONAR_STATE_DIR="$STATE_DIR" SONAR_LOG_DIR="$LOG_DIR" PYTHONPATH="$APP_DIR" \
+    "$APP_DIR/venv/bin/python" -c 'import pro_portal; print("WEB_IMPORT_PREFLIGHT_OK")' >> "$INSTALL_LOG" 2>&1 || {
+      warn 'Web API import preflight failed. Last 100 installer log lines:'
+      tail -n 100 "$INSTALL_LOG" >&2 || true
+      die 'Web API source could not be imported by the service account.'
+    }
   # Regenerate even when a legacy installed service contains a malformed
   # '>StandardOutput=journal' token appended to ExecStart.
   create_web_unit "$port";systemctl daemon-reload
-  systemd-analyze verify "$WEB_UNIT" >> "$INSTALL_LOG" 2>&1 || warn 'systemd unit verification emitted warnings; review installer log.'
+  systemd-analyze verify "$WEB_UNIT" >> "$INSTALL_LOG" 2>&1 || die 'Invalid systemd web unit generated; inspect systemd-analyze output.'
   systemctl enable "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1 || die 'Could not enable Web service.'
   # enable --now does not restart an already-active old process on upgrades.
   if ! systemctl restart "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1; then

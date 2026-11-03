@@ -96,3 +96,12 @@ def test_startup_waits_for_database_and_completes_migrations_before_workers():
     assert "for name, migration in migrations:" in bot
     assert "All startup migrations completed; enterprise workers started." in bot
     assert 'journalctl -u "$SERVICE" -n 60 --no-pager' in SCRIPT
+
+def test_web_unit_execstart_is_separate_and_runtime_state_is_writable():
+    web = SCRIPT.split('create_web_unit() {', 1)[1].split('wait_for_web_health() {', 1)[0]
+    assert r'\nExecStart=' not in web
+    assert '\nExecStart=$APP_DIR/venv/bin/python -m uvicorn pro_portal:app' in web
+    assert 'ReadWritePaths=$LOG_DIR $STATE_DIR' in web
+    assert 'import pro_portal; print("WEB_IMPORT_PREFLIGHT_OK")' in SCRIPT
+    assert 'systemd-analyze verify "$WEB_UNIT" >> "$INSTALL_LOG" 2>&1 || die' in SCRIPT
+
