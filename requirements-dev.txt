@@ -1,0 +1,4 @@
+# Optional test dependencies, not used by production install.
+pytest>=8.0,<9.0
+pytest-asyncio>=0.23,<2.0
+httpx>=0.27,<1.0

@@ -1,0 +1,232 @@
+import os
+import logging
+import json
+import asyncio
+import datetime as dt
+
+# 🔴 لاگینگ باید همین اول، قبل از import هر ماژول دیگه‌ی پروژه، یک‌بار
+# و فقط یک‌بار تنظیم بشه. قبلاً هم اینجا و هم داخل dispatcher.py صدا زده
+# می‌شد (چون import شدن dispatcher قبل از این فراخوانی اتفاق می‌افتاد)
+# که باعث دو مسیر لاگ موازی و گیج‌کننده می‌شد. الان فقط همین‌جاست.
+from logging_config import setup_advanced_logging
+setup_advanced_logging(
+    log_dir=os.getenv("SONAR_LOG_DIR", "/var/log/sonar"),
+    level=getattr(logging, os.getenv("SONAR_LOG_LEVEL", "INFO").upper(), logging.INFO),
+    console_level=logging.INFO
+)
+
+from telegram.ext import ApplicationBuilder
+from logger_setup import setup_logger
+from dispatcher import register_all_handlers
+import cronjobs
+import bot_logic  # برای دسترسی به ارور هندلر و توکن
+
+# راه‌اندازی هوک‌های کرش (crash hooks) - این تابع دیگه هندلر جدید نمی‌سازه،
+# فقط excepthook و سطح لاگ کتابخانه‌های شلوغ (telegram/httpx/websockets) رو تنظیم می‌کنه
+logger = setup_logger()
+
+# خواندن تنظیمات (مسیر مطلق - مستقل از CWD هنگام اجرا با systemd)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(BASE_DIR, 'sonar_config.json')
+try:
+    with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+        TOKEN = config.get('bot_token')
+except Exception as e:
+    logger.critical(f"❌ خواندن فایل کانفیگ ناموفق بود / Failed to read config file ({CONFIG_PATH}): {e}", exc_info=True)
+    TOKEN = None
+
+def main():
+    if not isinstance(TOKEN, str) or not TOKEN.strip():
+        logger.critical("Telegram bot token is missing. Configure bot_token in sonar_config.json.")
+        raise SystemExit(2)
+
+    import re
+    if not re.fullmatch(r"[0-9]{6,15}:[A-Za-z0-9_-]{20,}", TOKEN.strip()):
+        logger.critical("Telegram bot token has an invalid format; refusing to start.")
+        raise SystemExit(2)
+
+    version_path = os.path.join(BASE_DIR, "VERSION")
+    try:
+        with open(version_path, encoding="utf-8") as version_file:
+            version = version_file.read().strip()
+    except OSError:
+        version = "unknown"
+    logger.info("Starting Sonar Radar Pro %s", version)
+
+    async def _startup_step(name, callback, *args):
+        logger.info("STARTUP_STAGE_BEGIN stage=%s", name)
+        try:
+            result = await asyncio.to_thread(callback, *args)
+        except Exception:
+            logger.exception("STARTUP_STAGE_FAILED stage=%s", name)
+            raise
+        logger.info("STARTUP_STAGE_OK stage=%s", name)
+        return result
+
+    async def _wait_for_database(db):
+        """Retry the actual SQL connection before any dependent migrations."""
+        attempts = max(1, min(12, int(os.getenv("SONAR_DB_STARTUP_ATTEMPTS", "6"))))
+        last_error = None
+        for attempt in range(1, attempts + 1):
+            try:
+                result = await asyncio.to_thread(db.execute, "SELECT 1 AS ready", None, "one")
+                if not result or int(result.get("ready", 0)) != 1:
+                    raise RuntimeError("PostgreSQL health query returned an unexpected result")
+                logger.info("PostgreSQL readiness verified (attempt %s/%s)", attempt, attempts)
+                return
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "PostgreSQL not ready (attempt %s/%s): %s",
+                    attempt, attempts, type(exc).__name__, exc_info=True
+                )
+                if attempt < attempts:
+                    await asyncio.sleep(min(2 ** (attempt - 1), 8))
+        raise RuntimeError(
+            f"PostgreSQL did not become ready after {attempts} attempts"
+        ) from last_error
+
+    async def _post_init(application):
+        # Use the same bounded executor for run_sync() and asyncio.to_thread().
+        import runtime
+        asyncio.get_running_loop().set_default_executor(runtime.SHARED_EXECUTOR)
+        runtime.start_watchdog(threshold=1.0)
+
+        from database import Database
+        db = Database()
+        await _wait_for_database(db)
+
+        # Each migration is isolated in the log so a startup failure identifies
+        # the exact subsystem instead of surfacing only as "bot exited".
+        from pro_store import install_schema as pro_schema
+        await _startup_step("pro_store", pro_schema, db)
+
+        from enterprise_services import install_schema as enterprise_schema
+        from enterprise_runtime import (
+            install_runtime_schema, operations_worker, webhook_worker,
+            recovery_worker, scheduled_backup_worker, rollout_worker
+        )
+        await _startup_step("enterprise_services", enterprise_schema, db)
+        await _startup_step("enterprise_runtime", install_runtime_schema, db)
+
+        from subscription_health import install_schema as subscription_schema
+        from web_login import install_schema as web_schema
+        from monitor_fleet import install_schema as fleet_schema, install_job_schema
+        from agent_traffic import install_schema as install_meter
+
+        migrations = (
+            ("subscription_health", subscription_schema),
+            ("web_login", web_schema),
+            ("monitor_fleet", fleet_schema),
+            ("monitor_fleet_jobs", install_job_schema),
+            ("agent_traffic", install_meter),
+        )
+        for name, migration in migrations:
+            await _startup_step(name, migration, db)
+
+        stop = asyncio.Event()
+        application.bot_data["enterprise_stop"] = stop
+        application.bot_data["enterprise_tasks"] = [
+            application.create_task(operations_worker(db, stop), name="enterprise-operations"),
+            application.create_task(webhook_worker(db, stop), name="enterprise-webhooks"),
+            application.create_task(recovery_worker(db, stop), name="enterprise-recovery"),
+            application.create_task(rollout_worker(db, stop), name="enterprise-agent-rollouts"),
+            application.create_task(
+                asyncio.to_thread(scheduled_backup_worker, db, stop),
+                name="enterprise-backups"
+            ),
+        ]
+        logger.info("All startup migrations completed; enterprise workers started.")
+
+    async def _post_shutdown(application):
+        stop = application.bot_data.get("enterprise_stop")
+        if stop:
+            stop.set()
+            for task in application.bot_data.get("enterprise_tasks", []):
+                try:
+                    await asyncio.wait_for(task, timeout=15)
+                except Exception:
+                    logger.exception("Enterprise worker shutdown did not finish cleanly")
+        try:
+            from ws_client import GLOBAL_WS_POOL
+            await GLOBAL_WS_POOL.close_all()
+        except Exception:
+            logger.exception("WebSocket pool shutdown failed")
+        try:
+            import runtime
+            runtime.shutdown()
+        except Exception:
+            logger.exception("Shared executor shutdown failed")
+
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .connect_timeout(60.0)
+        .read_timeout(60.0)
+        .write_timeout(60.0)
+        .pool_timeout(30.0)
+        .connection_pool_size(256)
+        .concurrent_updates(False)  # ConversationHandler needs ordered updates
+        .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
+        .build()
+    )
+    
+    # اضافه کردن ارور هندلر از فایل لاجیک
+    app.add_error_handler(bot_logic.error_handler)
+
+    # ✅ ثبت تمام هندلرها از فایل دیسپچر
+    # این خط حیاتی است: تمام دکمه‌ها و دستورات اینجا لود می‌شوند
+    register_all_handlers(app)
+    from service_bot import register as register_service_handlers
+    register_service_handlers(app)
+    from fleet_bot import register as register_fleet
+    register_fleet(app)
+
+    # راه‌اندازی جاب‌ها (Job Queue)
+    if app.job_queue:
+        app.job_queue.run_once(cronjobs.system_startup_notification, when=2)
+        app.job_queue.run_once(cronjobs.startup_whitelist_job, when=15)
+        app.job_queue.run_once(cronjobs.send_startup_topic_test, when=10)
+        app.job_queue.run_daily(cronjobs.check_expiry_job, time=dt.time(hour=8, minute=30, second=0))
+        from workspace_service import workspace_alert_job
+        app.job_queue.run_repeating(workspace_alert_job, interval=10, first=15,
+                                    job_kwargs={'max_instances':1, 'coalesce':True})
+        app.job_queue.run_repeating(cronjobs.auto_scheduler_job, interval=120, first=30)
+        app.job_queue.run_repeating(cronjobs.global_monitor_job, interval=60, first=10, job_kwargs={'max_instances':1,'coalesce':True})
+        app.job_queue.run_repeating(cronjobs.server_report_job,interval=60,first=45,job_kwargs={'max_instances':1,'coalesce':True})
+        app.job_queue.run_repeating(cronjobs.monitor_tunnels_job, interval=60, first=20)
+        app.job_queue.run_repeating(cronjobs.auto_update_subs_job, interval=43200, first=3600)
+        app.job_queue.run_repeating(cronjobs.auto_backup_send_job, interval=3600, first=300)
+        app.job_queue.run_repeating(cronjobs.check_bonus_expiry_job, interval=43200, first=600)
+        from pro_jobs import multi_probe_job, digest_job, cleanup_job
+        app.job_queue.run_repeating(multi_probe_job, interval=1800, first=300,
+                                    job_kwargs={'max_instances': 1, 'coalesce': True})
+        app.job_queue.run_repeating(digest_job, interval=3600, first=360,
+                                    job_kwargs={'max_instances': 1, 'coalesce': True})
+        app.job_queue.run_daily(cleanup_job, time=dt.time(hour=3, minute=0))
+        from monitor_fleet import fleet_heartbeat_job, fleet_install_job
+        app.job_queue.run_repeating(fleet_install_job, interval=35, first=50,
+                                    job_kwargs={'max_instances':1,'coalesce':True})
+        app.job_queue.run_repeating(fleet_heartbeat_job, interval=90, first=45,
+                                    job_kwargs={'max_instances':1,'coalesce':True})
+        from service_jobs import service_check_job
+        app.job_queue.run_repeating(service_check_job, interval=30, first=35,
+                                    job_kwargs={'max_instances':1,'coalesce':True})
+    else:
+        logger.error("JobQueue not available.")
+
+    try:
+        app.run_polling(
+            drop_pending_updates=os.getenv("SONAR_DROP_PENDING_UPDATES", "1") == "1",
+            close_loop=False,
+            allowed_updates=None,
+        )
+    except Exception:
+        logger.exception("BOT_PROCESS_EXITED_WITH_EXCEPTION")
+        raise
+
+
+if __name__ == "__main__":
+    main()

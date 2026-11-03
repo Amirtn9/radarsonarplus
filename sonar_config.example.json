@@ -1,0 +1,8 @@
+{
+  "bot_token": "",
+  "admin_id": "0",
+  "agent_port": 8080,
+  "ws_pool_max": 10,
+  "ws_ping_interval": 30,
+  "ws_ping_timeout": 90
+}

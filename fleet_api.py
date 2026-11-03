@@ -1,0 +1,306 @@
+"""Authenticated fleet administration, additive to the current portal.
+This endpoint intentionally does NOT expose private SSH credentials, agent
+secrets, or scan arbitrary hosts and ports.
+"""
+from __future__ import annotations
+import asyncio
+import time
+import ipaddress
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from typing import Literal
+
+from monitor_fleet import (offer, approve, policy, set_policy, record_probe, choose,
+                           queue_installs, valid_agent_stats, available_relay_nodes, available_workspace_nodes)
+
+class PoolOffer(BaseModel):
+    server_id:int=Field(gt=0)
+    enabled:bool
+
+class PoolApproval(BaseModel):
+    server_ids:list[int]=Field(min_length=1,max_length=30)
+    enabled:bool
+
+class PoolPolicy(BaseModel):
+    strategy:Literal['latency','load','balanced']
+
+class RelayPriority(BaseModel):
+    priority:int=Field(ge=0,le=1000)
+
+class FleetInstall(BaseModel):
+    server_ids:list[int]=Field(min_length=1,max_length=12)
+    port_mode:Literal['stored','automatic']='stored'
+    confirmed:bool=False
+
+class ResetTraffic(BaseModel):
+    confirmed:bool=False
+
+class ScanPorts(BaseModel):
+    server_id:int=Field(gt=0)
+    # One short list, never a general-purpose TCP port scanner.
+    ports:list[int]=Field(default_factory=list,max_length=5)
+
+SAFE_PROBE_PORTS=(8080,8443,9443,18080,28080)
+
+
+def _select_reachability_nodes(nodes, limit=3):
+    """Prefer one fresh approved node per region, then fill by relay priority."""
+    nodes=list(nodes or [])
+    limit=max(1,int(limit))
+    selected=[]
+    for region in ('ir','ext'):
+        candidate=next((node for node in nodes if node.get('location_type')==region),None)
+        if candidate is not None and all(int(item['id'])!=int(candidate['id']) for item in selected):
+            selected.append(candidate)
+        if len(selected)>=limit:return selected[:limit]
+    for node in nodes:
+        if len(selected)>=limit:break
+        if all(int(item['id'])!=int(node['id']) for item in selected):
+            selected.append(node)
+    return selected[:limit]
+
+
+def _reachability_result(main, probes, nodes):
+    agents=True if any(value is True for value in probes) else False if probes and all(value is False for value in probes) else None
+    iran_samples=[value for value,node in zip(probes,nodes) if node.get('location_type')=='ir']
+    iran=True if any(value is True for value in iran_samples) else False if iran_samples and all(value is False for value in iran_samples) else None
+    if main:
+        status='reachable_from_main'
+    elif iran is True:
+        status='reachable_from_iran'
+    elif agents is True:
+        status='reachable_from_agent'
+    elif agents is False:
+        status='unreachable_from_available_vantage_points'
+    else:
+        status='insufficient_evidence'
+    return status,agents,iran
+
+
+def make_router(store,actor,guarded,admin_id):
+    r=APIRouter(prefix='/api/fleet',tags=['fleet'])
+    def ensure_admin(uid):
+        if not admin_id or int(uid)!=int(admin_id):
+            raise HTTPException(status_code=403,detail='Only the main administrator may manage the shared fleet')
+
+    @r.get('/candidates')
+    async def candidates(uid:int=Depends(actor)):
+        ensure_admin(uid)
+        def read():
+            rows=store.db.execute("""SELECT id,name,ip,ws_port,location_type,last_agent_status,port
+                 FROM servers WHERE is_active=1 AND owner_id=%s AND location_type IN ('ir','ext')
+                 ORDER BY CASE WHEN location_type='ir' THEN 0 ELSE 1 END,id LIMIT 500""",(int(admin_id),),fetch='all')
+            return [dict(row) for row in rows]
+        return await guarded(read)
+
+    @r.get('/relays')
+    async def relay_pool(uid:int=Depends(actor)):
+        ensure_admin(uid)
+        def read():
+            rows=store.db.execute("""SELECT s.id,s.name,s.ip,s.port,s.ws_port,s.location_type,s.owner_id,
+                (s.owner_id=%s) AS owned_by_admin,
+                EXISTS(SELECT 1 FROM monitor_fleet_nodes offered WHERE offered.server_id=s.id AND offered.offered_by=s.owner_id AND offered.admin_only=FALSE) AS owner_opted_in,
+                s.last_agent_status,s.last_status,
+                COALESCE(a.agent_cert_pem,'')<>'' AS tls_enrolled,
+                COALESCE(a.agent_token,'')<>'' AS token_configured,
+                COALESCE(f.enabled,FALSE) AS enabled,
+                (f.approved_by IS NOT NULL) AS approved,
+                COALESCE(f.relay_ready,FALSE) AS relay_ready,
+                f.route_priority,f.last_probe_ok,f.last_probe_at,f.latency_ms,f.cpu_pct,f.error_code
+              FROM servers s
+              LEFT JOIN agent_nodes a ON a.ip=s.ip AND a.ssh_port=s.port
+              LEFT JOIN monitor_fleet_nodes f ON f.server_id=s.id
+              WHERE s.is_active=1 AND s.location_type IN ('ir','ext')
+              ORDER BY COALESCE(f.route_priority,100),CASE WHEN s.location_type='ir' THEN 0 ELSE 1 END,s.id""",(int(admin_id),),fetch='all')
+            return [dict(row) for row in rows]
+        rows=await guarded(read)
+        eligible=await guarded(available_relay_nodes,store.db,admin_id)
+        pool=[{'id':int(x['id']),'name':x['name'],'location_type':x['location_type'],
+               'priority':int(x.get('route_priority') or 100),'latency_ms':x.get('latency_ms'),
+               'cpu':x.get('cpu_pct'),'last_probe_at':str(x['last_probe_at']) if x.get('last_probe_at') else None}
+              for x in eligible]
+        return {'primary':'central','fallback_order':pool,'nodes':rows,
+                'policy':await guarded(policy,store.db),
+                'note':'Central route is always attempted first. Only approved, TLS-enrolled and freshly healthy agents are used for fallback.'}
+
+    @r.post('/relays/{server_id}/priority')
+    async def relay_priority(server_id:int,body:RelayPriority,uid:int=Depends(actor)):
+        ensure_admin(uid)
+        priority=int(body.priority)
+        def update():
+            row=store.db.execute("""UPDATE monitor_fleet_nodes SET route_priority=%s,changed_at=NOW()
+                WHERE server_id=%s RETURNING server_id""",(priority,int(server_id)),fetch='one')
+            if not row:raise ValueError('Agent must be enrolled in the fleet before setting route priority')
+        await guarded(update)
+        return {'ok':True,'server_id':server_id,'priority':priority}
+
+    @r.post('/install')
+    async def install(body:FleetInstall,uid:int=Depends(actor)):
+        ensure_admin(uid)
+        if not body.confirmed:raise HTTPException(status_code=400,detail='Explicit confirmation required')
+        jobs=await guarded(queue_installs,store.db,uid,body.server_ids,body.port_mode)
+        return {'queued':jobs,'count':len(jobs),'message':'Queued; requires successful WSS validation'}
+
+    @r.get('/install/jobs')
+    async def install_jobs(uid:int=Depends(actor)):
+        ensure_admin(uid)
+        def read():
+            rows=store.db.execute("""SELECT id,server_id,requested_port,state,stage,error_code,created_at,updated_at
+                    FROM monitor_fleet_install_jobs WHERE requested_by=%s ORDER BY id DESC LIMIT 40""",(uid,),fetch='all')
+            return [dict(r) for r in rows]
+        return await guarded(read)
+
+    @r.get('/nodes')
+    async def nodes(uid:int=Depends(actor)):
+        def read():
+            rows=available_workspace_nodes(store.db,admin_id,uid)
+            for row in rows:
+                # Do not leak another tenant's IP even if offered without approval.
+                if int(uid)!=int(admin_id) and int(row['owner_id']) != int(store.db.workspace_owner(uid)):
+                    row['ip']='shared agent';row['name']='نود عمومی تأییدشده'
+            return [{'id':x['id'],'name':x['name'],'ip':x['ip'],'owner_id':x['owner_id'] if uid==admin_id else None,
+                 'location_type':x.get('location_type','ir'),'port':x['ws_port'],'latency_ms':x['latency_ms'],'cpu':x['cpu_pct'],
+                 'last_probe_ok':x['last_probe_ok'],'last_probe_at':str(x['last_probe_at']) if x['last_probe_at'] else None,
+                 'enabled':x['enabled'],'approved':x['approved_by'] is not None,'relay_ready':x.get('relay_ready',False),
+                 'route_priority':x.get('route_priority',100),'error_code':x['error_code']} for x in rows]
+        return {'strategy':await guarded(policy,store.db), 'nodes':await guarded(read)}
+
+    @r.post('/offer')
+    async def offer_node(data:PoolOffer,uid:int=Depends(actor)):
+        await guarded(offer,store.db,uid,data.server_id,data.enabled)
+        return {'ok':True,'status':'awaiting-admin-approval' if data.enabled else 'revoked'}
+
+    @r.post('/approve')
+    async def approval(data:PoolApproval,uid:int=Depends(actor)):
+        ensure_admin(uid)
+        # Partial failure is reported; no unauthorised other-tenant reads.
+        def apply():
+            for sid in set(data.server_ids):approve(store.db,uid,sid,data.enabled)
+        await guarded(apply)
+        return {'ok':True,'count':len(set(data.server_ids))}
+
+    @r.post('/policy')
+    async def policy_update(data:PoolPolicy,uid:int=Depends(actor)):
+        ensure_admin(uid)
+        await guarded(set_policy,store.db,data.strategy)
+        return {'ok':True,'strategy':data.strategy}
+
+    @r.get('/traffic')
+    async def agent_traffic(uid:int=Depends(actor)):
+        ensure_admin(uid)
+        from agent_traffic import admin_report
+        return {'scope':'measured Agent WSS frame + SSH relay bytes; excludes Xray/host NIC traffic',
+                'rows':await guarded(admin_report,store.db,uid)}
+
+    @r.post('/traffic/{agent_id}/reset')
+    async def reset_traffic(agent_id:int,body:ResetTraffic,uid:int=Depends(actor)):
+        ensure_admin(uid)
+        if not body.confirmed or agent_id<1:raise HTTPException(status_code=400,detail='Explicit reset confirmation required')
+        from agent_traffic import reset_meter
+        epoch=await guarded(reset_meter,store.db,uid,agent_id)
+        return {'ok':True,'agent_id':agent_id,'new_epoch':epoch,'note':'Previous measurement epochs retained for audit'}
+
+    @r.get('/choice')
+    async def choice(uid:int=Depends(actor)):
+        # Private diagnostics: only nodes owned by administrator or this workspace.
+        rows=(await guarded(available_relay_nodes,store.db,admin_id) if int(uid)==int(admin_id)
+              else await guarded(available_workspace_nodes,store.db,admin_id,uid))
+        node=choose(rows,await guarded(policy,store.db),uid)
+        return {'selected_id':node['id'] if node else None,
+                'reason':'healthy approved node' if node else 'No fresh, verified agent telemetry (last 5 min)'}
+
+    @r.get('/reachability/{server_id}')
+    async def reachability(server_id:int,uid:int=Depends(actor)):
+        if server_id<1:raise HTTPException(status_code=400,detail='Invalid server ID')
+        owner=int(await guarded(store.db.workspace_owner,uid))
+        row=await guarded(store.db.execute,
+            'SELECT id,name,ip,port FROM servers WHERE id=%s AND owner_id=%s',
+            (server_id,owner),'one')
+        if not row and int(uid)==int(admin_id):
+            row=await guarded(store.db.execute,'SELECT id,name,ip,port FROM servers WHERE id=%s AND is_active=1',
+                              (server_id,),'one')
+        if not row:raise HTTPException(status_code=404,detail='Server not found')
+        try:
+            address=ipaddress.ip_address(str(row['ip']))
+            if not address.is_global:raise ValueError('non-public IP')
+        except ValueError:
+            raise HTTPException(status_code=400,detail='Multi-vantage checks require a public numeric IP address')
+        port=int(row['port'] or 22)
+        # Safety: a fixed list prevents turning an Agent into a generic port scanner.
+        if port not in (22,80,443,8080,8443,2022,2222):
+            return {'classification':'unsupported_port','main':None,'iran':None,
+                    'detail':'This SSH port is outside the safe probe allowlist'}
+        async def direct():
+            try:
+                _reader,writer=await asyncio.wait_for(asyncio.open_connection(str(address),port),timeout=4)
+                writer.close();await writer.wait_closed();return True
+            except (OSError,asyncio.TimeoutError):return False
+        main=await direct()
+        nodes=await guarded(available_relay_nodes,store.db,admin_id,user_id=uid,exclude_ip=str(address))
+        eligible=_select_reachability_nodes(nodes,limit=3)
+        from core import ServerMonitor
+        async def from_node(node):
+            try:
+                response=await asyncio.wait_for(ServerMonitor.ws_send_command(
+                    node['ip'],int(node['ws_port']),None,
+                    {'action':'probe_public_tcp','target':str(address),'port':port},timeout=6),timeout=9)
+                if isinstance(response,dict) and isinstance(response.get('reachable'),bool):return response['reachable']
+            except (OSError,asyncio.TimeoutError):pass
+            return None
+        probes=await asyncio.gather(*(from_node(n) for n in eligible))
+        status,agents,iran=_reachability_result(main,probes,eligible)
+        return {'server_id':server_id,'classification':status,'main':main,'iran':iran,'agents':agents,
+                'agent_samples':len(probes),
+                'detail':'This is TCP reachability, not ICMP ping. Full outage requires independent external confirmation.'}
+
+    @r.post('/diagnose')
+    async def diagnose(data:ScanPorts,uid:int=Depends(actor)):
+        # Only a saved server in this user's workspace. The admin may inspect
+        # offered nodes, not arbitrary addresses supplied through the browser.
+        def get_target():
+            workspace=store.db.workspace_owner(uid)
+            row=store.db.execute('''SELECT id,ip,ws_port,owner_id FROM servers
+              WHERE id=%s AND owner_id=%s''',(data.server_id,workspace),fetch='one')
+            if not row and int(uid)==int(admin_id):
+                row=store.db.execute('''SELECT id,ip,ws_port,owner_id FROM servers
+                     WHERE id=%s AND is_active=1''',(data.server_id,),fetch='one')
+            if not row:raise PermissionError('Target is outside your workspace')
+            return dict(row)
+        target=await guarded(get_target)
+        try:
+            target_ip=ipaddress.ip_address(str(target['ip']))
+            if not target_ip.is_global:raise ValueError('not public')
+        except ValueError:
+            raise HTTPException(status_code=400,detail='A saved public numeric IP is required for port diagnostics')
+        stored=int(target['ws_port'] or 8080)
+        ports=list(dict.fromkeys(int(p) for p in (data.ports or [stored,8080,8443,9443])))
+        if len(ports)>5 or any(not 1024<=p<=65535 or (p not in SAFE_PROBE_PORTS and p!=stored) for p in ports):
+            raise HTTPException(status_code=400,detail='Port list outside bounded, supported probe ports')
+        async def tcp(port):
+            started=time.monotonic()
+            try:
+                _r,w=await asyncio.wait_for(asyncio.open_connection(target['ip'],port),timeout=3)
+                w.close();await w.wait_closed()
+                return {'port':port,'tcp':'open','rtt_ms':round((time.monotonic()-started)*1000,1)}
+            except (OSError,asyncio.TimeoutError):return {'port':port,'tcp':'closed_or_filtered','rtt_ms':None}
+        answers=await asyncio.gather(*(tcp(p) for p in ports))
+        # TCP open does not validate TLS or token. Only known enrolled port is tested.
+        enrolled=next((x for x in answers if x['port']==stored and x['tcp']=='open'),None)
+        if enrolled:
+            from core import ServerMonitor
+            started=time.monotonic()
+            try:
+                outcome=await asyncio.wait_for(ServerMonitor.ws_send_command(target['ip'],stored,None,{'action':'get_stats'},timeout=7),timeout=11)
+                ok=valid_agent_stats(outcome)
+                enrolled['wss']='verified' if ok else 'failed'
+                if ok:
+                    enrolled['rtt_ms']=round((time.monotonic()-started)*1000,1)
+                    enrolled['cpu']=outcome.get('cpu')
+                    if int(uid)==int(admin_id):
+                        await guarded(record_probe,store.db,data.server_id,True,enrolled['rtt_ms'],outcome.get('cpu'))
+                elif int(uid)==int(admin_id):await guarded(record_probe,store.db,data.server_id,False,None,None,'WSS_VERIFICATION_FAILED')
+            except (OSError,asyncio.TimeoutError):
+                enrolled['wss']='timeout'
+                if int(uid)==int(admin_id):await guarded(record_probe,store.db,data.server_id,False,None,None,'WSS_TIMEOUT')
+        return {'server_id':data.server_id,'ports':answers,'note':'Only WSS=verified proves TLS and Agent token; open TCP alone is not sufficient.'}
+    return r
