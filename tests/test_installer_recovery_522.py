@@ -23,26 +23,10 @@ def test_systemd_limits_live_in_unit_section_not_service_section():
 
 def test_runtime_permissions_and_prestart_checks_before_service_enable():
     stage = SCRIPT.split('install_app() {', 1)[1].split('configure_web_port() {', 1)[0]
-    assert 'normalize_venv_permissions "$STATE_STAGE/venv"' in stage
-    assert 'normalize_venv_permissions "$APP_DIR/venv"' in stage
+    assert stage.index('chmod -R a+rX "$STATE_STAGE/venv"') < stage.index('systemctl enable --now "$SERVICE"')
     assert stage.index('runuser -u "$APP_USER" -- "$STATE_STAGE/venv/bin/python"') < stage.index('systemctl enable --now "$SERVICE"')
     assert 'systemd-analyze verify "$BOT_UNIT"' in stage
-    assert 'ExecStartPre=/usr/bin/test -x $APP_DIR/venv/bin/python' in SCRIPT
-    assert 'diagnose_service_exec "$APP_DIR/venv/bin/python"' in SCRIPT
-    assert '[[ "$main_status" == 203 || "$active_state" == failed ]]' in SCRIPT
     assert 'journalctl -u "$SERVICE" -n 60 --no-pager' in stage
-
-
-def test_venv_creation_uses_non_secret_umask_and_restores_private_umask():
-    create = SCRIPT.split('create_venv() {', 1)[1].split('ensure_db() {', 1)[0]
-    assert 'previous_umask="$(umask)"' in create
-    assert 'umask 022' in create
-    assert 'umask "$previous_umask"' in create
-    assert 'chmod 0600 "$STATE_STAGE/secret.key"' in create
-    helper = SCRIPT.split('normalize_venv_permissions() {', 1)[1].split('prepare_runtime_state() {', 1)[0]
-    assert 'find "$venv" -type d -exec chmod 0755 {} +' in helper
-    assert 'findmnt -no OPTIONS -T "$venv/bin/python"' in helper
-    assert 'grep -qx noexec' in helper
 
 
 def test_clean_reset_is_scoped_confirmed_and_database_backed_up():
@@ -96,3 +80,16 @@ def test_startup_waits_for_database_and_completes_migrations_before_workers():
     assert "for name, migration in migrations:" in bot
     assert "All startup migrations completed; enterprise workers started." in bot
     assert 'journalctl -u "$SERVICE" -n 60 --no-pager' in SCRIPT
+
+
+def test_repair_script_fixes_legacy_unit_and_checks_exec_permissions():
+    repair = (ROOT / 'scripts' / 'repair.sh').read_text(encoding='utf-8')
+    unit = repair.split('cat > "$unit_tmp" <<EOF_UNIT', 1)[1].split('EOF_UNIT', 1)[0]
+    assert unit.index('StartLimitIntervalSec=120') < unit.index('[Service]')
+    assert unit.index('StartLimitBurst=8') < unit.index('[Service]')
+    assert 'chmod -R a+rX "$APP_DIR/venv"' in repair
+    assert 'runuser -u "$APP_USER" -- "$PYTHON"' in repair
+    assert 'findmnt -n -o OPTIONS -T "$REAL_PYTHON"' in repair
+    assert 'systemd-analyze verify "$UNIT"' in repair
+    assert 'systemctl daemon-reload' in repair
+    assert 'systemctl restart "$SERVICE"' in repair

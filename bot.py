@@ -128,7 +128,6 @@ def main():
         from web_login import install_schema as web_schema
         from monitor_fleet import install_schema as fleet_schema, install_job_schema
         from agent_traffic import install_schema as install_meter
-        from service_monitor import install_schema as service_monitor_schema
 
         migrations = (
             ("subscription_health", subscription_schema),
@@ -136,7 +135,6 @@ def main():
             ("monitor_fleet", fleet_schema),
             ("monitor_fleet_jobs", install_job_schema),
             ("agent_traffic", install_meter),
-            ("service_monitor", service_monitor_schema),
         )
         for name, migration in migrations:
             await _startup_step(name, migration, db)

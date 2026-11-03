@@ -49,7 +49,7 @@ def test_installer_fails_closed_before_delete_and_imports_project():
     assert 'archive_existing_components || return 1' in reset
     assert reset.index('archive_existing_components ||') < reset.index('dropdb --if-exists')
     stage=script.split('install_app() {')[1].split('configure_web_port() {')[0]
-    assert 'normalize_venv_permissions "$STATE_STAGE/venv"' in stage
+    assert 'chmod -R a+rX "$STATE_STAGE/venv"' in stage
     assert 'verify_service_sources "$STATE_STAGE"' in stage
     assert stage.index('verify_service_sources "$STATE_STAGE"') < stage.index('systemctl enable --now')
     assert stage.index('runuser -u "$APP_USER" -- "$STATE_STAGE/venv/bin/python"') < stage.index('systemctl enable --now')

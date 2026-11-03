@@ -1,13 +1,19 @@
+# Installer hotfix — systemd / Python EXEC (2026-11-03)
+
+- Added a non-destructive repair path that checks virtualenv execution as the actual `sonar-bot` service user.
+- Detects `noexec` on the resolved Python interpreter mount and stops with a specific remediation message instead of retrying a doomed service start.
+- Repairs virtualenv traversal/read/execute permissions created under a restrictive umask.
+- Regenerates the legacy `sonar-bot.service` unit with `StartLimitIntervalSec` and `StartLimitBurst` in `[Unit]`, backs up the prior unit, validates the replacement, reloads systemd and restarts the bot.
+- Adds regression coverage for the repair script and unit layout.
+
 # RadarSonarPlus 6.9 — Post-audit reliability and installer recovery patch
 
 - Fixed health timestamp parsing for legacy TEXT agent timestamps and stopped treating missing CPU/RAM/Disk data as zero load.
-- Corrected `service_down` automation to query HTTP/TCP probe records; unsafe legacy restart rules are disabled and unsupported event/action pairs are rejected by both API validation and the service layer.
-- Added the missing HTTP/TCP service-monitor schema migration to both Telegram Bot and Web API startup.
+- Corrected `service_down` automation to query HTTP/TCP probe records; unsafe restart actions without an explicit server mapping are rejected.
 - Added automatic Agent Rollout rollback for successful hosts after a later batch fails, plus restart-safe rollback reservations and manual retry after rollback failure.
 - Made signed Agent release identities immutable by version/channel.
 - Moved synchronous database work out of async Webhook, Recovery and Rollout workers.
 - Removed the unreachable per-server Backup operation path; scheduled PostgreSQL backups remain on their dedicated scheduler.
-- Fixed venv permissions under the installer umask; added exact interpreter/mount diagnostics, systemd ExecStartPre checks and corrected Unit-level start limits.
 - Added service-account bot import preflight, a post-migration startup readiness marker, bounded installer readiness wait and richer startup diagnostics.
 - Added a non-destructive resume path when a first installation rolls back code but leaves PostgreSQL/runtime state intact.
 

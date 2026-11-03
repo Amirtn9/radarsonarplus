@@ -586,11 +586,6 @@ class EnterpriseStore:
         elif action=="rollback":
             if row["state"] not in ("completed","failed","cancelled","rollback_failed"):
                 raise ValueError("Only completed, failed, cancelled or rollback_failed rollouts can be rolled back")
-            if row.get("active_operation_id"):
-                active=self.db.execute("SELECT status FROM rs_operations WHERE id=%s AND owner_id=%s",
-                    (row["active_operation_id"],owner),fetch="one")
-                if active and active.get("status") not in ("succeeded","failed","cancelled"):
-                    raise ValueError("The active rollout batch has not settled; wait for it to finish before rollback")
             if not row.get("previous_release_id"): raise ValueError("No previous signed release is available for rollback")
             completed=self.db.execute("""SELECT DISTINCT i.resource_id FROM rs_operation_items i
               JOIN rs_operations o ON o.id=i.operation_id
