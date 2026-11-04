@@ -1,3 +1,13 @@
+# RadarSonarPlus 6.9 — Unified Web Panel and Telegram Mini App UI refresh (2026-11-04)
+
+- Introduced a shared Apple-inspired design layer for desktop web and Telegram WebView without creating a second frontend or changing the API/database architecture.
+- Reworked navigation, dashboard cards, forms, list surfaces, dialogs, responsive layouts, theme handling and mobile safe-area behavior.
+- Added dashboard visibility into the existing Telegram notification outbox delivery counts.
+- Connected the existing server/config favorites filter to the API and exposed incident lifecycle filtering.
+- Improved mobile drawer accessibility, Escape-to-close behavior, active navigation semantics and reduced-motion support.
+- Added regression coverage for shared-shell wiring, delivery telemetry, filter contracts, safe DOM rendering and responsive styles.
+- No database migration or change to Telegram bot command/SSH/Agent execution logic was introduced.
+
 # RadarSonarPlus 6.9 — Installer UI and full-purge patch
 
 - Added a full-screen `whiptail` deployment menu with a colored terminal fallback when `whiptail` is unavailable.

@@ -1,59 +1,37 @@
-# بسته تعمیر Manifest — RadarSonarPlus 6.9
+# SONAR RADAR PRO 6.9 — رابط یکپارچه وب و Mini App
 
-این بسته فقط برای checkout با Revision زیر ساخته شده است:
+این بسته، نسخه بازطراحی‌شده رابط پنل وب و Telegram Mini App پروژه SONAR RADAR PRO است. رابط جدید از یک پوسته، یک Design System و همان API احراز هویت‌شده استفاده می‌کند؛ برای وب دسکتاپ و Telegram WebView دو نسخه مستقل ساخته نشده است.
 
-`59b5f2ebd1f2`
+## تغییرات رابط
 
-## مشکل دقیق
+- طراحی یکپارچه با الهام از Apple UI، سطوح شیشه‌ای کنترل‌شده، رنگ‌بندی سرمه‌ای/آبی/فیروزه‌ای و حالت روشن و تاریک.
+- ناوبری آیکون‌محور، داشبورد کارت‌محور، فرم‌های هماهنگ، نمایش بهتر جداول و وضعیت‌ها.
+- چیدمان موبایل با Bottom Navigation، منوی کشویی، رعایت Safe Area و پشتیبانی از Telegram WebView.
+- نمایش وضعیت صف اعلان‌ها با داده واقعی از API موجود `/api/notifications/delivery`.
+- فعال‌سازی واقعی فیلتر علاقه‌مندی‌ها با پارامتر `favorites` و فیلتر چرخه رسیدگی رخدادها و نام‌گذاری صحیح بسته خروجی عیب‌یابی.
+- بهبود دسترس‌پذیری ناوبری، وضعیت فوکوس، Escape برای بستن منو و احترام به `prefers-reduced-motion`.
 
-- `.gitattributes` و `.gitignore` در Manifest ثبت شده‌اند اما در checkout منتشرشده وجود ندارند.
-- `README_FA.md` و `repair_manifest.sh` در checkout وجود دارند اما در Manifest ثبت نشده‌اند.
-- Hash دو فایل بازگردانی‌شونده دقیقاً با Manifest همین Revision تطبیق داده شده است.
+## معماری و داده
 
-## روش اجرا روی سرور
+- `pro_web/index.html` پوسته مشترک وب و Mini App است.
+- `pro_web/static/premium.css` لایه طراحی جدید است و CSSهای قبلی را بدون حذف قابلیت‌های عملیاتی تکمیل می‌کند.
+- `pro_web/static/app.js` و سایر ماژول‌های موجود همچنان از API فعلی استفاده می‌کنند.
+- `pro_portal.py`، احراز هویت Telegram، نشست وب، کنترل مالکیت، صف عملیات و `database.py` تغییر معماری یا دیتابیس موازی ندارند.
+- هیچ داده نمایشی یا مقدار ساختگی برای آمار مانیتورینگ اضافه نشده است.
 
-از clone فعلی استفاده کنید؛ نیازی به clone مجدد یا checkout کردن Revision قبلی نیست.
+## اعتبارسنجی
 
-ابتدا:
-
-```bash
-cd /root/radarsonarplus
-git rev-parse --short=12 HEAD
-```
-
-خروجی باید دقیقاً این باشد:
-
-```text
-59b5f2ebd1f2
-```
-
-ZIP را به `/root` منتقل کنید و سپس اجرا کنید:
+از ریشه پروژه اجرا کنید:
 
 ```bash
-mkdir -p /root/sonar-manifest-repair-59b5
-unzip -o /root/RadarSonarPlus-6.9-MANIFEST-REPAIR-59B5.zip \
-  -d /root/sonar-manifest-repair-59b5
-
-sudo bash /root/sonar-manifest-repair-59b5/repair_manifest.sh \
-  /root/radarsonarplus
-
-sudo bash /root/radarsonarplus/install.sh --check
+python3 scripts/verify_manifest.py
+python3 -m pytest -q
+for file in pro_web/static/*.js; do node --check "$file" || exit 1; done
+sudo bash install.sh --check
 ```
 
-فقط اگر `--check` موفق شد، نصب را از همان سورس ادامه دهید:
+`install.sh --check` بررسی سورس و محیط را انجام می‌دهد و به‌تنهایی سلامت سرویس‌های زنده یا اتصال واقعی به همه سرورها را اثبات نمی‌کند.
 
-```bash
-sudo bash /root/radarsonarplus/install.sh --install
-```
+## ارتقا
 
-اگر نصب قبلی اطلاعات دیتابیس یا Runtime دارد، گزینه Resume/Preserve را انتخاب کنید؛ Clean Reset را انتخاب نکنید مگر اینکه عمداً قصد حذف داده‌ها را داشته باشید.
-
-## رفتار ایمن اسکریپت
-
-- Revision را بررسی می‌کند و روی نسخه دیگری اجرا نمی‌شود.
-- الگوی خطا را دقیقاً بررسی می‌کند؛ هر اختلاف اضافی باعث توقف می‌شود.
-- دو فایل dotfile را فقط پس از تطبیق SHA-256 با Manifest برمی‌گرداند.
-- Manifest را بازنویسی نمی‌کند و کنترل یکپارچگی را غیرفعال نمی‌کند.
-- دو فایل کمکی ثبت‌نشده را حذف نمی‌کند؛ آن‌ها را در پوشه قرنطینه کنار سورس نگه می‌دارد.
-- دیتابیس، Runtime، سرویس‌ها و تنظیمات نصب‌شده را تغییر نمی‌دهد.
-- در صورت شکست بررسی نهایی، تغییرات فایل‌ها را Rollback می‌کند.
+قبل از استقرار روی سرور اصلی، از دیتابیس، `sonar_config.json` و `secret.key` نسخه پشتیبان مستقل بگیرید و ابتدا روی محیط staging بررسی کنید. برای ارتقای معمولی از گزینه Clean Reset استفاده نکنید.
