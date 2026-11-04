@@ -4,7 +4,7 @@ umask 077
 
 usage() {
   echo 'Usage: sudo bash repair_manifest.sh /path/to/radarsonarplus-source'
-  echo 'Repairs only the exact known mismatch for revision be30eef94b92.'
+  echo 'Repairs only the exact known mismatch for revision 59b5f2ebd1f2.'
 }
 if [[ ${1:-} == '-h' || ${1:-} == '--help' ]]; then usage; exit 0; fi
 if [[ $# -ne 1 ]]; then usage >&2; exit 2; fi
@@ -22,12 +22,12 @@ ROOT="$(realpath -e -- "$1")"
 # This patch is pinned to the exact source revision shown in the user's log.
 if git -C "$ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
   REV="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
-  [[ "$REV" == 'be30eef94b92' ]] || {
-    echo "Refusing unexpected source revision: $REV (expected be30eef94b92). No files changed." >&2
+  [[ "$REV" == '59b5f2ebd1f2' ]] || {
+    echo "Refusing unexpected source revision: $REV (expected 59b5f2ebd1f2). No files changed." >&2
     exit 3
   }
 else
-  echo 'This repair requires a Git checkout at revision be30eef94b92; no files changed.' >&2
+  echo 'This repair requires a Git checkout at revision 59b5f2ebd1f2; no files changed.' >&2
   exit 3
 fi
 

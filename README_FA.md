@@ -2,44 +2,58 @@
 
 این بسته فقط برای checkout با Revision زیر ساخته شده است:
 
-`be30eef94b92`
+`59b5f2ebd1f2`
 
 ## مشکل دقیق
 
-- فایل‌های `.gitattributes` و `.gitignore` در Manifest ثبت شده‌اند اما در checkout وجود ندارند.
-- فایل‌های `README_FA.md` و `repair_manifest.sh` در checkout وجود دارند اما در Manifest ثبت نشده‌اند.
-- فایل‌های مشترک طبق خروجی Preflight کاربر، Hash صحیح دارند.
+- `.gitattributes` و `.gitignore` در Manifest ثبت شده‌اند اما در checkout منتشرشده وجود ندارند.
+- `README_FA.md` و `repair_manifest.sh` در checkout وجود دارند اما در Manifest ثبت نشده‌اند.
+- Hash دو فایل بازگردانی‌شونده دقیقاً با Manifest همین Revision تطبیق داده شده است.
 
-## روش اجرا
+## روش اجرا روی سرور
 
-ابتدا یک checkout دائمی از همان Revision بسازید؛ از پوشه موقت `.sonar-bootstrap.*` استفاده نکنید:
+از clone فعلی استفاده کنید؛ نیازی به clone مجدد یا checkout کردن Revision قبلی نیست.
+
+ابتدا:
 
 ```bash
-cd /root
-git clone https://github.com/Amirtn9/radarsonarplus.git radarsonarplus-repair
-cd /root/radarsonarplus-repair
-git checkout --detach be30eef94b92
+cd /root/radarsonarplus
 git rev-parse --short=12 HEAD
 ```
 
-خروجی دستور آخر باید دقیقاً `be30eef94b92` باشد. سپس این ZIP را روی سرور در `/root` قرار دهید و اجرا کنید:
+خروجی باید دقیقاً این باشد:
 
-```bash
-mkdir -p /root/sonar-manifest-repair
-unzip -o RadarSonarPlus-6.9-MANIFEST-REPAIR.zip -d /root/sonar-manifest-repair
-sudo bash /root/sonar-manifest-repair/repair_manifest.sh /root/radarsonarplus-repair
-sudo bash /root/radarsonarplus-repair/install.sh --check
+```text
+59b5f2ebd1f2
 ```
 
-اگر Preflight موفق بود، نصب را از همین checkout دائمی ادامه دهید. اگر نصب قبلی دیتابیس یا Runtime دارد، گزینه Resume/Preserve را انتخاب کنید؛ Clean Reset را انتخاب نکنید مگر با قصد حذف اطلاعات.
+ZIP را به `/root` منتقل کنید و سپس اجرا کنید:
 
-## ایمنی
+```bash
+mkdir -p /root/sonar-manifest-repair-59b5
+unzip -o /root/RadarSonarPlus-6.9-MANIFEST-REPAIR-59B5.zip \
+  -d /root/sonar-manifest-repair-59b5
 
-- اسکریپت Revision را کنترل می‌کند و روی Revision دیگر اجرا نمی‌شود.
-- قبل از تغییر، الگوی اختلاف را دقیقاً با خطای گزارش‌شده مقایسه می‌کند؛ اختلاف اضافی باعث توقف می‌شود.
-- فایل‌های dotfile را فقط پس از تطبیق SHA-256 با Manifest بازمی‌گرداند.
-- `MANIFEST_SHA256.txt` را بازنویسی یا کنترل Hash را غیرفعال نمی‌کند.
+sudo bash /root/sonar-manifest-repair-59b5/repair_manifest.sh \
+  /root/radarsonarplus
+
+sudo bash /root/radarsonarplus/install.sh --check
+```
+
+فقط اگر `--check` موفق شد، نصب را از همان سورس ادامه دهید:
+
+```bash
+sudo bash /root/radarsonarplus/install.sh --install
+```
+
+اگر نصب قبلی اطلاعات دیتابیس یا Runtime دارد، گزینه Resume/Preserve را انتخاب کنید؛ Clean Reset را انتخاب نکنید مگر اینکه عمداً قصد حذف داده‌ها را داشته باشید.
+
+## رفتار ایمن اسکریپت
+
+- Revision را بررسی می‌کند و روی نسخه دیگری اجرا نمی‌شود.
+- الگوی خطا را دقیقاً بررسی می‌کند؛ هر اختلاف اضافی باعث توقف می‌شود.
+- دو فایل dotfile را فقط پس از تطبیق SHA-256 با Manifest برمی‌گرداند.
+- Manifest را بازنویسی نمی‌کند و کنترل یکپارچگی را غیرفعال نمی‌کند.
 - دو فایل کمکی ثبت‌نشده را حذف نمی‌کند؛ آن‌ها را در پوشه قرنطینه کنار سورس نگه می‌دارد.
-- دیتابیس، سرویس‌ها، تنظیمات و Runtime را تغییر نمی‌دهد.
-
-اگر Revision یا الگوی خطا متفاوت بود، اسکریپت بدون تغییر فایل‌ها متوقف می‌شود.
+- دیتابیس، Runtime، سرویس‌ها و تنظیمات نصب‌شده را تغییر نمی‌دهد.
+- در صورت شکست بررسی نهایی، تغییرات فایل‌ها را Rollback می‌کند.
