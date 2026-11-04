@@ -95,7 +95,7 @@
     if(document.hidden||refreshing||!byId('session-warning')?.hidden)return;
     refreshing=true;
     try{
-      if(state.tab==='overview'){await summary();await loadRecent();}
+      if(state.tab==='overview'){await summary();await loadRecent();await window.SonarDashboard?.loadNotificationDelivery?.();}
       else if(state.tab==='servers'||state.tab==='configs'||state.tab==='incidents')await loadList();
       else if(state.tab==='services')await loadServices();
       else if(state.tab==='server-detail')await loadServer();
