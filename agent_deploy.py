@@ -171,7 +171,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent
                     " if source.is_file():\n  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)\n" +
                     " elif target.is_file():target.unlink()\n" +
                     "subprocess.run(['systemctl','daemon-reload'],check=False)\n" +
-                    "subprocess.run(['systemctl','try-restart','sonar-agent'] if pathlib.Path(paths[-1]).exists() else ['systemctl','stop','sonar-agent'],check=False)\n" +
+                    "subprocess.run(['systemctl','try-restart','sonar-agent'] if pathlib.Path(paths[7]).exists() else ['systemctl','stop','sonar-agent'],check=False)\n" +
                     "SONAR_ROLLBACK\n")
                 run(rollback_files, 80)
             except Exception:log.error('Installer file rollback failed')

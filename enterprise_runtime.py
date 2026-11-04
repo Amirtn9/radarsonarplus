@@ -1,5 +1,5 @@
 
-"""Operational workers for RadarSonarPlus 6.9.
+"""Operational workers for RadarSonarPlus 6.9.2.
 
 Remote work is deliberately allow-listed. No API accepts arbitrary shell text.
 """
@@ -119,7 +119,10 @@ def validate_backup_destination(destination):
 
 def _read_backup(destination):
     if str(destination).startswith("s3://"):
-        import boto3
+        try:
+            import boto3
+        except ImportError as exc:
+            raise RuntimeError("S3_BACKUP_EXTRA_NOT_INSTALLED: install requirements-s3.txt") from exc
         bucket,key=_s3_location(destination)
         response=boto3.client("s3",region_name=os.getenv("SONAR_BACKUP_S3_REGION"),
              endpoint_url=os.getenv("SONAR_BACKUP_S3_ENDPOINT") or None).get_object(Bucket=bucket,Key=key)
@@ -128,7 +131,10 @@ def _read_backup(destination):
 
 def _delete_backup(destination):
     if str(destination).startswith("s3://"):
-        import boto3
+        try:
+            import boto3
+        except ImportError as exc:
+            raise RuntimeError("S3_BACKUP_EXTRA_NOT_INSTALLED: install requirements-s3.txt") from exc
         bucket,key=_s3_location(destination)
         boto3.client("s3",region_name=os.getenv("SONAR_BACKUP_S3_REGION"),
              endpoint_url=os.getenv("SONAR_BACKUP_S3_ENDPOINT") or None).delete_object(Bucket=bucket,Key=key)
@@ -161,7 +167,10 @@ def create_encrypted_backup(db_config: dict, destination: str) -> dict:
     encrypted = cipher.encrypt(proc.stdout)
     digest=hashlib.sha256(encrypted).hexdigest()
     if str(destination).startswith("s3://"):
-        import boto3
+        try:
+            import boto3
+        except ImportError as exc:
+            raise RuntimeError("S3_BACKUP_EXTRA_NOT_INSTALLED: install requirements-s3.txt") from exc
         bucket,obj_key=_s3_location(destination)
         boto3.client("s3",region_name=os.getenv("SONAR_BACKUP_S3_REGION"),
             endpoint_url=os.getenv("SONAR_BACKUP_S3_ENDPOINT") or None).put_object(
@@ -169,11 +178,14 @@ def create_encrypted_backup(db_config: dict, destination: str) -> dict:
             ServerSideEncryption="AES256")
         return {"path":str(destination),"bytes":len(encrypted),"sha256":digest}
     target = _safe_destination(destination)
-    target_tmp = target.with_suffix(target.suffix + ".tmp")
-    fd = os.open(target_tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(encrypted); stream.flush(); os.fsync(stream.fileno())
-    os.replace(target_tmp, target)
+    fd, temporary = tempfile.mkstemp(prefix=".sonar-backup-", dir=target.parent)
+    target_tmp = Path(temporary)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(encrypted); stream.flush(); os.fsync(stream.fileno())
+        os.replace(target_tmp, target)
+    finally:
+        target_tmp.unlink(missing_ok=True)
     return {"path": str(target), "bytes": len(encrypted), "sha256": digest}
 
 def restore_encrypted_backup(db_config: dict, source: str, confirm: bool = False) -> dict:
@@ -187,7 +199,7 @@ def restore_encrypted_backup(db_config: dict, source: str, confirm: bool = False
     raw = _read_backup(source)
     dump = Fernet(key.encode("ascii")).decrypt(raw)
     env = os.environ.copy(); env["PGPASSWORD"] = str(db_config.get("password") or "")
-    cmd = ["pg_restore", "--clean", "--if-exists", "--no-owner", "--no-acl",
+    cmd = ["pg_restore", "--single-transaction", "--exit-on-error", "--clean", "--if-exists", "--no-owner", "--no-acl",
            "-h", str(db_config.get("host", "localhost")), "-p", str(db_config.get("port", 5432)),
            "-U", str(db_config.get("user", "")), "-d", str(db_config.get("dbname", ""))]
     proc = subprocess.run(cmd, input=dump, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -381,7 +393,7 @@ def deliver_webhook(url, secret, payload):
     body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
     signature = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     req = Request(url, data=body, headers={"Content-Type":"application/json",
-                "User-Agent":"RadarSonarPlus-Webhook/6.9",
+                "User-Agent":"RadarSonarPlus-Webhook/6.9.2",
                 "X-Radar-Signature":"sha256="+signature}, method="POST")
     opener = build_opener(_NoRedirect)
     with opener.open(req, timeout=8) as response:
@@ -492,8 +504,8 @@ def scheduled_backup_worker(db, stop):
                 finally:
                     if succeeded:
                         interval="1 day" if row['cadence']=="daily" else "7 days"
-                        db.execute(f"""UPDATE rs_backup_schedules SET next_run_at=NOW()+INTERVAL '{interval}',
-                          last_run_at=NOW(),lease_until=NULL WHERE id=%s""",(row['id'],))
+                        db.execute("""UPDATE rs_backup_schedules SET next_run_at=NOW()+(%s::interval),
+                          last_run_at=NOW(),lease_until=NULL WHERE id=%s""",(interval,row['id']))
                     else:
                         db.execute("""UPDATE rs_backup_schedules SET next_run_at=NOW()+INTERVAL '15 minutes',
                           lease_until=NULL WHERE id=%s""",(row['id'],))

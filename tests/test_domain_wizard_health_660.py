@@ -28,6 +28,6 @@ def test_domain_wizard_repairs_panel_before_tls_and_waits_after_restart():
 
 def test_version_is_rc3_consistently_declared():
     version = (ROOT / "VERSION").read_text().strip()
-    assert version == "6.9"
+    assert version == "6.9.2"
     assert version in (ROOT / "settings.py").read_text()
     assert version in (ROOT / "monitor_agent.py").read_text()

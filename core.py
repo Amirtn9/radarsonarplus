@@ -14,9 +14,9 @@ import requests
 import paramiko
 import jdatetime
 import matplotlib
-from cryptography.fernet import Fernet
 
-from settings import KEY_FILE, AGENT_FILE_PATH, AGENT_PORT
+from settings import BASE_DIR, KEY_FILE, AGENT_FILE_PATH, AGENT_PORT
+from secret_crypto import Security, SecretDecryptionError
 from ssh_support import connect_ssh, describe_ssh_error
 from access_policy import valid_agent_port
 
@@ -259,7 +259,7 @@ class ServerMonitor:
                     )
             return exit_code == 0, result if exit_code == 0 else f"exit={exit_code}: {result}"
         except paramiko.AuthenticationException:
-            return False, "AUTH_FAILED: نام کاربری، رمز یا روش ورود SSH پذیرفته نشد."
+            return False, "AUTH_FAILED: نام کاربری یا روش احراز هویت SSH پذیرفته نشد."
         except Exception as e:
             try:
                 detail = describe_ssh_error(e)
@@ -673,37 +673,6 @@ class ServerMonitor:
 # ==============================================================================
 # 🔐 SECURITY HELPER
 # ==============================================================================
-class Security:
-    def __init__(self):
-        os.makedirs(os.path.dirname(KEY_FILE), mode=0o700, exist_ok=True)
-        if not os.path.exists(KEY_FILE):
-            # O_EXCL prevents symlink attacks and ensures restrictive permissions.
-            import errno
-            try:
-                fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, 'wb') as f:
-                    f.write(Fernet.generate_key())
-            except FileExistsError:
-                pass
-        if os.path.islink(KEY_FILE):
-            raise PermissionError('Refusing symlinked encryption key')
-        if os.stat(KEY_FILE).st_mode & 0o777 != 0o600:
-            os.chmod(KEY_FILE, 0o600)
-
-        with open(KEY_FILE, "rb") as f:
-            self.key = f.read()
-
-        self.cipher = Fernet(self.key)
-
-    def encrypt(self, txt):
-        return self.cipher.encrypt(txt.encode()).decode()
-
-    def decrypt(self, txt):
-        try:
-            return self.cipher.decrypt(txt.encode()).decode()
-        except Exception:
-            return ""
-
-
-# Initialize global security instance
-sec = Security()
+# Keep the legacy root-level key private without changing source-tree permissions.
+_key_parent_is_state = os.path.abspath(os.path.dirname(KEY_FILE)) != os.path.abspath(BASE_DIR)
+sec = Security(KEY_FILE, secure_parent=_key_parent_is_state)

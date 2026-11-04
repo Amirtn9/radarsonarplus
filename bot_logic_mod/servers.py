@@ -139,7 +139,7 @@ async def get_srv_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_srv_port(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         context.user_data['srv']['port'] = ssh_port(update.message.text)
-    except:
+    except Exception:
         await update.message.reply_text("❌ فقط عدد وارد کنید.")
         return GET_PORT
     await update.message.reply_text("👤 **مرحله ۴ از ۷ | نام کاربری**\n\nنام کاربری SSH را وارد کنید؛ مثلاً root.", reply_markup=keyboard.get_cancel_markup(),
@@ -205,7 +205,7 @@ async def get_srv_expiry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             context.user_data['srv']['expiry_date'] = None
             msg = "♾ سرور به عنوان نامحدود ثبت شد."
-    except:
+    except Exception:
         await update.message.reply_text("❌ لطفاً فقط عدد وارد کنید (مثلا 30).")
         return GET_EXPIRY
 
@@ -252,7 +252,7 @@ async def select_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def list_groups_for_servers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await safe_answer(update.callback_query, )
-    except:
+    except Exception:
         pass
     groups = db.get_user_groups(update.effective_user.id)
     
@@ -265,7 +265,7 @@ async def list_groups_for_servers(update: Update, context: ContextTypes.DEFAULT_
 async def show_servers(update: Update, context: ContextTypes.DEFAULT_TYPE, scope=None):
     try:
         await safe_answer(update.callback_query, )
-    except:
+    except Exception:
         pass
     uid, data = update.effective_user.id, scope or update.callback_query.data
     # Scope is the exact callback for this listing; do not guess from the next screen.
@@ -429,7 +429,7 @@ async def status_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """داشبورد اصلی با رابط کاربری گرافیکی و تفکیک شده"""
     if update.callback_query:
         try: await safe_answer(update.callback_query, )
-        except: pass
+        except Exception: pass
     
     user = update.effective_user
     j_date = get_jalali_str()
@@ -501,7 +501,7 @@ async def show_server_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             except Exception as e:
                 try: await msg.edit_text(f"❌ خطا: {e}")
-                except: pass
+                except Exception: pass
 
     # 3. اجرا در پس‌زمینه
     asyncio.create_task(background_stats_worker())
@@ -603,12 +603,12 @@ async def server_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, cust
                               if marker == "SSH Unreachable" else ""))
 
                 try: await msg.edit_text(txt, reply_markup=reply_markup, parse_mode='Markdown')
-                except: await context.bot.send_message(chat_id=update.effective_chat.id, text=txt, reply_markup=reply_markup, parse_mode='Markdown')
+                except Exception: await context.bot.send_message(chat_id=update.effective_chat.id, text=txt, reply_markup=reply_markup, parse_mode='Markdown')
 
             except Exception as e:
                 logger.error(f"Task Error: {e}")
                 try: await msg.edit_text(f"❌ خطا: {e}")
-                except: pass
+                except Exception: pass
 
     # 4. اجرا در پس‌زمینه (Non-Blocking)
     asyncio.create_task(heavy_process_task())
@@ -634,7 +634,7 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if act in LOCKED_FEATURES and not is_premium:
         try:
             await safe_answer(update.callback_query, "🔒 این قابلیت مخصوص کاربران پریمیوم است!", show_alert=True)
-        except:
+        except Exception:
             pass
         return
 
@@ -649,14 +649,14 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.delete_server(sid, update.effective_user.id)
         try:
             await safe_answer(update.callback_query, "✅ سرور با موفقیت حذف شد.")
-        except:
+        except Exception:
             pass
         await list_groups_for_servers(update, context)
 
     elif act == 'reboot':
         try:
             await safe_answer(update.callback_query, "⚠️ دستور ریبوت ارسال شد.")
-        except:
+        except Exception:
             pass
         # عملیات اجرایی در پس‌زمینه (بدون بلاک کردن ربات)
         async def do_reboot():
@@ -797,7 +797,7 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif act == 'clearcache':
         try:
             await safe_answer(update.callback_query, "🧹 کش رم پاکسازی شد.")
-        except:
+        except Exception:
             pass
         
         # ✅ اصلاح شده: فراخوانی مستقیم تابع Async
@@ -837,7 +837,7 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await safe_answer(update.callback_query, "🔒 ترمینال مخصوص کاربران پریمیوم است.\nبرای دسترسی ارتقا دهید.",
                                                show_alert=True)
-        except:
+        except Exception:
             pass
 
     elif act in ('installscript', 'installagent'):
@@ -863,7 +863,7 @@ async def set_config_cron_action(update: Update, context: ContextTypes.DEFAULT_T
     
     msg = "✅ گزارش کانفیگ غیرفعال شد." if minutes == '0' else f"✅ تنظیم شد: هر {minutes} دقیقه."
     try: await safe_answer(query, msg, show_alert=True)
-    except: pass
+    except Exception: pass
     
     await config_cron_menu(update, context)
 
@@ -871,7 +871,7 @@ async def set_cron_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.set_setting(update.effective_user.id, 'report_interval', int(update.callback_query.data.split('_')[1]) // 60)
     try:
         await safe_answer(update.callback_query, "ذخیره شد.")
-    except:
+    except Exception:
         pass
     await settings_cron_menu(update, context)
 
@@ -882,7 +882,7 @@ async def resource_settings_menu(update: Update, context: ContextTypes.DEFAULT_T
     if update.callback_query:
         try:
             await safe_answer(update.callback_query, )
-        except:
+        except Exception:
             pass
 
     cpu_limit = db.get_setting(uid, 'cpu_threshold') or '80'
@@ -922,7 +922,7 @@ async def save_cpu_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ ذخیره شد: {val}%")
             await resource_settings_menu(update, context)
             return ConversationHandler.END
-    except:
+    except Exception:
         pass
     await update.message.reply_text("❌ عدد نامعتبر.")
     return GET_CPU_LIMIT
@@ -941,7 +941,7 @@ async def save_ram_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ ذخیره شد: {val}%")
             await resource_settings_menu(update, context)
             return ConversationHandler.END
-    except:
+    except Exception:
         pass
     await update.message.reply_text("❌ عدد نامعتبر.")
     return GET_RAM_LIMIT
@@ -960,7 +960,7 @@ async def save_disk_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ ذخیره شد: {val}%")
             await resource_settings_menu(update, context)
             return ConversationHandler.END
-    except:
+    except Exception:
         pass
     await update.message.reply_text("❌ عدد نامعتبر.")
     return GET_DISK_LIMIT
@@ -979,7 +979,7 @@ async def set_custom_interval_action(update: Update, context: ContextTypes.DEFAU
             await update.message.reply_text(f"✅ تنظیم شد: هر {minutes} دقیقه.")
             await settings_cron_menu(update, context)
             return ConversationHandler.END
-    except:
+    except Exception:
         pass
     await update.message.reply_text("❌ عدد نامعتبر (بین 10 تا 1440).")
     return GET_CUSTOM_INTERVAL
@@ -1059,7 +1059,7 @@ async def set_channel_type_action(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     try:
         await safe_answer(query, )
-    except:
+    except Exception:
         pass
     usage = query.data.split('_')[1]
     cdata = context.user_data['new_chan']
@@ -1078,7 +1078,7 @@ async def edit_expiry_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
         await safe_answer(query, )
-    except:
+    except Exception:
         pass
     sid = query.data.split('_')[2]
     context.user_data['edit_expiry_sid'] = sid
@@ -1123,7 +1123,7 @@ async def ask_terminal_command(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     try:
         await safe_answer(query, )
-    except:
+    except Exception:
         pass
 
     sid = query.data.split('_')[2]
@@ -1181,7 +1181,7 @@ async def run_terminal_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     await wait_msg.delete()
     try:
         await update.message.reply_text(terminal_view, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
-    except:
+    except Exception:
         await update.message.reply_text(f"⚠️ Raw Output:\n{output}", reply_markup=InlineKeyboardMarkup(kb))
 
     return GET_REMOTE_COMMAND
@@ -1191,7 +1191,7 @@ async def close_terminal_session(update: Update, context: ContextTypes.DEFAULT_T
     if update.callback_query:
         try:
             await safe_answer(update.callback_query, )
-        except:
+        except Exception:
             pass
     sid = context.user_data.get('term_sid')
     await server_detail(update, context, custom_sid=sid)

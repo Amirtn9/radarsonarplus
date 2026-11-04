@@ -13,10 +13,14 @@ def test_canonical_repo_in_installer():
     assert 'radarsonarlpus' not in INSTALL
 
 
-def test_readme_three_line_install():
-    assert 'wget https://raw.githubusercontent.com/Amirtn9/radarsonarplus/main/install.sh' in README
+def test_readme_bootstrap_requires_a_pinned_commit():
+    assert 'https://raw.githubusercontent.com/Amirtn9/radarsonarplus/${SONAR_RELEASE_COMMIT}/install.sh' in README
     assert 'chmod +x install.sh' in README
     assert './install.sh' in README
+    assert 'SONAR_RELEASE_COMMIT' in README
+    assert '/main/install.sh' not in README
+    assert 'Refusing unpinned GitHub bootstrap' in INSTALL
+    assert 'GITHUB_BRANCH' not in INSTALL
     assert 'radarsonarlpus' not in README
 
 
@@ -33,7 +37,7 @@ def test_one_choice_installs_panel_and_bot():
 
 def test_version_matches():
     v = (ROOT / 'VERSION').read_text().strip()
-    assert v == '6.9'
+    assert v == '6.9.2'
     assert v in (ROOT / 'settings.py').read_text()
 
 

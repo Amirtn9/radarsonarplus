@@ -93,7 +93,8 @@ def test_startup_waits_for_database_and_completes_migrations_before_workers():
     assert "SONAR_DB_STARTUP_ATTEMPTS" in bot
     assert "await _wait_for_database(db)" in bot
     assert "async def _startup_step(name, callback, *args)" in bot
-    assert "for name, migration in migrations:" in bot
+    assert "from schema_migrations import run_startup_migrations" in bot
+    assert 'await _startup_step("schema_migrations", run_startup_migrations, db)' in bot
     assert "All startup migrations completed; enterprise workers started." in bot
     assert 'journalctl -u "$SERVICE" -n 60 --no-pager' in SCRIPT
 

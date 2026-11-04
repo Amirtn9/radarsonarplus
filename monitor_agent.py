@@ -23,7 +23,7 @@ import ssl
 from datetime import datetime, timedelta
 import logging
 
-AGENT_VERSION = '6.9'
+AGENT_VERSION = '6.9.2'
 AGENT_PROTOCOL = 2
 
 logger = logging.getLogger('sonar.agent')  # ✅ خودکار به سیستم متصل می‌شه
@@ -58,7 +58,7 @@ RUNTIME_LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ag
 
 if not os.path.exists(WORK_DIR):
     try: os.makedirs(WORK_DIR, mode=0o755)
-    except: pass
+    except Exception: pass
 
 def advanced_log(message, category="INFO"):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -67,7 +67,7 @@ def advanced_log(message, category="INFO"):
     logger.log(level, '%s: %s', category, message)
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f: f.write(entry)
-    except: pass
+    except Exception: pass
 
 # ==============================================================================
 # 🛠 UTILITIES (Common)
@@ -139,7 +139,7 @@ def decode_base64(data):
         missing = len(data) % 4
         if missing: data += '=' * (4 - missing)
         return base64.b64decode(data.replace('-', '+').replace('_', '/')).decode('utf-8', errors='ignore')
-    except: return data
+    except Exception: return data
 
 
 # ==============================================================================
@@ -821,7 +821,7 @@ async def run_sys_command(command, timeout=60):
             return True, final_output
         except asyncio.TimeoutError:
             try: process.kill()
-            except: pass
+            except Exception: pass
             return False, "Error: Command Timed Out"
     except Exception as e:
         return False, f"Agent Error: {str(e)}"

@@ -141,11 +141,17 @@ def test_verified_wheel_cache_reused_and_corrupt_entry_rebuilt(monkeypatch,tmp_p
 
 def test_apt_uri_plan_requires_public_mirror_and_signed_index_hash(monkeypatch):
     monkeypatch.setattr(b.socket, 'getaddrinfo', lambda *a, **kw: [(None,None,None,None,('91.189.91.81',80))])
-    output = "'http://archive.ubuntu.com/ubuntu/pool/main/p/python3-venv.deb' python3-venv.deb 1234 MD5Sum:0123456789abcdef0123456789abcdef"
+    output = "'http://archive.ubuntu.com/ubuntu/pool/main/p/python3-venv.deb' python3-venv.deb 1234 SHA256:" + 'a' * 64
     records = b._parse_apt_uris(output)
     assert len(records) == 1
     assert records[0]['name'] == 'python3-venv.deb'
-    assert records[0]['hash_kind'] == 'md5sum'
+    assert records[0]['expected'] == 'a' * 64
+
+
+def test_apt_uri_plan_rejects_md5_only_hashes(monkeypatch):
+    monkeypatch.setattr(b.socket, 'getaddrinfo', lambda *a, **kw: [(None,None,None,None,('91.189.91.81',80))])
+    output = "'http://archive.ubuntu.com/ubuntu/pool/main/p/python3-venv.deb' python3-venv.deb 1234 MD5Sum:0123456789abcdef0123456789abcdef"
+    assert b._parse_apt_uris(output) == []
 
 
 def test_system_prerequisites_can_use_central_deb_bundle_after_target_apt_failure(monkeypatch):
@@ -168,6 +174,6 @@ def test_system_prerequisites_can_use_central_deb_bundle_after_target_apt_failur
 
 def test_apt_uri_plan_rejects_private_mirror_hosts(monkeypatch):
     monkeypatch.setattr(b.socket, 'getaddrinfo', lambda *a, **kw: [(None,None,None,None,('127.0.0.1',80))])
-    output = "'http://localhost/pool/python3-venv.deb' python3-venv.deb 1234 MD5Sum:0123456789abcdef0123456789abcdef"
+    output = "'http://localhost/pool/python3-venv.deb' python3-venv.deb 1234 SHA256:" + 'b' * 64
     with pytest.raises(RuntimeError,match='APT_BUNDLE_NONPUBLIC_MIRROR'):
         b._parse_apt_uris(output)

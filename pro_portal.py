@@ -22,23 +22,25 @@ from runtime import run_sync
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import secrets
-from web_login import digest as session_digest, redeem, create_session, identify, logout, logout_all, allow_login_attempt, install_schema as install_login_schema
-from monitor_fleet import install_schema as install_fleet_schema, install_job_schema
-from subscription_health import install_schema as install_subscription_schema, summaries as subscription_summaries
+from web_login import digest as session_digest, redeem, create_session, identify, logout, logout_all, allow_login_attempt
+from subscription_health import summaries as subscription_summaries
 from pro_auth import verify_init_data
-from pro_store import ProStore, install_schema as install_pro_schema
-from enterprise_services import install_schema as install_enterprise_schema
-from enterprise_runtime import install_runtime_schema, operations_worker, webhook_worker, recovery_worker, scheduled_backup_worker, rollout_worker
-from service_monitor import ServiceStore, install_schema as install_service_monitor_schema
+from pro_store import ProStore
+from service_monitor import ServiceStore
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
-app=FastAPI(title='RadarSonarPlus 6.9',docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='RadarSonarPlus 6.9.2',docs_url=None,redoc_url=None,openapi_url=None)
 
 @app.on_event('startup')
 async def _configure_executor():
-    # Share the same bounded pool with all asyncio.to_thread() calls in the API.
-    asyncio.get_running_loop().set_default_executor(__import__('runtime').SHARED_EXECUTOR)
+    # The event loop owns and shuts down its default executor. Giving it the
+    # process-wide run_sync pool would break other loops and later app lifespans.
+    from concurrent.futures import ThreadPoolExecutor
+    from runtime import MAX_WORKERS
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix='sonar-web')
+    )
 app.mount('/static',StaticFiles(directory=BASE/'pro_web'/'static'),name='static')
 store=ProStore()
 service_store=ServiceStore(store)
@@ -227,22 +229,17 @@ async def web_logout_all(response:Response,uid:int=Depends(actor)):
 
 @app.on_event('startup')
 async def bootstrap_additive_schemas():
-    # The API can start independently of the Telegram bot; provision its additive
-    # Pro/service tables here as well so /readyz and service endpoints are usable.
-    await asyncio.to_thread(install_pro_schema,store.db)
-    await asyncio.to_thread(install_service_monitor_schema,store.db)
-    await asyncio.to_thread(install_enterprise_schema,store.db)
-    await asyncio.to_thread(install_runtime_schema,store.db)
-    await asyncio.to_thread(install_subscription_schema,store.db)
-    await asyncio.to_thread(install_login_schema,store.db)
-    await asyncio.to_thread(install_fleet_schema,store.db)
-    from agent_traffic import install_schema as install_meter_schema
-    await asyncio.to_thread(install_meter_schema,store.db)
-    await asyncio.to_thread(install_job_schema,store.db)
-    from web_agent_jobs import install_schema as install_web_agent_schema, worker as web_agent_worker
-    await asyncio.to_thread(install_web_agent_schema,store.db)
+    # The same versioned ledger and advisory lock are used by the Telegram Bot.
+    # Either service may start first; only one process applies a migration.
+    from schema_migrations import run_startup_migrations
+    await asyncio.to_thread(run_startup_migrations, store.db)
+    from web_agent_jobs import worker as web_agent_worker
     app.state.web_agent_stop=asyncio.Event()
     app.state.web_agent_task=asyncio.create_task(web_agent_worker(store.db,app.state.web_agent_stop))
+    from enterprise_runtime import (
+        operations_worker, webhook_worker, recovery_worker,
+        scheduled_backup_worker, rollout_worker
+    )
     app.state.enterprise_stop=asyncio.Event()
     app.state.enterprise_tasks=[
         asyncio.create_task(operations_worker(store.db,app.state.enterprise_stop)),
@@ -281,11 +278,14 @@ async def readiness():
             row=cursor.fetchone()
             return bool(row and row['prefs'] and row['services'] and row['history'])
     try:
-        success=bool(get_bot_token()) and await asyncio.wait_for(asyncio.to_thread(check),timeout=5)
+        db_ready=await asyncio.wait_for(asyncio.to_thread(check),timeout=5)
     except Exception:
         log.warning('Readiness database check failed')
-        success=False
-    return JSONResponse({'ready':success,'db':'ok' if success else 'unavailable'},
+        db_ready=False
+    auth_ready=bool(get_bot_token())
+    success=db_ready and auth_ready
+    return JSONResponse({'ready':success,'db':'ok' if db_ready else 'unavailable',
+                         'auth':'ok' if auth_ready else 'unconfigured'},
                         status_code=200 if success else 503)
 
 
@@ -426,7 +426,7 @@ async def diagnostic_bundle(days:int=Query(default=7,ge=1,le=30),
     except Exception as exc:
         log.exception('Diagnostic report failed at stage=%s type=%s',stage,type(exc).__name__)
         raise HTTPException(status_code=503,detail=f'Diagnostic report unavailable at stage {stage}: {type(exc).__name__}')
-    return FileResponse(path,media_type='application/zip',filename=f'radarsonarplus-v6.9-full-logs-{days}d.zip',
+    return FileResponse(path,media_type='application/zip',filename=f'radarsonarplus-v6.9.2-full-logs-{days}d.zip',
                         background=BackgroundTask(path.unlink,missing_ok=True))
 
 class TeamUpdate(BaseModel):

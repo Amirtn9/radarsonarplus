@@ -4,13 +4,12 @@ Does not replace the original single-node installer or WebSocket protocol.
 from __future__ import annotations
 import asyncio
 from telegram_safety import safe_callback_answer
-import logging
 from telegram import InlineKeyboardButton as Button,InlineKeyboardMarkup as Markup
 from secure_handlers import SecureCallbackQueryHandler
 from runtime import run_sync
 from settings import SUPER_ADMIN_ID
 from database import Database
-from monitor_fleet import available_workspace_nodes,offer,approve,queue_installs,install_job_schema,install_schema
+from monitor_fleet import available_workspace_nodes,offer,approve,queue_installs
 
 
 def _allowed(update):
@@ -24,8 +23,6 @@ async def manage(update,context):
         await safe_callback_answer(q, 'فقط مدیر اصلی مجاز است',show_alert=True);return
     db=Database()
     def get():
-        from monitor_fleet import install_schema, install_job_schema
-        install_schema(db); install_job_schema(db)
         rows=db.execute('''SELECT s.id,s.name,s.ip,s.port,s.ws_port,s.owner_id,s.location_type,
               COALESCE(a.agent_cert_pem,'')<>'' AS tls_enrolled,
               COALESCE(a.agent_token,'')<>'' AS token_configured,
@@ -113,12 +110,8 @@ async def dispatch(update,context):
 
 
 def register(app):
-    # Apply additive fleet/affinity schema even when the web service is offline.
-    # Handler registration remains resilient in isolated test/minimal environments.
-    try:
-        _db=Database();install_schema(_db);install_job_schema(_db)
-    except Exception as exc:
-        logging.getLogger(__name__).warning('Fleet schema bootstrap deferred: %s',type(exc).__name__)
+    # Schema installation belongs to the versioned post-init migration runner;
+    # handler registration must not open PostgreSQL during module setup.
     app.add_handler(SecureCallbackQueryHandler(traffic_menu,pattern=r'^fleet_traffic$'))
     app.add_handler(SecureCallbackQueryHandler(traffic_reset,pattern=r'^fleet_meter_(?:reset|confirm)_\d+$'))
     app.add_handler(SecureCallbackQueryHandler(manage,pattern=r'^fleet_manage$'))

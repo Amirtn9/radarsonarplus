@@ -24,9 +24,9 @@ from settings import DB_CONFIG, SUBSCRIPTION_PLANS, SUPER_ADMIN_ID, AGENT_PORT
 logger = logging.getLogger(__name__)
 
 class Database:
-    """PostgreSQL access layer with a shared connection pool. 
+    """PostgreSQL access layer with a shared connection pool.
 
-    IMPORTANT: 
+    IMPORTANT:
     - The project imports Database() in multiple modules.  Creating multiple
       pools is unnecessary and can exhaust PostgreSQL connections.
     - We therefore implement a lightweight singleton:  every Database() call
@@ -170,7 +170,7 @@ class Database:
         finally:
             if conn:
                 try:  cur.close()
-                except: pass
+                except Exception: pass
                 self.pool.putconn(conn)
 
     def execute(self, query, params=None, fetch=None):
@@ -189,176 +189,183 @@ class Database:
         """Initialize database schema"""
         with self.get_connection() as (conn, cur):
             cur.execute("SELECT pg_advisory_xact_lock(535300)")
-            # Users
-            cur.execute('''CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY, 
-                full_name TEXT, 
-                added_date TEXT, 
-                expiry_date TEXT, 
-                server_limit INTEGER DEFAULT 2, 
-                is_banned INTEGER DEFAULT 0, 
-                plan_type INTEGER DEFAULT 0, 
-                wallet_balance BIGINT DEFAULT 0, 
-                referral_count INTEGER DEFAULT 0, 
-                invited_by BIGINT DEFAULT 0
-            )''')
-            
-            # Groups
-            cur.execute('''CREATE TABLE IF NOT EXISTS groups (
-                id SERIAL PRIMARY KEY, 
-                owner_id BIGINT, 
-                name TEXT, 
-                UNIQUE(owner_id, name)
-            )''')
-            
-            # Servers
-            cur.execute('''CREATE TABLE IF NOT EXISTS servers (
-                id SERIAL PRIMARY KEY, 
-                owner_id BIGINT, 
-                group_id INTEGER, 
-                name TEXT, 
-                ip TEXT, 
-                port INTEGER, 
-                username TEXT, 
-                password TEXT, 
-                expiry_date TEXT, 
-                last_status TEXT DEFAULT 'Unknown', 
-                last_error TEXT DEFAULT '',
-                agent_last_log TEXT DEFAULT '',
-                agent_last_seen TEXT DEFAULT '',
-                is_active INTEGER DEFAULT 1, 
-                location_type TEXT DEFAULT 'ext', 
-                created_at TEXT, 
-                is_monitor_node INTEGER DEFAULT 0, 
-                UNIQUE(owner_id, name)
-            )''')
+            cur.execute("""CREATE TABLE IF NOT EXISTS sonar_schema_migrations (
+                version INTEGER PRIMARY KEY, name TEXT NOT NULL,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )""")
+            cur.execute("SELECT 1 FROM sonar_schema_migrations WHERE version=1")
+            if cur.fetchone() is None:
+                # Users
+                cur.execute('''CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    full_name TEXT,
+                    added_date TEXT,
+                    expiry_date TEXT,
+                    server_limit INTEGER DEFAULT 2,
+                    is_banned INTEGER DEFAULT 0,
+                    plan_type INTEGER DEFAULT 0,
+                    wallet_balance BIGINT DEFAULT 0,
+                    referral_count INTEGER DEFAULT 0,
+                    invited_by BIGINT DEFAULT 0
+                )''')
 
-            # Required additive migration. Do not swallow SQL errors here: a
-            # PostgreSQL transaction becomes aborted after a failed statement,
-            # and continuing would produce a misleading later startup failure.
-            cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS last_error TEXT DEFAULT ''")
-            cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS agent_last_log TEXT DEFAULT ''")
-            cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS agent_last_seen TEXT DEFAULT ''")
-            cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS ws_port INTEGER DEFAULT 0")
-            cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS agent_token TEXT")
-            cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS agent_cert_pem TEXT")
-            
-            # One managed physical agent per SSH endpoint; server rows may share it.
-            cur.execute("""CREATE TABLE IF NOT EXISTS agent_nodes (
-                id SERIAL PRIMARY KEY, ip TEXT NOT NULL, ssh_port INTEGER NOT NULL,
-                ws_port INTEGER NOT NULL, agent_token TEXT NOT NULL,
-                agent_cert_pem TEXT NOT NULL DEFAULT '', UNIQUE(ip,ssh_port))""")
-            cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS agent_id INTEGER")
-            cur.execute("UPDATE servers SET ws_port=%s WHERE ws_port IS NULL OR ws_port=0", (AGENT_PORT,))
-            cur.execute("""INSERT INTO agent_nodes(ip,ssh_port,ws_port,agent_token,agent_cert_pem)
-                SELECT DISTINCT ON (ip,port) ip,port,ws_port,agent_token,COALESCE(agent_cert_pem,'')
-                FROM servers WHERE agent_token IS NOT NULL AND agent_token<>''
-                ORDER BY ip,port,id ON CONFLICT(ip,ssh_port) DO NOTHING""")
-            cur.execute("""UPDATE servers s SET agent_id=a.id,ws_port=a.ws_port
-                FROM agent_nodes a WHERE s.ip=a.ip AND s.port=a.ssh_port""")
-            cur.execute("CREATE INDEX IF NOT EXISTS agent_nodes_wss_idx ON agent_nodes(ip,ws_port)")
+                # Groups
+                cur.execute('''CREATE TABLE IF NOT EXISTS groups (
+                    id SERIAL PRIMARY KEY,
+                    owner_id BIGINT,
+                    name TEXT,
+                    UNIQUE(owner_id, name)
+                )''')
 
-            for column, definition in (
-                ('last_cpu','REAL'),('last_ram','REAL'),('last_disk','REAL'),
-                ('last_checked_at','TIMESTAMPTZ'),('last_agent_status',"TEXT DEFAULT 'Unknown'")):
-                cur.execute(f'ALTER TABLE servers ADD COLUMN IF NOT EXISTS {column} {definition}')
-            # Settings
-            cur.execute('''CREATE TABLE IF NOT EXISTS settings (
-                owner_id BIGINT, 
-                key TEXT, 
-                value TEXT, 
-                PRIMARY KEY(owner_id, key)
-            )''')
-            
-            # Channels
-            cur.execute('''CREATE TABLE IF NOT EXISTS channels (
-                id SERIAL PRIMARY KEY, 
-                owner_id BIGINT, 
-                chat_id TEXT, 
-                name TEXT, 
-                usage_type TEXT DEFAULT 'all',
-                topic_id INTEGER DEFAULT 0
-            )''')
-            
-            # Server Stats
-            cur.execute('''CREATE TABLE IF NOT EXISTS server_stats (
-                id SERIAL PRIMARY KEY, 
-                server_id INTEGER, 
-                cpu REAL, 
-                ram REAL, 
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )''')
-            
-            for column, definition in (
-                ('disk','REAL'),('traffic_gb','REAL'),('bytes_sent','BIGINT'),
-                ('bytes_recv','BIGINT'),('uptime_sec','BIGINT')):
-                cur.execute(f'ALTER TABLE server_stats ADD COLUMN IF NOT EXISTS {column} {definition}')
-            cur.execute("CREATE INDEX IF NOT EXISTS server_stats_server_time ON server_stats(server_id,created_at DESC)")
-            # Payments
-            cur.execute('''CREATE TABLE IF NOT EXISTS payments (
-                id SERIAL PRIMARY KEY, 
-                user_id BIGINT, 
-                plan_type TEXT, 
-                amount BIGINT, 
-                method TEXT, 
-                status TEXT DEFAULT 'pending', 
-                created_at TEXT
-            )''')
-            
-            # Temp Bonuses
-            cur.execute('''CREATE TABLE IF NOT EXISTS temp_bonuses (
-                id SERIAL PRIMARY KEY, 
-                user_id BIGINT, 
-                bonus_limit INTEGER, 
-                created_at TEXT, 
-                expires_at TEXT
-            )''')
-            
-            # Payment Methods
-            cur.execute('''CREATE TABLE IF NOT EXISTS payment_methods (
-                id SERIAL PRIMARY KEY, 
-                type TEXT, 
-                network TEXT, 
-                address TEXT, 
-                holder_name TEXT, 
-                is_active INTEGER DEFAULT 1
-            )''')
-            
-            # Tunnel Configs
-            cur.execute('''CREATE TABLE IF NOT EXISTS tunnel_configs (
-                id SERIAL PRIMARY KEY, 
-                owner_id BIGINT, 
-                type TEXT, 
-                link TEXT UNIQUE, 
-                name TEXT, 
-                last_status TEXT DEFAULT 'Unknown', 
-                last_ping INTEGER DEFAULT 0, 
-                quality_score INTEGER DEFAULT 10, 
-                added_at TEXT, 
-                last_jitter INTEGER DEFAULT 0, 
-                last_speed_up TEXT DEFAULT '0 Mbps', 
-                last_speed_down TEXT DEFAULT '0 Mbps',
-                sub_info TEXT DEFAULT '{}'
-            )''')
-            
-            # Migration: parent IDs prevent collisions between similarly named subscriptions.
-            cur.execute("ALTER TABLE tunnel_configs ADD COLUMN IF NOT EXISTS parent_sub_id INTEGER")
-            cur.execute("ALTER TABLE tunnel_configs DROP CONSTRAINT IF EXISTS tunnel_configs_link_key")
-            cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS tunnel_configs_scoped_link_unique
-                ON tunnel_configs (owner_id, type, link, (COALESCE(parent_sub_id, 0)))""")
-            cur.execute("CREATE INDEX IF NOT EXISTS tunnel_configs_sub_children_idx ON tunnel_configs(owner_id, parent_sub_id)")
-            # One-time migration of legacy "name | item" children. Prefer the longest
-            # matching source name to handle source names that are prefixes of others.
-            cur.execute("""UPDATE tunnel_configs child SET parent_sub_id = (
-                SELECT parent.id FROM tunnel_configs parent
-                WHERE parent.owner_id=child.owner_id AND parent.type='sub_source'
-                  AND child.name LIKE replace(replace(parent.name, '%', '\\%'), '_', '\\_') || ' | %' ESCAPE '\\'
-                ORDER BY length(parent.name) DESC, parent.id LIMIT 1
-            ) WHERE child.type='sub_item' AND child.parent_sub_id IS NULL""")
-            from workspace_service import SCHEMA, AUDIT_SCHEMA, REDIRECT_SCHEMA
-            cur.execute(SCHEMA)
-            cur.execute(AUDIT_SCHEMA)
-            cur.execute(REDIRECT_SCHEMA)
+                # Servers
+                cur.execute('''CREATE TABLE IF NOT EXISTS servers (
+                    id SERIAL PRIMARY KEY,
+                    owner_id BIGINT,
+                    group_id INTEGER,
+                    name TEXT,
+                    ip TEXT,
+                    port INTEGER,
+                    username TEXT,
+                    password TEXT,
+                    expiry_date TEXT,
+                    last_status TEXT DEFAULT 'Unknown',
+                    last_error TEXT DEFAULT '',
+                    agent_last_log TEXT DEFAULT '',
+                    agent_last_seen TEXT DEFAULT '',
+                    is_active INTEGER DEFAULT 1,
+                    location_type TEXT DEFAULT 'ext',
+                    created_at TEXT,
+                    is_monitor_node INTEGER DEFAULT 0,
+                    UNIQUE(owner_id, name)
+                )''')
+
+                # Required additive migration. Do not swallow SQL errors here: a
+                # PostgreSQL transaction becomes aborted after a failed statement,
+                # and continuing would produce a misleading later startup failure.
+                cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS last_error TEXT DEFAULT ''")
+                cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS agent_last_log TEXT DEFAULT ''")
+                cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS agent_last_seen TEXT DEFAULT ''")
+                cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS ws_port INTEGER DEFAULT 0")
+                cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS agent_token TEXT")
+                cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS agent_cert_pem TEXT")
+
+                # One managed physical agent per SSH endpoint; server rows may share it.
+                cur.execute("""CREATE TABLE IF NOT EXISTS agent_nodes (
+                    id SERIAL PRIMARY KEY, ip TEXT NOT NULL, ssh_port INTEGER NOT NULL,
+                    ws_port INTEGER NOT NULL, agent_token TEXT NOT NULL,
+                    agent_cert_pem TEXT NOT NULL DEFAULT '', UNIQUE(ip,ssh_port))""")
+                cur.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS agent_id INTEGER")
+                cur.execute("UPDATE servers SET ws_port=%s WHERE ws_port IS NULL OR ws_port=0", (AGENT_PORT,))
+                cur.execute("""INSERT INTO agent_nodes(ip,ssh_port,ws_port,agent_token,agent_cert_pem)
+                    SELECT DISTINCT ON (ip,port) ip,port,ws_port,agent_token,COALESCE(agent_cert_pem,'')
+                    FROM servers WHERE agent_token IS NOT NULL AND agent_token<>''
+                    ORDER BY ip,port,id ON CONFLICT(ip,ssh_port) DO NOTHING""")
+                cur.execute("""UPDATE servers s SET agent_id=a.id,ws_port=a.ws_port
+                    FROM agent_nodes a WHERE s.ip=a.ip AND s.port=a.ssh_port""")
+                cur.execute("CREATE INDEX IF NOT EXISTS agent_nodes_wss_idx ON agent_nodes(ip,ws_port)")
+
+                for column, definition in (
+                    ('last_cpu','REAL'),('last_ram','REAL'),('last_disk','REAL'),
+                    ('last_checked_at','TIMESTAMPTZ'),('last_agent_status',"TEXT DEFAULT 'Unknown'")):
+                    cur.execute(f'ALTER TABLE servers ADD COLUMN IF NOT EXISTS {column} {definition}')
+                # Settings
+                cur.execute('''CREATE TABLE IF NOT EXISTS settings (
+                    owner_id BIGINT,
+                    key TEXT,
+                    value TEXT,
+                    PRIMARY KEY(owner_id, key)
+                )''')
+
+                # Channels
+                cur.execute('''CREATE TABLE IF NOT EXISTS channels (
+                    id SERIAL PRIMARY KEY,
+                    owner_id BIGINT,
+                    chat_id TEXT,
+                    name TEXT,
+                    usage_type TEXT DEFAULT 'all',
+                    topic_id INTEGER DEFAULT 0
+                )''')
+
+                # Server Stats
+                cur.execute('''CREATE TABLE IF NOT EXISTS server_stats (
+                    id SERIAL PRIMARY KEY,
+                    server_id INTEGER,
+                    cpu REAL,
+                    ram REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )''')
+
+                for column, definition in (
+                    ('disk','REAL'),('traffic_gb','REAL'),('bytes_sent','BIGINT'),
+                    ('bytes_recv','BIGINT'),('uptime_sec','BIGINT')):
+                    cur.execute(f'ALTER TABLE server_stats ADD COLUMN IF NOT EXISTS {column} {definition}')
+                cur.execute("CREATE INDEX IF NOT EXISTS server_stats_server_time ON server_stats(server_id,created_at DESC)")
+                # Payments
+                cur.execute('''CREATE TABLE IF NOT EXISTS payments (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    plan_type TEXT,
+                    amount BIGINT,
+                    method TEXT,
+                    status TEXT DEFAULT 'pending',
+                    created_at TEXT
+                )''')
+
+                # Temp Bonuses
+                cur.execute('''CREATE TABLE IF NOT EXISTS temp_bonuses (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    bonus_limit INTEGER,
+                    created_at TEXT,
+                    expires_at TEXT
+                )''')
+
+                # Payment Methods
+                cur.execute('''CREATE TABLE IF NOT EXISTS payment_methods (
+                    id SERIAL PRIMARY KEY,
+                    type TEXT,
+                    network TEXT,
+                    address TEXT,
+                    holder_name TEXT,
+                    is_active INTEGER DEFAULT 1
+                )''')
+
+                # Tunnel Configs
+                cur.execute('''CREATE TABLE IF NOT EXISTS tunnel_configs (
+                    id SERIAL PRIMARY KEY,
+                    owner_id BIGINT,
+                    type TEXT,
+                    link TEXT UNIQUE,
+                    name TEXT,
+                    last_status TEXT DEFAULT 'Unknown',
+                    last_ping INTEGER DEFAULT 0,
+                    quality_score INTEGER DEFAULT 10,
+                    added_at TEXT,
+                    last_jitter INTEGER DEFAULT 0,
+                    last_speed_up TEXT DEFAULT '0 Mbps',
+                    last_speed_down TEXT DEFAULT '0 Mbps',
+                    sub_info TEXT DEFAULT '{}'
+                )''')
+
+                # Migration: parent IDs prevent collisions between similarly named subscriptions.
+                cur.execute("ALTER TABLE tunnel_configs ADD COLUMN IF NOT EXISTS parent_sub_id INTEGER")
+                cur.execute("ALTER TABLE tunnel_configs DROP CONSTRAINT IF EXISTS tunnel_configs_link_key")
+                cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS tunnel_configs_scoped_link_unique
+                    ON tunnel_configs (owner_id, type, link, (COALESCE(parent_sub_id, 0)))""")
+                cur.execute("CREATE INDEX IF NOT EXISTS tunnel_configs_sub_children_idx ON tunnel_configs(owner_id, parent_sub_id)")
+                # One-time migration of legacy "name | item" children. Prefer the longest
+                # matching source name to handle source names that are prefixes of others.
+                cur.execute("""UPDATE tunnel_configs child SET parent_sub_id = (
+                    SELECT parent.id FROM tunnel_configs parent
+                    WHERE parent.owner_id=child.owner_id AND parent.type='sub_source'
+                      AND child.name LIKE replace(replace(parent.name, '%', '\\%'), '_', '\\_') || ' | %' ESCAPE '\\'
+                    ORDER BY length(parent.name) DESC, parent.id LIMIT 1
+                ) WHERE child.type='sub_item' AND child.parent_sub_id IS NULL""")
+                from workspace_service import SCHEMA, AUDIT_SCHEMA, REDIRECT_SCHEMA
+                cur.execute(SCHEMA)
+                cur.execute(AUDIT_SCHEMA)
+                cur.execute(REDIRECT_SCHEMA)
+                cur.execute("INSERT INTO sonar_schema_migrations(version,name) VALUES (1,%s)", ("core_schema",))
             conn.commit()
 
     def workspace_owner(self, user_id):
@@ -382,7 +389,7 @@ class Database:
     # ==========================================================================
     # 📌 CRITICAL METHODS
     # ==========================================================================
-    
+
     def check_access(self, user_id, super_admin_id=None):
         """Validate user access based on ban status and expiry"""
         if super_admin_id is None:
@@ -390,18 +397,18 @@ class Database:
         if user_id == super_admin_id:
             return True, "Super Admin"
         user = self.get_user(user_id)
-        if not user:  
+        if not user:
             return False, "کاربر یافت نشد"
-        if user['is_banned']: 
+        if user['is_banned']:
             return False, "حساب شما مسدود شده است ⛔️"
         try:
-            if not user['expiry_date']:  
+            if not user['expiry_date']:
                 return True, "Unlimited"
-            
+
             expiry_dt = datetime.strptime(user['expiry_date'], '%Y-%m-%d %H:%M:%S')
             now_tehran_naive = self.get_tehran_datetime().replace(tzinfo=None)
-            
-            if now_tehran_naive > expiry_dt:  
+
+            if now_tehran_naive > expiry_dt:
                 return False, "اشتراک شما منقضی شده است 📅"
             return True, (expiry_dt - now_tehran_naive).days
         except Exception as e:
@@ -423,7 +430,7 @@ class Database:
 
     def add_server_stats_batch(self, stats_list):
         """Batch insert server statistics"""
-        if not stats_list:  
+        if not stats_list:
             return
         with self.get_connection() as (conn, cur):
             cur.executemany(
@@ -442,7 +449,7 @@ class Database:
     # ==========================================================================
     # 👤 USER METHODS
     # ==========================================================================
-    
+
     def get_user(self, user_id):
         with self.get_connection() as (conn, cur):
             cur.execute('SELECT * FROM users WHERE user_id = %s', (user_id,))
@@ -452,30 +459,30 @@ class Database:
         exist = self.get_user(user_id)
         now_str = self.get_tehran_datetime().strftime('%Y-%m-%d %H:%M:%S')
         default_days = days if days is not None else 60
-        
+
         with self.get_connection() as (conn, cur):
             if exist:
                 if full_name:
                     cur. execute('UPDATE users SET full_name = %s WHERE user_id = %s', (full_name, user_id))
-                
+
                 if days is not None:
                     try:
                         current_exp_str = exist['expiry_date']
                         if current_exp_str:
                             current_exp = datetime.strptime(current_exp_str, '%Y-%m-%d %H:%M:%S')
-                            if current_exp < self.get_tehran_datetime().replace(tzinfo=None): 
+                            if current_exp < self.get_tehran_datetime().replace(tzinfo=None):
                                 current_exp = self.get_tehran_datetime().replace(tzinfo=None)
                         else:
                             current_exp = self.get_tehran_datetime().replace(tzinfo=None)
-                            
+
                         new_exp = (current_exp + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
                         cur.execute('UPDATE users SET expiry_date = %s WHERE user_id = %s', (new_exp, user_id))
-                    except:  
+                    except Exception:
                         pass
             else:
                 expiry = (self.get_tehran_datetime() + timedelta(days=default_days)).strftime('%Y-%m-%d %H:%M:%S')
                 cur.execute('''
-                    INSERT INTO users (user_id, full_name, added_date, expiry_date, server_limit, invited_by, wallet_balance, referral_count) 
+                    INSERT INTO users (user_id, full_name, added_date, expiry_date, server_limit, invited_by, wallet_balance, referral_count)
                     VALUES (%s, %s, %s, %s, 2, %s, 0, 0)
                 ''', (user_id, full_name, now_str, expiry, invited_by))
             conn.commit()
@@ -484,7 +491,7 @@ class Database:
         with self.get_connection() as (conn, cur):
             cur.execute('SELECT * FROM users')
             return cur.fetchall()
-            
+
     def get_all_users_paginated(self, page=1, per_page=5):
         offset = (page - 1) * per_page
         with self. get_connection() as (conn, cur):
@@ -499,16 +506,16 @@ class Database:
 
     def toggle_ban_user(self, user_id):
         user = self.get_user(user_id)
-        if not user:  
+        if not user:
             return 0
         new_state = 0 if user['is_banned'] else 1
         self.execute('UPDATE users SET is_banned = %s WHERE user_id = %s', (new_state, user_id))
         return new_state
-        
+
     def toggle_user_plan(self, user_id):
         user = self.get_user(user_id)
-        if not user: 
-            return 0 
+        if not user:
+            return 0
         new_plan = 1 if user['plan_type'] == 0 else 0
         new_limit = 10 if new_plan == 1 else 2
         self.execute('UPDATE users SET plan_type = %s, server_limit = %s WHERE user_id = %s', (new_plan, new_limit, user_id))
@@ -550,13 +557,13 @@ class Database:
     # ==========================================================================
     # 🖥 SERVER METHODS
     # ==========================================================================
-    
+
     def get_all_user_servers(self, owner_id):
         owner_id = self.workspace_owner(owner_id)
         with self. get_connection() as (conn, cur):
             cur.execute('SELECT * FROM servers WHERE owner_id = %s ORDER BY id ASC', (owner_id,))
             return cur.fetchall()
-            
+
     def get_all_servers(self):
         """دریافت تمام سرورهای سیستم (برای ادمین)"""
         with self.get_connection() as (conn, cur):
@@ -587,7 +594,7 @@ class Database:
     def add_server(self, owner_id, group_id, data, super_admin_id=0):
         owner_id = self.workspace_owner(owner_id)
         from core import sec
-        
+
         g_id = group_id if group_id != 0 else None
         if g_id is not None:
             if not self.execute('SELECT 1 AS allowed FROM groups WHERE id=%s AND owner_id=%s',
@@ -595,14 +602,14 @@ class Database:
                 return -3
         user = self.get_user(owner_id)
         current = len(self.get_all_user_servers(owner_id))
-        
+
         if user and owner_id != super_admin_id:
             if current >= self.workspace_server_limit(owner_id):
                 return -1
-        
+
         now = self.get_tehran_datetime().strftime('%Y-%m-%d %H:%M:%S')
         loc = data.get('location_type', 'ext')
-        
+
         password = data['password']
         if password:
             from cryptography.fernet import InvalidToken
@@ -610,11 +617,11 @@ class Database:
                 sec.cipher.decrypt(password.encode('utf-8'))
             except (InvalidToken, ValueError, TypeError):
                 password = sec.encrypt(password)
-        
+
         with self.get_connection() as (conn, cur):
             try:
                 cur.execute(
-                    'INSERT INTO servers (owner_id, group_id, name, ip, port, username, password, expiry_date, location_type, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id', 
+                    'INSERT INTO servers (owner_id, group_id, name, ip, port, username, password, expiry_date, location_type, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id',
                     (owner_id, g_id, data['name'], data['ip'], data['port'], data['username'], password, data. get('expiry_date'), loc, now)
                 )
                 server_id = cur.fetchone()['id']
@@ -647,12 +654,12 @@ class Database:
     def update_server_error(self, s_id, error_text:  str = ""):
         try:
             self.execute('UPDATE servers SET last_error = %s WHERE id = %s', (str(error_text or ""), s_id))
-        except Exception:  
+        except Exception:
             pass
 
     def update_agent_state(self, s_id, *, status:  str = "", last_log: str = "", last_seen: str = ""):
         try:
-            if status: 
+            if status:
                 self.execute(
                     'UPDATE servers SET agent_last_log=%s, agent_last_seen=%s, last_status=%s WHERE id=%s',
                     (str(last_log or ""), str(last_seen or ""), str(status), s_id),
@@ -662,7 +669,7 @@ class Database:
                     'UPDATE servers SET agent_last_log=%s, agent_last_seen=%s WHERE id=%s',
                     (str(last_log or ""), str(last_seen or ""), s_id),
                 )
-        except Exception: 
+        except Exception:
             pass
 
     def update_server_expiry(self, s_id, new_date):
@@ -759,7 +766,7 @@ class Database:
     # ==========================================================================
     # 📊 STATS & GROUP METHODS
     # ==========================================================================
-    
+
     def add_server_stat(self, server_id, cpu, ram):
         with self.get_connection() as (conn, cur):
             cur.execute('INSERT INTO server_stats (server_id, cpu, ram) VALUES (%s, %s, %s)', (server_id, cpu, ram))
@@ -793,7 +800,7 @@ class Database:
         try:
             self.execute('INSERT INTO groups (owner_id, name) VALUES (%s,%s)', (owner_id, name))
             return True
-        except psycopg2.IntegrityError:  
+        except psycopg2.IntegrityError:
             return False
 
     def get_user_groups(self, owner_id):
@@ -806,13 +813,13 @@ class Database:
         owner_id = self.workspace_owner(owner_id)
         with self.get_connection() as (conn, cur):
             cur.execute('UPDATE servers SET group_id = NULL WHERE group_id = %s AND owner_id = %s', (group_id, owner_id))
-            cur.execute('DELETE FROM groups WHERE id = %s AND owner_id = %s', (group_id, owner_id)) 
+            cur.execute('DELETE FROM groups WHERE id = %s AND owner_id = %s', (group_id, owner_id))
             conn.commit()
 
     # ==========================================================================
     # ⚙️ SETTINGS & CHANNELS
     # ==========================================================================
-    
+
     def get_setting(self, owner_id, key):
         owner_id = self.workspace_owner(owner_id)
         with self.get_connection() as (conn, cur):
@@ -824,7 +831,7 @@ class Database:
         owner_id = self.workspace_owner(owner_id)
         with self.get_connection() as (conn, cur):
             cur.execute('''
-                INSERT INTO settings (owner_id, key, value) VALUES (%s, %s, %s) 
+                INSERT INTO settings (owner_id, key, value) VALUES (%s, %s, %s)
                 ON CONFLICT (owner_id, key) DO UPDATE SET value = EXCLUDED.value
             ''', (owner_id, key, str(value)))
             conn.commit()
@@ -841,7 +848,7 @@ class Database:
             cur.execute('DELETE FROM channels WHERE owner_id=%s AND usage_type=%s', (owner_id, usage_type))
             cur.execute('INSERT INTO channels (owner_id, chat_id, name, usage_type, topic_id) VALUES (%s,%s,%s,%s,%s)', (owner_id, chat_id, name, usage_type, topic_id))
             conn.commit()
-            
+
     def delete_channel(self, c_id, owner_id):
         owner_id = self.workspace_owner(owner_id)
         self.execute('DELETE FROM channels WHERE id = %s AND owner_id = %s', (c_id, owner_id))
@@ -849,15 +856,15 @@ class Database:
     # ==========================================================================
     # 💳 PAYMENT & TUNNEL METHODS
     # ==========================================================================
-    
+
     def get_payment_methods(self, p_type=None):
         with self.get_connection() as (conn, cur):
-            if p_type:  
+            if p_type:
                 cur.execute('SELECT * FROM payment_methods WHERE type = %s AND is_active = 1', (p_type,))
-            else:  
+            else:
                 cur.execute('SELECT * FROM payment_methods')
             return cur.fetchall()
-            
+
     def add_payment_method(self, p_type, network, address, holder):
         self.execute('INSERT INTO payment_methods (type, network, address, holder_name) VALUES (%s, %s, %s, %s)', (p_type, network, address, holder))
 
@@ -879,35 +886,35 @@ class Database:
         with self. get_connection() as (conn, cur):
             cur.execute('SELECT * FROM payments WHERE id = %s', (payment_id,))
             pay = cur.fetchone()
-            if not pay or pay['status'] == 'approved':  
+            if not pay or pay['status'] == 'approved':
                 return False
-            
+
             cur.execute("UPDATE payments SET status = 'approved' WHERE id = %s", (payment_id,))
-            
+
             plan = SUBSCRIPTION_PLANS.get(pay['plan_type'])
             if plan:
                 cur.execute('SELECT * FROM users WHERE user_id = %s', (pay['user_id'],))
                 user = cur.fetchone()
                 try:
                     current_exp_str = user['expiry_date']
-                    if current_exp_str: 
+                    if current_exp_str:
                         current_exp = datetime.strptime(current_exp_str, '%Y-%m-%d %H:%M:%S')
-                        if current_exp < self.get_tehran_datetime().replace(tzinfo=None): 
+                        if current_exp < self.get_tehran_datetime().replace(tzinfo=None):
                             current_exp = self.get_tehran_datetime().replace(tzinfo=None)
                     else:
                         current_exp = self.get_tehran_datetime().replace(tzinfo=None)
-                except:
+                except Exception:
                     current_exp = self.get_tehran_datetime().replace(tzinfo=None)
-                
+
                 new_exp = (current_exp + timedelta(days=plan['days'])).strftime('%Y-%m-%d %H:%M:%S')
                 p_type_code = 1 if pay['plan_type'] == 'bronze' else 2 if pay['plan_type'] == 'silver' else 3
-                
+
                 cur.execute('''
-                    UPDATE users 
-                    SET server_limit = %s, expiry_date = %s, plan_type = %s 
+                    UPDATE users
+                    SET server_limit = %s, expiry_date = %s, plan_type = %s
                     WHERE user_id = %s
                 ''', (plan['limit'], new_exp, p_type_code, pay['user_id']))
-                
+
             conn.commit()
             return pay['user_id'], plan['name']
 
@@ -917,16 +924,16 @@ class Database:
 
     def apply_referral_reward(self, inviter_id):
         user = self.get_user(inviter_id)
-        if not user: 
+        if not user:
             return False, 0, ""
-        
+
         new_limit = user['server_limit'] + 1
         try:
             current_exp = datetime.strptime(user['expiry_date'], '%Y-%m-%d %H:%M:%S')
-            if current_exp < self.get_tehran_datetime().replace(tzinfo=None): 
+            if current_exp < self.get_tehran_datetime().replace(tzinfo=None):
                 current_exp = self.get_tehran_datetime().replace(tzinfo=None)
             new_exp = (current_exp + timedelta(days=10)).strftime('%Y-%m-%d %H:%M:%S')
-        except:
+        except Exception:
             new_exp = (self.get_tehran_datetime().replace(tzinfo=None) + timedelta(days=10)).strftime('%Y-%m-%d %H:%M:%S')
 
         bonus_expiry = (self.get_tehran_datetime().replace(tzinfo=None) + timedelta(days=10)).strftime('%Y-%m-%d %H:%M:%S')
@@ -934,15 +941,15 @@ class Database:
 
         with self.get_connection() as (conn, cur):
             cur.execute('''
-                UPDATE users 
-                SET server_limit = %s, expiry_date = %s, referral_count = referral_count + 1 
+                UPDATE users
+                SET server_limit = %s, expiry_date = %s, referral_count = referral_count + 1
                 WHERE user_id = %s
             ''', (new_limit, new_exp, inviter_id))
-            
+
             cur.execute('''
                 INSERT INTO temp_bonuses (user_id, bonus_limit, created_at, expires_at)
                 VALUES (%s, 1, %s, %s)
             ''', (inviter_id, now_str, bonus_expiry))
             conn.commit()
-            
+
         return True, new_limit, new_exp

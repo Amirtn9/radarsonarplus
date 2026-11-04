@@ -46,7 +46,7 @@ async def register_user_logic(update: Update, context: ContextTypes.DEFAULT_TYPE
         try:
             admin_msg = f"🔔 **کاربر جدید!**\n👤 {full_name}\n🆔 `{user_id}`\n🔗 دعوت: `{inviter_id if inviter_id else 'مستقیم'}`"
             await context.bot.send_message(chat_id=SUPER_ADMIN_ID, text=admin_msg, parse_mode='Markdown')
-        except: pass
+        except Exception: pass
 
         if inviter_id != 0:
             ok, new_lim, new_exp = await loop.run_in_executor(EXECUTOR, db.apply_referral_reward, inviter_id)
@@ -56,14 +56,14 @@ async def register_user_logic(update: Update, context: ContextTypes.DEFAULT_TYPE
                         chat_id=inviter_id,
                         text=(f"🎉 **تبریک! زیرمجموعه جدید:** {full_name}\n🎁 **پاداش:** +1 سرور (مجموع: {new_lim}) | +10 روز اعتبار")
                     )
-                except: pass
+                except Exception: pass
 
         try:
             await update.message.reply_text(
                 f"🎉 **سلام {full_name} عزیز، خوش اومدی!** \n\n✅ حساب شما ایجاد شد:\n🔹 **اعتبار اولیه:** 60 روز\n🔹 **ظرفیت سرور:** 2 عدد\n\nمی‌تونی با دعوت دوستانت، این محدودیت‌ها رو رایگان افزایش بدی! 🚀",
                 parse_mode='Markdown'
             )
-        except: pass
+        except Exception: pass
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -82,7 +82,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = keyboard.main_menu_kb(user_id, is_monitor_ready, SUPER_ADMIN_ID)
 
     # No network-bound statistics calls on the home screen: navigation must be immediate.
-    txt = ("📡 *SONAR RADAR | Pro 6.9*\n"
+    txt = ("📡 *SONAR RADAR | Pro 6.9.2*\n"
            "━━━━━━━━━━━━━━━━━\n"
            f"👤 اعتبار شما: `{remaining}`\n\n"
            "به کدام بخش نیاز دارید؟\n"
@@ -101,7 +101,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def user_profile_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         try: await safe_callback_answer(update.callback_query, )
-        except: pass
+        except Exception: pass
     
     uid = update.effective_user.id
     user = db.get_user(uid)
@@ -114,7 +114,7 @@ async def user_profile_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         join_date = datetime.strptime(user['added_date'], '%Y-%m-%d %H:%M:%S')
         j_join = jdatetime.date.fromgregorian(date=join_date.date())
         join_str = f"{j_join.day} {jdatetime.date.j_months_fa[j_join.month - 1]} {j_join.year}"
-    except: join_str = "نامشخص"
+    except Exception: join_str = "نامشخص"
 
     access, time_left = db.check_access(uid)
     if uid == SUPER_ADMIN_ID:

@@ -137,7 +137,7 @@ async def process_sub_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if temp.get('type') == 'sub':
                     data = temp
                     break
-            except:
+            except Exception:
                 pass
         if not data:
             data = extract_safe_json(output)
@@ -157,7 +157,7 @@ async def process_sub_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sub_name = f"Sub_{int(time.time())}"
             if "remarks" in link:
                  try: sub_name = urllib.parse.parse_qs(urllib.parse.urlparse(link).query).get('remarks', [sub_name])[0]
-                 except: pass
+                 except Exception: pass
 
             await msg.edit_text(f"✅ **{count} کانفیگ شناسایی شد.**\n⬇️ در حال ثبت در دیتابیس...")
             

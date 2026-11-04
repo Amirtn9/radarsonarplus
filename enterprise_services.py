@@ -1,4 +1,4 @@
-"""Additive enterprise capabilities for RadarSonarPlus 6.9.
+"""Additive enterprise capabilities for RadarSonarPlus 6.9.2.
 
 This module deliberately separates durable orchestration records from remote execution.
 No arbitrary shell command is accepted here; execution must go through the existing,

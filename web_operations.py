@@ -17,7 +17,10 @@ class NewServer(BaseModel):
     ip:str=Field(min_length=3,max_length=45)
     port:int=Field(ge=1,le=65535)
     username:str=Field(min_length=1,max_length=64)
-    password:str=Field(min_length=1,max_length=2048)
+    auth_method:Literal['password','private_key']='password'
+    password:str|None=Field(default=None,max_length=2048)
+    private_key:str|None=Field(default=None,max_length=32768)
+    key_passphrase:str|None=Field(default=None,max_length=1024)
     location_type:Literal['ir','ext']
     ws_port:int=Field(default=8080,ge=1024,le=65535)
     group_id:int=Field(default=0,ge=0)
@@ -105,12 +108,26 @@ def make_router(store,actor,guarded,admin_id):
         except ValueError as exc:raise HTTPException(status_code=400,detail=str(exc))
         if not body.expected_fingerprint:
             raise HTTPException(status_code=400,detail='Verify and confirm the SSH SHA256 fingerprint first')
+        if body.auth_method == 'password':
+            if not body.password:
+                raise HTTPException(status_code=400,detail='SSH password is required for password authentication')
+            credential = body.password
+        else:
+            if not body.private_key:
+                raise HTTPException(status_code=400,detail='SSH private key is required for key authentication')
+            try:
+                from ssh_credentials import encode_private_key_auth
+                credential = encode_private_key_auth(body.private_key, body.key_passphrase)
+            except ValueError as exc:
+                raise HTTPException(status_code=400,detail='SSH private key input is invalid') from exc
         def verify_then_save():
             # Same transport, host-key store and database method as Telegram.
             # Avoid any write until SSH + independent fingerprint are verified.
             path=confirm_and_connect(store.db,admin_id,ip,port,body.username,
-                                     body.password,body.expected_fingerprint)
-            data=body.model_dump(exclude={'expected_fingerprint','install_agent'})
+                                     credential,body.expected_fingerprint)
+            data=body.model_dump(exclude={'expected_fingerprint','install_agent','auth_method',
+                                          'private_key','key_passphrase','password'})
+            data['password']=credential
             data['ip'],data['port']=ip,port
             data['ws_port']=valid_agent_port(body.ws_port)
             result=store.db.add_server(uid,body.group_id,data,int(admin_id or 0))

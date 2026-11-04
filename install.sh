@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sonar Radar Pro 6.9 | resilient GitHub deployment manager
+# Sonar Radar Pro 6.9.2 | resilient GitHub deployment manager
 # Supported: Ubuntu/Debian with systemd. Never execute remotely piped scripts as root.
 set -Eeuo pipefail
 umask 077
@@ -23,7 +23,6 @@ NGINX_LINK=/etc/nginx/sites-enabled/sonar-radar.conf
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # The same canonical repository is used for the public bootstrap and documentation.
 GITHUB_REPOSITORY='Amirtn9/radarsonarplus'
-GITHUB_BRANCH='main'
 GITHUB_URL="https://github.com/${GITHUB_REPOSITORY}.git"
 
 # The documented one-command bootstrap is intentionally usable as a normal
@@ -75,19 +74,21 @@ if [[ ! -f "$SOURCE_DIR/bot.py" || ! -f "$SOURCE_DIR/pro_portal.py" || ! -f "$SO
   _sonar_bootstrap_dir="$(mktemp -d /opt/.sonar-bootstrap.XXXXXXXX)"
   trap 'rm -rf -- "$_sonar_bootstrap_dir"' EXIT
   printf 'Fetching Sonar Radar full source from GitHub...\n'
-  if ! GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$GITHUB_BRANCH" -- \
-      "$GITHUB_URL" "$_sonar_bootstrap_dir/source"; then
-    printf 'Cannot clone GitHub repository. Ensure the project exists, is public, and main is published.\n' >&2
+  if [[ ! "${SONAR_RELEASE_COMMIT:-}" =~ ^[a-fA-F0-9]{40}$ ]]; then
+    printf 'Refusing unpinned GitHub bootstrap. Set SONAR_RELEASE_COMMIT to the approved 40-character release commit SHA.\n' >&2
     exit 1
   fi
-  # Optional supply-chain pin. For trusted releases, set this to the audited commit.
-  if [[ -n "${SONAR_RELEASE_COMMIT:-}" ]]; then
-    [[ "$SONAR_RELEASE_COMMIT" =~ ^[a-fA-F0-9]{40}$ ]] || { echo 'Invalid SONAR_RELEASE_COMMIT (40 hexadecimal digits required)' >&2;exit 1; }
-    actual_commit="$(git -C "$_sonar_bootstrap_dir/source" rev-parse HEAD)"
-    [[ "$actual_commit" == "$SONAR_RELEASE_COMMIT" ]] || { echo 'Fetched repository commit does not match approved release' >&2;exit 1; }
-  else
-    printf 'NOTICE: GitHub main is unpinned. For verified release specify SONAR_RELEASE_COMMIT.\n' >&2
+  approved_commit="${SONAR_RELEASE_COMMIT,,}"
+  mkdir -p "$_sonar_bootstrap_dir/source"
+  git -C "$_sonar_bootstrap_dir/source" init -q
+  git -C "$_sonar_bootstrap_dir/source" remote add origin "$GITHUB_URL"
+  if ! GIT_TERMINAL_PROMPT=0 git -C "$_sonar_bootstrap_dir/source" fetch --quiet --no-tags --depth 1 origin "$approved_commit"; then
+    printf 'Cannot fetch the approved Git commit. Verify the SHA and repository access.\n' >&2
+    exit 1
   fi
+  git -C "$_sonar_bootstrap_dir/source" checkout --quiet --detach FETCH_HEAD
+  actual_commit="$(git -C "$_sonar_bootstrap_dir/source" rev-parse HEAD)"
+  [[ "$actual_commit" == "$approved_commit" ]] || { echo 'Fetched repository commit does not match approved release' >&2;exit 1; }
   if [[ ! -f "$_sonar_bootstrap_dir/source/bot.py" || ! -f "$_sonar_bootstrap_dir/source/install.sh" || ! -f "$_sonar_bootstrap_dir/source/pro_portal.py" ]]; then
     printf 'Repository does not contain the complete Sonar Radar source.\n' >&2
     exit 1
@@ -781,6 +782,9 @@ make_backup() {
   [[ -s "${file}.dump" ]] || die 'Database backup empty!'
   pg_restore --list "${file}.dump" >/dev/null || die 'Database dump validation failed.'
   verify_restore_rehearsal "${file}.dump"
+  local -a checksum_files=("$(basename "${file}.dump")" "$(basename "${file}.secret.key")" "$(basename "${file}.config.json")")
+  [[ ! -f "${file}.env" ]] || checksum_files+=("$(basename "${file}.env")")
+  (cd "$BACKUP_DIR" && sha256sum "${checksum_files[@]}" > "$(basename "${file}").sha256") || die 'Backup checksum manifest creation failed.'
 
   chmod 0600 "${file}"*; printf '%s\n' "$file"
 }
@@ -1468,25 +1472,93 @@ doctor() {
   if ((problems));then warn "$problems diagnostic warnings. Check journalctl and README.";return 1;fi
   ok 'Checks passed. Telegram/remote agent end-to-end verification still required.'
 }
+restore_backup_pair() {
+  local base="$1" key_tmp="$STATE_DIR/.secret.key.restore.$$"
+  runuser -u postgres -- pg_restore --exit-on-error --single-transaction --clean --if-exists --no-owner --no-acl --role="$DB_USER" -d "$DB_NAME" < "${base}.dump" || return 1
+  install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$STATE_DIR" || return 1
+  install -o "$APP_USER" -g "$APP_USER" -m 0600 "${base}.secret.key" "$key_tmp" || return 1
+  mv -f -- "$key_tmp" "$STATE_DIR/secret.key" || { rm -f -- "$key_tmp"; return 1; }
+  return 0
+}
+verify_restored_secret_store() {
+  local db_password db_host db_port verifier="$STATE_DIR/.verify_secret_key.$$"
+  db_password="$(read_env SONAR_DB_PASSWORD)"
+  db_host="$(read_env SONAR_DB_HOST)"; db_host="${db_host:-127.0.0.1}"
+  db_port="$(read_env SONAR_DB_PORT)"; db_port="${db_port:-5432}"
+  [[ -f "$SOURCE_DIR/scripts/verify_secret_key.py" ]] || return 1
+  install -o "$APP_USER" -g "$APP_USER" -m 0644 "$SOURCE_DIR/scripts/verify_secret_key.py" "$verifier" || return 1
+  export SONAR_STATE_DIR="$STATE_DIR" SONAR_DB_NAME="$DB_NAME" SONAR_DB_USER="$DB_USER"
+  export SONAR_DB_PASSWORD="$db_password" SONAR_DB_HOST="$db_host" SONAR_DB_PORT="$db_port"
+  if ! runuser -u "$APP_USER" --preserve-environment -- \
+      "$APP_DIR/venv/bin/python" "$verifier"; then
+    rm -f -- "$verifier"
+    return 1
+  fi
+  rm -f -- "$verifier"
+  return 0
+}
 restore_dump() {
   require_root;require_install
-  local dump="$1" confirm now
+  local dump="$1" confirm now base key_backup manifest key_tmp
   [[ -f "$dump" && ! -L "$dump" && "$dump" == *.dump ]] || die 'Provide an existing trusted .dump file.'
+  base="${dump%.dump}"
+  key_backup="${base}.secret.key"
+  manifest="${base}.sha256"
+  [[ -f "$key_backup" && ! -L "$key_backup" ]] || die 'Matching .secret.key sidecar is required; a database dump alone cannot recover encrypted SSH credentials.'
+  chmod 0600 "$key_backup" || die 'Could not secure the backup encryption key.'
+  "$APP_DIR/venv/bin/python" - "$key_backup" <<'PYKEY' || die 'Backup encryption key is invalid.'
+import pathlib,sys
+from cryptography.fernet import Fernet
+Fernet(pathlib.Path(sys.argv[1]).read_bytes().strip())
+PYKEY
+  if [[ -f "$manifest" && ! -L "$manifest" ]]; then
+    (cd "$(dirname -- "$dump")" && sha256sum -c "$(basename -- "$manifest")") >/dev/null || die 'Backup checksum verification failed.'
+  else
+    warn 'Legacy backup has no SHA-256 sidecar; verify its origin before continuing.'
+    read -r -p '  Type RESTORE LEGACY BACKUP to continue: ' confirm
+    [[ "$confirm" == 'RESTORE LEGACY BACKUP' ]] || { warn 'Cancelled';return 0; }
+  fi
   pg_restore --list "$dump" >/dev/null || die 'Not a readable PostgreSQL custom dump.'
-  warn 'This REPLACES the contents of the CURRENT database. A safety backup will be created.'
+  warn 'This REPLACES the contents of the CURRENT database and restores the matching encryption key.'
   read -r -p '  Type RESTORE DATABASE to proceed: ' confirm
   [[ "$confirm" == 'RESTORE DATABASE' ]] || { warn 'Cancelled';return 0; }
   now="$(make_backup)";say "Safety backup: $now"
   systemctl stop "$WEB_SERVICE" "$SERVICE" >/dev/null 2>&1 || true
-  # Restoring as the owner avoids superuser objects in source backups.
-  if ! runuser -u postgres -- pg_restore --exit-on-error --clean --if-exists --no-owner --no-acl --role="$DB_USER" -d "$DB_NAME" < "$dump";then
-    warn 'Restore failed: database may be partially restored. Reapply safety backup before starting.'
-    die 'Database restore failed.'
+  key_tmp="$STATE_DIR/.secret.key.restore.$$"
+  # Restore the database and its exact Fernet key as one recovery unit.
+  if ! runuser -u postgres -- pg_restore --exit-on-error --single-transaction --clean --if-exists --no-owner --no-acl --role="$DB_USER" -d "$DB_NAME" < "$dump"; then
+    warn 'Requested restore failed; attempting automatic rollback from the verified safety backup.'
+    if restore_backup_pair "$now"; then
+      systemctl start "$SERVICE" || true
+      [[ -f "$WEB_UNIT" ]] && systemctl start "$WEB_SERVICE" || true
+      die 'Restore failed; previous database and encryption key were restored.'
+    fi
+    die 'Restore and automatic rollback both failed. Keep services stopped and recover from the safety backup manually.'
   fi
-  systemctl start "$SERVICE"
+  install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$STATE_DIR" || {
+    warn 'Could not prepare runtime key directory; rolling back database and key.'
+    restore_backup_pair "$now" || die 'Rollback failed; keep services stopped.'
+    die 'Restore aborted; previous database and encryption key were restored.'
+  }
+  if ! install -o "$APP_USER" -g "$APP_USER" -m 0600 "$key_backup" "$key_tmp" || ! mv -f -- "$key_tmp" "$STATE_DIR/secret.key"; then
+    rm -f -- "$key_tmp"
+    warn 'Could not install matching encryption key; rolling back database and key.'
+    restore_backup_pair "$now" || die 'Rollback failed; keep services stopped.'
+    die 'Restore aborted; previous database and encryption key were restored.'
+  fi
+  if ! verify_restored_secret_store; then
+    warn 'Restored key could not decrypt the database credentials; rolling back database and key.'
+    restore_backup_pair "$now" || die 'Rollback failed; keep services stopped.'
+    systemctl start "$SERVICE" || true
+    [[ -f "$WEB_UNIT" ]] && systemctl start "$WEB_SERVICE" || true
+    die 'Restore aborted; previous database and encryption key were restored.'
+  fi
+  unset SONAR_DB_PASSWORD
+  systemctl start "$SERVICE" || die 'Database and key restored, but bot service did not start; inspect journal before starting web.'
   [[ -f "$WEB_UNIT" ]] && systemctl start "$WEB_SERVICE" || true
-  ok 'Database restored. Verify application data and agent connections.'
+  ok 'Database and matching encryption key restored. Verify application data and Agent connections.'
 }
+
 uninstall_app() {
   require_root;require_install
   local answer dest
@@ -1549,7 +1621,7 @@ ui_input() {
 menu_whiptail() {
   local choice domain email action service path source
   while true; do
-    choice="$(whiptail --title 'SONAR RADAR PRO 6.9' --backtitle 'Deployment  |  Operations  |  Recovery' \
+    choice="$(whiptail --title 'SONAR RADAR PRO 6.9.2' --backtitle 'Deployment  |  Operations  |  Recovery' \
       --menu 'Select an operation. Destructive actions are clearly marked.' 24 88 16 \
       '01' 'Install / Resume full stack (preserve existing data)' \
       '02' 'Safe update (backup + rollback)' \
@@ -1603,7 +1675,7 @@ menu_text() {
   while true; do
     clear 2>/dev/null || true
     printf '\n%b  ╭──────────────────────────────────────────────────────────────────────╮%b\n' "$C_BLUE" "$C_RESET"
-    printf '%b  │%b  SONAR RADAR PRO 6.9  ·  DEPLOYMENT & OPERATIONS CONSOLE             %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
+    printf '%b  │%b  SONAR RADAR PRO 6.9.2  ·  DEPLOYMENT & OPERATIONS CONSOLE             %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
     printf '%b  ╰──────────────────────────────────────────────────────────────────────╯%b\n' "$C_BLUE" "$C_RESET"
     printf '  %-37s %-37s\n' 'INSTALL & UPDATE' 'OPERATIONS'
     printf '  01  Install / Resume full stack     06  Service control\n'
@@ -1674,7 +1746,7 @@ case "${1:-}" in
   --uninstall) uninstall_app;;
   --purge) purge_project;;
   --help|-h) cat <<'USAGE'
-Sonar Radar Pro 6.9 | Deployment Manager
+Sonar Radar Pro 6.9.2 | Deployment Manager
   sudo bash install.sh                 Interactive whiptail/ANSI deployment console
   sudo bash install.sh --check         Offline source and OS checks
   sudo bash install.sh --install       Fresh FULL installation: Bot + DB + Mini App

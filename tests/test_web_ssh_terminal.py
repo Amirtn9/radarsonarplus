@@ -12,11 +12,15 @@ class DummyStore:
     pass
 
 
-def test_browser_ssh_terminal_websocket_route_is_registered():
+def test_browser_ssh_terminal_websocket_route_is_registered(monkeypatch):
+    monkeypatch.setenv('SONAR_WEB_ORIGIN', 'https://sonar.example')
     app = FastAPI()
     app.include_router(make_router(DummyStore(), 123))
-    assert any(getattr(route, "path", None) == "/api/terminal/{server_id}"
-               for route in app.routes)
+    # Exercise ASGI routing; newer FastAPI versions include routers lazily.
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with TestClient(app).websocket_connect('/api/terminal/1', headers={'origin': 'https://invalid.example'}):
+            pass
+    assert exc.value.code == 4403
 
 
 def test_browser_ssh_terminal_rejects_cross_origin_before_auth(monkeypatch):
@@ -36,8 +40,9 @@ def test_browser_ssh_terminal_rejects_cross_origin_before_auth(monkeypatch):
 def test_agent_tls_reenrollment_endpoint_is_registered():
     app = FastAPI()
     app.include_router(make_operations_router(DummyStore(), lambda: 1, lambda fn, *a, **k: None, 123))
-    paths = {getattr(route, "path", None) for route in app.routes}
-    assert "/api/operations/server/{server_id}/agent/re-enroll" in paths
+    response = TestClient(app).post('/api/operations/server/1/agent/re-enroll', json={'confirmed': False})
+    assert response.status_code == 400
+    assert response.json()['detail'] == 'Confirm Agent TLS re-enrollment'
 
 
 def test_terminal_ssh_error_text_is_english(monkeypatch):

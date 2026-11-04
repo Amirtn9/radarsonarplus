@@ -1,3 +1,17 @@
+# RadarSonarPlus 6.9.2 — Security, migration and release hardening (2026-11-04)
+
+- Added a shared PostgreSQL migration ledger and session-level advisory lock so Bot and Web startup cannot race additive schema changes.
+- Versioned the core schema bootstrap and made subsequent startup idempotent; future schema changes must use a new migration version.
+- Added SSH private-key authentication (Ed25519, RSA and ECDSA) to Web server onboarding; private keys and passphrases use the existing encrypted credential column and are parsed in memory.
+- Made Fernet decryption fail explicitly on a mismatched/lost key instead of silently returning an empty password.
+- Paired database backup dumps with their exact `secret.key`, SHA-256 sidecars and automatic key restoration/rollback during restore.
+- Required SHA-256 apt package hashes; MD5-only package plans are no longer accepted.
+- Removed bare `except:` handlers so process-level interrupts are not swallowed.
+- Added pinned direct runtime dependencies, optional S3 dependency separation, CI checks and deterministic source release packaging.
+- Removed one-off patch helpers from the source root and archived historical notes.
+
+**Validation boundary:** the source test suite and static checks run locally; real PostgreSQL migration concurrency, live SSH key authentication, Telegram API, TLS and VPS install/restore still require a staging host.
+
 # RadarSonarPlus 6.9 — Unified Web Panel and Telegram Mini App UI refresh (2026-11-04)
 
 - Introduced a shared Apple-inspired design layer for desktop web and Telegram WebView without creating a second frontend or changing the API/database architecture.

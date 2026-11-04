@@ -1,0 +1,33 @@
+# Runtime secrets and local configuration
+sonar_config.json
+secret.key
+*.key
+.env
+.env.*
+!.env.example
+
+# Backups, generated runtime data and logs
+*.dump
+*.pem
+*.sqlite
+*.sqlite3
+*.log
+runtime/
+logs/
+backups/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Frontend/build artifacts
+node_modules/
+dist/
+build/
+.cache/

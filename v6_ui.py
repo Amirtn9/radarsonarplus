@@ -276,7 +276,7 @@ async def diag_zip(update, context):
                 with path.open('rb') as handle:
                     await context.bot.send_document(
                         chat_id=chat_id, document=handle,
-                        filename='radarsonarplus-v6.9-full-logs-7d.zip',
+                        filename='radarsonarplus-v6.9.2-full-logs-7d.zip',
                         caption=('گزارش هفت‌روزه ربات، پنل، نصب، وضعیت عملیاتی و Agentها. '
                                  'مقادیر محرمانه پوشانده شده‌اند؛ لاگ‌های اصلی دست‌نخورده مانده‌اند.'),
                         read_timeout=600, write_timeout=600, connect_timeout=30, pool_timeout=60)

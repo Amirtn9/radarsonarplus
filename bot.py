@@ -111,35 +111,15 @@ def main():
         db = Database()
         await _wait_for_database(db)
 
-        # Each migration is isolated in the log so a startup failure identifies
-        # the exact subsystem instead of surfacing only as "bot exited".
-        from pro_store import install_schema as pro_schema
-        await _startup_step("pro_store", pro_schema, db)
+        # Bot and Web share one versioned migration ledger and PostgreSQL
+        # advisory lock. Their independent systemd startup order is irrelevant.
+        from schema_migrations import run_startup_migrations
+        await _startup_step("schema_migrations", run_startup_migrations, db)
 
-        from enterprise_services import install_schema as enterprise_schema
         from enterprise_runtime import (
-            install_runtime_schema, operations_worker, webhook_worker,
-            recovery_worker, scheduled_backup_worker, rollout_worker
+            operations_worker, webhook_worker, recovery_worker,
+            scheduled_backup_worker, rollout_worker
         )
-        await _startup_step("enterprise_services", enterprise_schema, db)
-        await _startup_step("enterprise_runtime", install_runtime_schema, db)
-
-        from subscription_health import install_schema as subscription_schema
-        from web_login import install_schema as web_schema
-        from monitor_fleet import install_schema as fleet_schema, install_job_schema
-        from agent_traffic import install_schema as install_meter
-        from service_monitor import install_schema as service_monitor_schema
-
-        migrations = (
-            ("subscription_health", subscription_schema),
-            ("web_login", web_schema),
-            ("monitor_fleet", fleet_schema),
-            ("monitor_fleet_jobs", install_job_schema),
-            ("agent_traffic", install_meter),
-            ("service_monitor", service_monitor_schema),
-        )
-        for name, migration in migrations:
-            await _startup_step(name, migration, db)
 
         stop = asyncio.Event()
         application.bot_data["enterprise_stop"] = stop

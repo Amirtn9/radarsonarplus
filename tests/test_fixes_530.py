@@ -478,6 +478,10 @@ def test_deployment_commits_actual_port_only_after_wss_and_runtime_health(monkey
         def open_sftp(self):return FakeSFTP()
         def close(self):pass
     monkeypatch.setattr(ssh_support,'connect_ssh',lambda *args:FakeSSH())
+    # Dependency bootstrap has its own preflight and SFTP tests. This test
+    # exercises deployment after that prerequisite succeeds.
+    import agent_bootstrap
+    monkeypatch.setattr(agent_bootstrap, 'install_agent_dependencies', lambda *args, **kwargs: None)
     monkeypatch.setattr(agent_deploy, 'privileged_script', lambda command: command)
     monkeypatch.setattr(agent_deploy.asyncio, 'sleep', AsyncMock())
     async def request(self, ip, port, token, payload, **kwargs):
@@ -500,6 +504,22 @@ def test_deployment_commits_actual_port_only_after_wss_and_runtime_health(monkey
     assert ok == healthy, detail
     assert commits == ([('127.0.0.1', 22, 'test-certificate', 9090)] if healthy else [])
     assert firewall[0][-1] == 9090
+    if not healthy:
+        rollback = next(command for command in calls if "<<'SONAR_ROLLBACK'" in command)
+        rollback_code = rollback.split('\n', 1)[1].rsplit('\nSONAR_ROLLBACK', 1)[0]
+        backup = tmp_path / 'backup'
+        backup.mkdir()
+        # A root installation has a service unit but no diagnostic sudoers file.
+        (backup / '7').write_text('[Service]\n')
+        for prefix in ('/opt/', '/etc/', '/usr/local/'):
+            rollback_code = rollback_code.replace(prefix, str(tmp_path) + prefix)
+        from unittest.mock import patch
+        system_calls = []
+        with patch.object(__import__('sys'), 'argv', ['rollback', str(backup)]), \
+             patch.object(subprocess, 'run', lambda command, **kwargs: system_calls.append(command)):
+            exec(compile(rollback_code, 'generated-agent-rollback', 'exec'), {})
+        assert ['systemctl', 'try-restart', 'sonar-agent'] in system_calls
+        assert ['systemctl', 'stop', 'sonar-agent'] not in system_calls
     unit = next(command for command in calls if 'Description=Sonar Monitor Agent' in command)
     assert 'monitor_agent.py 9090' in unit and "sport = :9090" in unit
     # Execute the exact generated environment merge in a disposable directory.

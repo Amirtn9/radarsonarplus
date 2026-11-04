@@ -48,7 +48,7 @@ async def cancel_handler_func(update: Update, context: ContextTypes.DEFAULT_TYPE
     if update.callback_query:
         try:
             await safe_callback_answer(update.callback_query, )
-        except:
+        except Exception:
             pass
     # Preserve category/list navigation, but wipe transient flow data (SSH
     # credentials and partially entered authentication/payment fields included).
@@ -96,7 +96,7 @@ async def run_background_ssh_task(context: ContextTypes.DEFAULT_TYPE, chat_id, f
     if GLOBAL_SEMAPHORE.locked():
         try:
             await context.bot.send_message(chat_id=chat_id, text="⚠️ **سرور شلوغ است!**\nلطفاً چند لحظه صبر کنید تا پردازش‌های فعلی تمام شوند.")
-        except: pass
+        except Exception: pass
         return
 
     loop = asyncio.get_running_loop()

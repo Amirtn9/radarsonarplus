@@ -82,8 +82,6 @@ def install_schema(db=None):
             cur.execute(stmt)
         cur.execute('INSERT INTO pro_migrations(version) VALUES (5) ON CONFLICT DO NOTHING')
         conn.commit()
-    from service_monitor import install_schema as install_service_schema
-    install_service_schema(db)
 
 
 def _resource_table(kind):

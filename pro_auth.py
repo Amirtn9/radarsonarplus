@@ -12,7 +12,8 @@ def verify_init_data(init_data,bot_token,now=None,max_age=300):
     if len(pairs)>32 or len(set(k for k,v in pairs))!=len(pairs):raise PermissionError('Invalid fields')
     fields=dict(pairs)
     received=fields.pop('hash','')
-    if not received or len(received)!=64:raise PermissionError('Missing signature')
+    if len(received)!=64 or any(c not in '0123456789abcdef' for c in received):
+        raise PermissionError('Invalid signature')
     try:auth_date=int(fields['auth_date'])
     except (ValueError,KeyError,TypeError):raise PermissionError('Invalid auth date')
     now=int(time.time() if now is None else now)

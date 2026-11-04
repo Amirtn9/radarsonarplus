@@ -11,20 +11,20 @@
 
 **SONAR RADAR PRO** یک سامانه مدیریت زیرساخت است که مدیریت سرورها، Agentهای راه دور، منابع اتصال، مانیتورهای سرویس و رخدادهای عملیاتی را از طریق ربات تلگرام و پنل وب فراهم می‌کند. پنل و ربات از منطق برنامه و پایگاه داده مشترک استفاده می‌کنند.
 
-نسخه مخزن در `VERSION` ثبت شده است. وضعیت پروژه در مستندات انتشار به‌عنوان Release Candidate توصیف شده؛ بنابراین پیش از استفاده عملیاتی، نصب، بازیابی بکاپ و مسیرهای واقعی SSH/WSS/TLS را در محیط آزمایشی بررسی کنید.
+نسخه فعلی `6.9.2` در `VERSION` ثبت شده است. وضعیت پروژه همچنان Release Candidate است؛ بنابراین پیش از استفاده عملیاتی، نصب، مهاجرت دیتابیس، بازیابی بکاپ و مسیرهای واقعی SSH/WSS/TLS را در محیط آزمایشی بررسی کنید.
 
 **مخزن رسمی:** [github.com/Amirtn9/radarsonarplus](https://github.com/Amirtn9/radarsonarplus)
 
 ## قابلیت‌های موجود
 
-- **مدیریت سرورها:** ثبت سرور، گروه‌بندی، اطلاعات SSH، بررسی اتصال و مدیریت Agent.
+- **مدیریت سرورها:** ثبت سرور، گروه‌بندی، احراز هویت SSH با رمز یا کلید خصوصی در پنل وب، بررسی اتصال و مدیریت Agent.
 - **ارتباط چندمسیره:** تلاش مستقیم از کنترل‌کننده مرکزی و استفاده از Agentهای سالم و تأییدشده در صورت خطای شبکه.
 - **اعتماد SSH:** نمایش fingerprint و الزام تأیید مستقل؛ خطای کلید ناشناخته/تغییریافته به اعتماد خودکار تبدیل نمی‌شود.
 - **Agent و WSS/TLS:** بررسی گواهی، توکن، heartbeat و وضعیت واقعی Agent پیش از استفاده به‌عنوان relay.
 - **مانیتورینگ:** پایش HTTP(S)/TCP، تاریخچه رخدادها و اعلان‌های مرتبط.
 - **کانفیگ و اشتراک:** مدیریت منابع پشتیبانی‌شده و نمایش نتیجه آزمون بر اساس داده ثبت‌شده.
 - **پنل وب و Mini App:** داشبورد، جزئیات سرور، عملیات مدیریتی، ترمینال SSH، استخر Agent و بالانسر مسیرها.
-- **رابط یکپارچه 6.9:** پوسته مشترک وب و Telegram Mini App با طراحی Apple-inspired، پوسته روشن/تاریک، ناوبری موبایل، Safe Area، فیلترهای واقعی علاقه‌مندی و رخدادها و نمایش وضعیت صف اعلان‌ها.
+- **رابط یکپارچه 6.9.2:** پوسته مشترک وب و Telegram Mini App با طراحی Apple-inspired، پوسته روشن/تاریک، ناوبری موبایل، Safe Area، فیلترهای واقعی علاقه‌مندی و رخدادها و نمایش وضعیت صف اعلان‌ها.
 - **عملیات سازمانی:** صف عملیات، سلامت، گزارش‌ها، Backup، Webhook و انتشار تدریجی Agent؛ جزئیات به پیکربندی و کلیدهای سمت سرور وابسته است.
 - **عیب‌یابی:** بررسی نصب، لاگ‌ها، بسته پشتیبانی و ابزارهای Backup/Restore.
 
@@ -43,7 +43,15 @@ Central Controller ── first SSH attempt ──> Destination
 - مسیر مستقیم کنترل‌کننده اولویت نخست است.
 - Relay فقط برای Agentهای مجاز، سالم و دارای TLS/توکن معتبر در دسترس است.
 - خطای fingerprint یا احراز هویت SSH نباید با مسیر جایگزین ناامن دور زده شود.
+- Bot و Web از یک migration ledger نسخه‌دار و PostgreSQL advisory lock مشترک استفاده می‌کنند؛ فقط یک دیتابیس وجود دارد.
 - پنل وب از API محلی استفاده می‌کند و برای انتشار عمومی باید پشت reverse proxy و HTTPS معتبر قرار بگیرد.
+
+## نسخه‌ها و وابستگی‌ها
+
+- `requirements.txt` و `requirements-web.txt` نسخه دقیق وابستگی‌های مستقیم Runtime را pin می‌کنند.
+- وابستگی S3 اختیاری است؛ فقط در صورت استفاده از مقصد S3، در virtualenv برنامه `pip install -r requirements-s3.txt` اجرا کنید.
+- آزمون‌ها و CI از `requirements-dev.txt` استفاده می‌کنند. وابستگی‌های transitive هنوز lock کاملِ hash-based ندارند؛ برای نصب production از فایل‌های pin شده و CI استفاده کنید و lock کامل را در فرایند release شبکه‌دار تولید/بازبینی کنید.
+- Bootstrap تک‌فایلی فقط با `SONAR_RELEASE_COMMIT` چهل‌رقمی تأییدشده سورس را دریافت می‌کند؛ دریافت پیش‌فرض از `main` غیرفعال است.
 
 ## پیش‌نیازها
 
@@ -86,6 +94,11 @@ sudo apt-get install -y git ca-certificates
 git clone https://github.com/Amirtn9/radarsonarplus.git
 cd radarsonarplus
 
+# مقدار را با SHA چهل‌رقمی تأییدشده از انتشار رسمی جایگزین کنید.
+APPROVED_COMMIT='replace-with-approved-40-hex-sha'
+git fetch --no-tags origin "$APPROVED_COMMIT"
+git checkout --detach "$APPROVED_COMMIT"
+
 bash install.sh --check
 sudo bash install.sh --install
 ```
@@ -100,16 +113,16 @@ sudo bash install.sh
 
 ### روش Bootstrap با دریافت فقط install.sh
 
-اسکریپت مستقل، سورس کامل را از همان مخزن رسمی دریافت می‌کند و نصب‌کننده اصلی را اجرا می‌کند:
+اسکریپت مستقل فقط در صورت دریافت SHA چهل‌رقمیِ تأییدشده اجازه دریافت سورس را می‌دهد؛ شاخه شناور `main` به‌صورت پیش‌فرض پذیرفته نمی‌شود:
 
 ```bash
-wget https://raw.githubusercontent.com/Amirtn9/radarsonarplus/main/install.sh
+export SONAR_RELEASE_COMMIT='replace-with-approved-40-hex-sha'
+wget "https://raw.githubusercontent.com/Amirtn9/radarsonarplus/${SONAR_RELEASE_COMMIT}/install.sh"
 chmod +x install.sh
-sudo ./install.sh --help
-sudo ./install.sh --install
+sudo -E ./install.sh --install
 ```
 
-برای نسخه قابل‌ممیزی، روش Clone کامل را ترجیح دهید. Bootstrap از شاخه `main` استفاده می‌کند؛ برای الزام به یک Commit مشخص می‌توان متغیر `SONAR_RELEASE_COMMIT` را با SHA چهل‌رقمیِ تأییدشده تنظیم کرد.
+SHA را از انتشار رسمی/مخزن مورد اعتماد و از مسیر مستقل تأیید کنید. اگر سورس کامل و بررسی‌شده را از آرشیو انتشار دریافت کرده‌اید، نصب‌کننده محلی را اجرا کنید؛ مسیر Bootstrap استفاده نمی‌شود.
 
 ## اجرای پروژه
 
@@ -142,7 +155,7 @@ API وب به‌صورت محلی اجرا می‌شود؛ مقدار پیش‌�
 | `sudo bash install.sh --doctor` | عیب‌یابی نصب، Python، سرویس‌ها و PostgreSQL |
 | `sudo bash install.sh --logs errors --lines 200` | مشاهده لاگ خطاها |
 | `sudo bash install.sh --backup` | ساخت و اعتبارسنجی Backup |
-| `sudo bash install.sh --restore /path/to/backup.dump` | بازیابی Backup پس از تأیید |
+| `sudo bash install.sh --restore /path/to/backup.dump` | بازیابی Backup به‌همراه `.secret.key`، `.sha256` و فایل‌های جانبی همان Backup پس از تأیید |
 | `sudo bash install.sh --repair` | تعمیر سرویس‌ها با کنترل‌های موجود |
 | `sudo bash install.sh --support` | تولید ZIP پشتیبانیِ پاک‌سازی‌شده |
 | `sudo bash install.sh --uninstall` | آرشیو برنامه و حذف سرویس‌ها؛ پایگاه داده باقی می‌ماند |
@@ -222,10 +235,13 @@ python3 -m pytest -q
 - **خطای دسترسی SSH یا `SUDO_REQUIRED`:** نام کاربر، پورت SSH، مجوز کلید و خروجی `sudo -n id -u` را روی مقصد بررسی کنید.
 - **پنل در دسترس نیست:** `sonar-web`, `postgresql`, پورت محلی API، Nginx، DNS و گواهی HTTPS را بررسی کنید.
 - **نصب یا ارتقا متوقف می‌شود:** `sudo bash install.sh --logs install --lines 300` و سپس `sudo bash install.sh --doctor` را اجرا کنید.
-- **Backup قابل بازیابی نیست:** فایل dump، کلید رمزنگاری و تنظیمات محیطی باید با هم نگهداری شوند؛ صرفاً فهرست‌پذیری dump تضمین بازیابی کامل نیست.
+- **Backup قابل بازیابی نیست:** dump، فایل هم‌نام `.secret.key` و فایل `.sha256` را کنار هم نگه دارید؛ `--restore` کلید متناظر را همراه دیتابیس بازیابی می‌کند، هش‌ها و رمزگشایی credentialها را بررسی می‌کند و dump بدون sidecar کلید را رد می‌کند.
 
 راهنمای بازیابی و عملیات سازمانی:
-- [راهنمای Enterprise 6.9](docs/ENTERPRISE_6_9_RUNBOOK_FA.md)
+- [گزارش وضعیت اصلاح ممیزی](docs/SECURITY_REMEDIATION_6_9_2_FA.md)
+- [مهاجرت نسخه‌دار دیتابیس](docs/SCHEMA_MIGRATIONS_FA.md)
+- [احراز هویت SSH با کلید خصوصی](docs/SSH_KEY_AUTH_FA.md)
+- [راهنمای Enterprise 6.9.2](docs/ENTERPRISE_6_9_RUNBOOK_FA.md)
 - [بازیابی نصب](docs/INSTALL_RECOVERY_FA.md)
 - [بازیابی خطای Startup](docs/STARTUP_RECOVERY_6_9_FA.md)
 - [نکات ارتقا](docs/operations/UPGRADE_NOTES_FA.md)

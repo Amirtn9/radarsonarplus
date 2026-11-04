@@ -120,7 +120,7 @@ class _PublicAptRedirectHandler(HTTPRedirectHandler):
 def _parse_apt_uris(output):
     """Parse apt's own URI plan. Only signed-index hashes and public HTTP(S) hosts are accepted."""
     records=[]
-    pattern=re.compile(r"'(?P<url>https?://[^']+)'\s+(?P<name>[^\s]+)\s+(?P<size>\d+)\s+(?P<kind>MD5Sum|SHA256):(?P<digest>[A-Fa-f0-9]+)")
+    pattern=re.compile(r"'(?P<url>https?://[^']+)'\s+(?P<name>[^\s]+)\s+(?P<size>\d+)\s+SHA256:(?P<digest>[A-Fa-f0-9]{64})")
     for line in str(output).splitlines():
         match=pattern.search(line)
         if not match: continue
@@ -129,7 +129,7 @@ def _parse_apt_uris(output):
             raise RuntimeError('APT_BUNDLE_UNSAFE_FILENAME')
         _validate_public_apt_url(url)
         records.append({'url':url,'name':name,'size':int(match.group('size')),
-                        'hash_kind':match.group('kind').lower(),'expected':match.group('digest').lower()})
+                        'expected':match.group('digest').lower()})
     # apt can mention the same package URL more than once; keep one exact record.
     unique={}
     for item in records:
@@ -165,7 +165,7 @@ def _download_apt_bundle(run, host, port, username, password, packages, progress
     with tempfile.TemporaryDirectory(prefix='sonar-apt-bundle-') as temp:
         folder=Path(temp); manifest=[]; downloaded=0
         for item in records:
-            request=Request(item['url'],headers={'User-Agent':'RadarSonarPlus-Agent-Bootstrap/6.9'})
+            request=Request(item['url'],headers={'User-Agent':'RadarSonarPlus-Agent-Bootstrap/6.9.2'})
             try:
                 opener=build_opener(_PublicAptRedirectHandler())
                 with opener.open(request,timeout=45) as response:
@@ -175,7 +175,7 @@ def _download_apt_bundle(run, host, port, username, password, packages, progress
                 return False,'APT_PACKAGE_DOWNLOAD_FAILED: '+item['name']+' ('+type(exc).__name__+')'
             if len(data)>300*1024*1024:
                 return False,'APT_PACKAGE_TOO_LARGE: '+item['name']
-            digest=hashlib.md5(data).hexdigest() if item['hash_kind']=='md5sum' else hashlib.sha256(data).hexdigest()
+            digest=hashlib.sha256(data).hexdigest()
             if digest.lower()!=item['expected']:
                 return False,'APT_PACKAGE_HASH_MISMATCH: '+item['name']
             (folder/item['name']).write_bytes(data)

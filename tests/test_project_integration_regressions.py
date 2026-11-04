@@ -52,7 +52,7 @@ def test_standalone_web_startup_installs_pro_and_service_schema():
     start = source.index('async def bootstrap_additive_schemas')
     end = source.index("@app.on_event('shutdown')", start)
     startup = source[start:end]
-    assert 'await asyncio.to_thread(install_pro_schema,store.db)' in startup
+    assert 'await asyncio.to_thread(run_startup_migrations, store.db)' in startup
 
 
 def test_miniapp_frontend_exchanges_initdata_and_uses_csrf_cookie_session():

@@ -1,4 +1,4 @@
-"""Admin Panel Handlers for Sonar Radar Ultra Pro. 
+"""Admin Panel Handlers for Sonar Radar Ultra Pro.
 
 This module handles all admin-related operations including:
 - User management (create, ban, delete, upgrade)
@@ -142,7 +142,7 @@ async def admin_panel_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != SUPER_ADMIN_ID:
         logger.warning(f"❌ Unauthorized admin access attempt by {update.effective_user.id}")
         return
-    
+
     try:
         def _summary_counts():
             users_count = len(db.get_all_users())
@@ -160,10 +160,10 @@ async def admin_panel_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 کل کاربران: `{users_count}`\n"
             f"🖥 کل سرورهای ثبت شده: `{total_servers}`"
         )
-        
+
         await safe_edit_message(update, txt, reply_markup=reply_markup)
         logger.info(f"✅ Admin panel displayed")
-        
+
     except Exception as e:
         logger.error(f"❌ Error in admin_panel_main: {e}", exc_info=True)
         await safe_edit_message(update, f"❌ خطا:  {e}")
@@ -188,7 +188,7 @@ async def admin_enterprise_dashboard(update: Update, context: ContextTypes.DEFAU
                   (SELECT COUNT(*) FROM rs_automation_rules WHERE enabled=TRUE) AS active_rules""")
                 return dict(cur.fetchone())
         data=await run_sync(load)
-        text=("🏢 *مدیریت سازمانی RadarSonarPlus 6.9*\\n\\n"
+        text=("🏢 *مدیریت سازمانی RadarSonarPlus 6.9.2*\\n\\n"
               f"عملیات ثبت‌شده: `{data['operations']}`\\n"
               f"عملیات در صف/اجرا: `{data['active_operations']}`\\n"
               f"رخدادهای باز: `{data['open_incidents']}`\\n"
@@ -343,7 +343,7 @@ async def admin_enterprise_cancel_rollout(update: Update, context: ContextTypes.
 
 async def admin_agent_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """داشبورد وضعیت ایجنت‌ها (همه سرورها)."""
-    if update.effective_user.id != SUPER_ADMIN_ID: 
+    if update.effective_user.id != SUPER_ADMIN_ID:
         logger.warning(f"❌ Unauthorized agent dashboard access by {update.effective_user.id}")
         return
 
@@ -351,15 +351,15 @@ async def admin_agent_dashboard(update: Update, context: ContextTypes.DEFAULT_TY
         servers = await run_sync(db.get_all_servers)
         if not servers:
             await safe_edit_message(
-                update, 
-                "📭 هیچ سروری در دیتابیس ثبت نشده است.", 
+                update,
+                "📭 هیچ سروری در دیتابیس ثبت نشده است.",
                 reply_markup=keyboard.back_btn('admin_panel_main')
             )
             logger.info("⚠️ No servers found in database")
             return
 
         logger.info(f"🔍 Checking status of {len(servers)} servers...")
-        
+
         # برای جلوگیری از فشار زیاد، همزمانی را محدود می‌کنیم
         sem = asyncio.Semaphore(10)
 
@@ -375,14 +375,14 @@ async def admin_agent_dashboard(update: Update, context: ContextTypes.DEFAULT_TY
                 except Exception as e:
                     logger.warning(f"⚠️ Probe failed for {ip}: {e}")
                     res = {'status': 'Offline', 'error': str(e)}
-                
+
                 # ذخیره در DB برای نمایش لاگ/آخرین وضعیت
                 now = get_tehran_datetime().strftime('%Y-%m-%d %H:%M:%S')
                 if res. get('status') == 'Online':
                     await run_sync(db.update_agent_state, s['id'], status='Online', last_log='OK', last_seen=now)
                     await run_sync(db.update_server_error, s['id'], '')
                     logger.debug(f"✅ Server {ip} is Online")
-                else: 
+                else:
                     err = str(res.get('error') or 'Unknown')
                     # اگر خطای auth باشد، همان وضعیت را روی last_status هم اعمال می‌کنیم
                     if 'auth' in err.lower():
@@ -391,7 +391,7 @@ async def admin_agent_dashboard(update: Update, context: ContextTypes.DEFAULT_TY
                     await run_sync(db.update_agent_state, s['id'], status='', last_log=err, last_seen=now)
                     await run_sync(db.update_server_error, s['id'], err)
                     logger.warning(f"❌ Server {ip} is Offline: {err}")
-                
+
                 return s['id'], res
 
         # اجرای تسک‌های پروب
@@ -401,17 +401,17 @@ async def admin_agent_dashboard(update: Update, context: ContextTypes.DEFAULT_TY
         online = 0
         offline = 0
         lines = []
-        
+
         for item in results:
             if isinstance(item, Exception):
                 logger.error(f"❌ Probe exception:  {item}")
                 continue
-            
+
             sid, res = item
             srv = next((x for x in servers if x['id'] == sid), None)
             if not srv:
                 continue
-            
+
             if res.get('status') == 'Online':
                 online += 1
                 lines.append(f"🟢 `{sid}` | {srv['name']} | {srv['ip']}")
@@ -439,11 +439,11 @@ async def admin_agent_dashboard(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton("🧩 نصب/رفع ایجنت‌ها", callback_data='admin_agent_install_menu')],
             [InlineKeyboardButton("🔙 بازگشت", callback_data='admin_panel_main')],
         ]
-        
+
         await safe_edit_message(update, txt, reply_markup=InlineKeyboardMarkup(kb))
         logger.info(f"✅ Agent dashboard displayed:  {online} online, {offline} offline")
-        
-    except Exception as e: 
+
+    except Exception as e:
         logger.error(f"❌ Error in admin_agent_dashboard: {e}", exc_info=True)
         await safe_edit_message(update, f"❌ خطا: {e}")
 
@@ -453,7 +453,7 @@ async def admin_agent_logs_menu(update: Update, context: ContextTypes.DEFAULT_TY
     if update.effective_user.id != SUPER_ADMIN_ID:
         logger.warning(f"❌ Unauthorized agent logs access by {update.effective_user.id}")
         return
-    
+
     try:
         servers = await run_sync(db.get_all_servers)
         if not servers:
@@ -466,23 +466,23 @@ async def admin_agent_logs_menu(update: Update, context: ContextTypes.DEFAULT_TY
             return
 
         kb = []
-        for s in servers[: 50]: 
+        for s in servers[: 50]:
             status_icon = "🟢" if s.get('last_status') == 'Online' else "🔴"
             kb. append([InlineKeyboardButton(
                 f"{status_icon} {s['name']}",
                 callback_data=f"admin_agent_log_{s['id']}"
             )])
-        
+
         kb. append([InlineKeyboardButton("🔙 بازگشت", callback_data='admin_agent_dashboard')])
-        
+
         await safe_edit_message(
             update,
             "📄 **انتخاب سرور برای مشاهده آخرین لاگ اتصال ایجنت**",
             reply_markup=InlineKeyboardMarkup(kb)
         )
         logger.info(f"✅ Agent logs menu displayed with {len(servers)} servers")
-        
-    except Exception as e: 
+
+    except Exception as e:
         logger.error(f"❌ Error in admin_agent_logs_menu: {e}", exc_info=True)
         await safe_edit_message(update, f"❌ خطا: {e}")
 
@@ -492,7 +492,7 @@ async def admin_agent_log_view(update: Update, context: ContextTypes.DEFAULT_TYP
     if update. effective_user.id != SUPER_ADMIN_ID:
         logger.warning(f"❌ Unauthorized agent log view by {update.effective_user.id}")
         return
-    
+
     try:
         sid = int(update.callback_query.data. split('_')[-1])
     except Exception as e:
@@ -519,15 +519,15 @@ async def admin_agent_log_view(update: Update, context: ContextTypes.DEFAULT_TYP
             f"🕒 آخرین مشاهده: `{srv. get('agent_last_seen') or 'N/A'}`\n"
             f"🧾 لاگ:  `{(srv.get('agent_last_log') or srv. get('last_error') or 'N/A')}`"
         )
-        
+
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 بروزرسانی", callback_data='admin_agent_dashboard')],
             [InlineKeyboardButton("🔙 بازگشت", callback_data='admin_agent_logs')],
         ])
-        
+
         await safe_edit_message(update, txt, reply_markup=kb)
         logger.info(f"✅ Agent log viewed for server {sid}")
-        
+
     except Exception as e:
         logger.error(f"❌ Error in admin_agent_log_view: {e}", exc_info=True)
         await safe_edit_message(update, f"❌ خطا:  {e}")
@@ -538,23 +538,23 @@ async def admin_agent_reconnect_all(update: Update, context: ContextTypes.DEFAUL
     if update.effective_user.id != SUPER_ADMIN_ID:
         logger. warning(f"❌ Unauthorized reconnect by {update.effective_user.id}")
         return
-    
+
     try:
         logger.info("🔄 Reconnecting all WebSocket connections...")
         await ws_reconnect_all()
     except Exception as e:
         logger.error(f"❌ Reconnect failed: {e}", exc_info=True)
         pass
-    
+
     try:
-        await safe_callback_answer(update.callback_query, 
+        await safe_callback_answer(update.callback_query,
             "✅ تمام اتصال‌ها ریست شد؛ تلاش مجدد در اولین درخواست انجام می‌شود.",
             show_alert=True
         )
     except Exception as e:
         logger.warning(f"⚠️ Callback answer failed: {e}")
         pass
-    
+
     await admin_agent_dashboard(update, context)
     logger.info("✅ Reconnect completed")
 
@@ -577,10 +577,10 @@ async def admin_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         txt = f"👥 **لیست کاربران (صفحه {page} از {total_pages})**\nتعداد کل:  `{total_count}`\n➖➖➖➖➖➖"
         reply_markup = keyboard.admin_users_list_kb(users, page, total_pages)
-        
+
         await safe_edit_message(update, txt, reply_markup=reply_markup)
         logger.info(f"✅ Users list displayed (page {page})")
-        
+
     except Exception as e:
         logger.error(f"❌ Error in admin_users_list: {e}", exc_info=True)
         await safe_edit_message(update, f"❌ خطا: {e}")
@@ -588,7 +588,7 @@ async def admin_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_user_manage(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id=None):
     """مدیریت یک کاربر خاص (نمایش جزئیات و گزینه‌های عمل)."""
-    if not user_id and update.callback_query: 
+    if not user_id and update.callback_query:
         data = update.callback_query.data
         if "manage_" in data:
             try:
@@ -597,12 +597,12 @@ async def admin_user_manage(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 logger. error(f"❌ Parse manage_ callback failed: {e}")
                 pass
 
-    if not user_id: 
+    if not user_id:
         await safe_edit_message(update, "❌ خطای سیستمی:  آیدی کاربر پیدا نشد.")
         logger.error("❌ admin_user_manage: user_id is None")
         return
 
-    try: 
+    try:
         user = db.get_user(user_id)
         if not user:
             await safe_edit_message(update, "❌ کاربر در دیتابیس یافت نشد.")
@@ -624,7 +624,7 @@ async def admin_user_manage(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         reply_markup = keyboard.admin_user_manage_kb(user_id, user['plan_type'], user['is_banned'])
         await safe_edit_message(update, txt, reply_markup=reply_markup)
         logger.info(f"✅ User management panel displayed for {user_id}")
-        
+
     except Exception as e:
         logger.error(f"❌ Error in admin_user_manage:  {e}", exc_info=True)
         await safe_edit_message(update, f"❌ خطا: {e}")
@@ -689,7 +689,7 @@ async def admin_user_actions(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 logger.warning(f"⚠️ Callback answer failed: {e}")
             await admin_user_manage(update, context, user_id=target_id)
             logger.info(f"✅ User {target_id} plan toggled to {new_plan}")
-            
+
     except Exception as e:
         logger.error(f"❌ Error in admin_user_actions:  {e}", exc_info=True)
         await safe_edit_message(update, f"❌ خطا:  {e}")
@@ -790,9 +790,9 @@ async def admin_users_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 report.close()
         else:
             await update.callback_query.message.reply_text(txt)
-        
+
         logger.info(f"✅ Users text list sent ({len(users)} users)")
-        
+
     except Exception as e:
         logger.error(f"❌ Error in admin_users_text: {e}", exc_info=True)
         await update.callback_query.message.reply_text(f"❌ خطا: {e}")
@@ -805,8 +805,8 @@ async def admin_users_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """شروع ارسال پیام به تمام کاربران."""
     await safe_edit_message(
-        update, 
-        "📢 **لطفاً پیام خود را ارسال کنید:**\n\nبرای تمام کاربران ارسال می‌شود.", 
+        update,
+        "📢 **لطفاً پیام خود را ارسال کنید:**\n\nبرای تمام کاربران ارسال می‌شود.",
         reply_markup=keyboard.get_cancel_markup()
     )
     logger.info("📢 Broadcast started")
@@ -820,18 +820,18 @@ async def admin_broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYP
         total = len(users)
         success = 0
         blocked = 0
-        
+
         status_msg = await update.message.reply_text(f"⏳ در حال ارسال به {total} کاربر...")
         logger.info(f"📢 Broadcasting message to {total} users...")
 
         for user in users:
-            try: 
+            try:
                 await update.message.copy(chat_id=user['user_id'])
                 success += 1
             except Exception as e:
                 blocked += 1
                 logger.debug(f"⚠️ Broadcast failed for user {user['user_id']}: {e}")
-            
+
             if success % 20 == 0:
                 await asyncio.sleep(1)
 
@@ -841,8 +841,8 @@ async def admin_broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYP
         await admin_panel_main(update, context)
         logger.info(f"✅ Broadcast completed:  {success} successful, {blocked} blocked")
         return ConversationHandler.END
-        
-    except Exception as e: 
+
+    except Exception as e:
         logger.error(f"❌ Error in admin_broadcast_send: {e}", exc_info=True)
         await update. message.reply_text(f"❌ خطا: {e}")
         return ConversationHandler.END
@@ -856,12 +856,12 @@ async def add_new_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """شروع افزودن کاربر جدید."""
     try:
         await safe_callback_answer(update.callback_query, )
-    except: 
+    except Exception:
         pass
-    
+
     await safe_edit_message(
-        update, 
-        "👤 **شناسه عددی (User ID) کاربر را وارد کنید:**", 
+        update,
+        "👤 **شناسه عددی (User ID) کاربر را وارد کنید:**",
         reply_markup=keyboard.get_cancel_markup()
     )
     logger.info("👤 Add new user started")
@@ -913,18 +913,18 @@ async def admin_all_servers_report(update: Update, context: ContextTypes.DEFAULT
     """نمایش گزارش سرورهای تمام کاربران (با صفحه‌بندی)."""
     if update.effective_user.id != SUPER_ADMIN_ID:
         return
-    
+
     try:
         query = update.callback_query
         try:
             page = int(query.data.split('_')[-1])
-        except:
+        except Exception:
             page = 1
-        
+
         ITEMS_PER_PAGE = 3
         all_users = db.get_all_users()
         users_with_active_servers = []
-        
+
         for u in all_users:
             servers = db.get_all_user_servers(u['user_id'])
             if any(s['is_active'] == 1 for s in servers):
@@ -936,12 +936,12 @@ async def admin_all_servers_report(update: Update, context: ContextTypes.DEFAULT
         current_users = users_with_active_servers[start_idx:start_idx + ITEMS_PER_PAGE]
 
         txt = f"📜 **لیست کاربران دارای سرور فعال**\n📄 صفحه `{page}` از `{total_pages}`\n➖➖➖➖➖➖\n"
-        
+
         for u in current_users:
             servers = db.get_all_user_servers(u['user_id'])
             active = [s for s in servers if s['is_active']]
             txt += f"👤 **{u['full_name']}** (`{u['user_id']}`)\n📦 فعال:  `{len(active)}`\n"
-            
+
             for i, s in enumerate(active, 1):
                 status = "🟢" if s['last_status'] == 'Online' else "🔴"
                 expiry = s['expiry_date']. split(' ')[0] if s['expiry_date'] else "♾"
@@ -951,7 +951,7 @@ async def admin_all_servers_report(update: Update, context: ContextTypes.DEFAULT
         reply_markup = keyboard.admin_global_report_kb(page, total_pages)
         await safe_edit_message(update, txt, reply_markup=reply_markup)
         logger.info(f"✅ Global report displayed (page {page})")
-        
+
     except Exception as e:
         logger.error(f"❌ Error in admin_all_servers_report: {e}", exc_info=True)
         await safe_edit_message(update, f"❌ خطا:  {e}")
@@ -972,7 +972,7 @@ async def run_full_global_report(context, chat_id):
     """اجرای تولید گزارش جامع سرورها."""
     try:
         loop = asyncio.get_running_loop()
-        
+
         # استفاده از executor برای دریافت لیست (sync)
         all_servers = await loop.run_in_executor(EXECUTOR, db.get_all_servers)
         active_servers = [s for s in all_servers if s['is_active']]
@@ -981,15 +981,15 @@ async def run_full_global_report(context, chat_id):
             await context.bot.send_message(chat_id, "❌ سرور فعالی یافت نشد.")
             logger.warning("⚠️ No active servers found for report")
             return
-        
+
         logger.info(f"📊 Generating report for {len(active_servers)} active servers...")
-        
+
         sem = asyncio.Semaphore(10)
-        
+
         async def safe_check(s):
             """بررسی ایمن‌تر وضعیت سرور."""
             async with sem:
-                try: 
+                try:
                     # ✅ StatsManager.check_full_stats خود async است
                     res = await StatsManager.check_full_stats(
                         s['ip'],
@@ -998,13 +998,13 @@ async def run_full_global_report(context, chat_id):
                         sec. decrypt(s['password'])
                     )
                     return res
-                except Exception as e: 
+                except Exception as e:
                     logger.error(f"❌ Stats check error for {s['ip']}: {e}")
                     return {'status': 'Offline', 'error': str(e)}
 
         results = await asyncio.gather(*[safe_check(s) for s in active_servers])
         report_lines = []
-        
+
         for srv, res in zip(active_servers, results):
             if isinstance(res, dict) and res.get('status') == 'Online':
                 cpu = ScoreEngine.make_bar(res. get('cpu', 0), 5)
@@ -1029,7 +1029,7 @@ async def run_full_global_report(context, chat_id):
             f"➖➖➖➖➖➖\n"
             + "\n".join(report_lines)
         )
-        
+
         if len(final_report) > 4000:
             for i in range(0, len(final_report), 4000):
                 await context.bot.send_message(
@@ -1039,17 +1039,17 @@ async def run_full_global_report(context, chat_id):
                 )
         else:
             await context.bot. send_message(chat_id, final_report, parse_mode='Markdown')
-        
+
         logger.info(f"✅ Full report sent ({len(report_lines)} servers)")
-            
-    except Exception as e: 
+
+    except Exception as e:
         logger.error(f"❌ run_full_global_report error:  {e}", exc_info=True)
         try:
             await context.bot. send_message(
                 chat_id,
                 f"❌ خطا در تولید گزارش:  {e}"
             )
-        except:
+        except Exception:
             pass
 
 
@@ -1060,8 +1060,8 @@ async def run_full_global_report(context, chat_id):
 async def admin_search_servers_by_uid_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """شروع جستجوی سرورهای یک کاربر خاص."""
     await safe_edit_message(
-        update, 
-        "🔎 **آیدی عددی کاربر را ارسال کنید:**", 
+        update,
+        "🔎 **آیدی عددی کاربر را ارسال کنید:**",
         reply_markup=keyboard. get_cancel_markup()
     )
     logger.info("🔎 Search servers by UID started")
@@ -1073,25 +1073,25 @@ async def admin_report_by_uid_handler(update: Update, context: ContextTypes.DEFA
     try:
         target_uid = int(update.message.text)
         servers = db.get_all_user_servers(target_uid)
-        
+
         if not servers:
             await update.message.reply_text("⚠️ این کاربر سروری ندارد.")
             logger.warning(f"⚠️ User {target_uid} has no servers")
             return ConversationHandler.END
-        
+
         txt = f"🖥 **سرورهای کاربر:** `{target_uid}`\n➖➖➖➖➖➖\n"
         kb = []
-        
+
         for s in servers:
             icon = "🟢" if s['is_active'] else "🔴"
             kb.append([InlineKeyboardButton(f"{icon} {s['name']}", callback_data=f"admin_detail_{s['id']}")])
-        
+
         kb. append([InlineKeyboardButton("🔙 بازگشت", callback_data='admin_panel_main')])
-        
+
         await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb))
         logger.info(f"✅ Servers for user {target_uid} displayed")
         return ConversationHandler.END
-        
+
     except ValueError:
         await update.message.reply_text("❌ آیدی نامعتبر.")
         logger.warning(f"⚠️ Invalid user ID format: {update.message.text}")
@@ -1118,8 +1118,8 @@ async def admin_user_servers_report(update: Update, context: ContextTypes.DEFAUL
         query = update.callback_query
         target_uid = int(query.data.split('_')[3])
         servers = db.get_all_user_servers(target_uid)
-        
-        if not servers: 
+
+        if not servers:
             await safe_callback_answer(query, "❌ سروری ندارد.", show_alert=True)
             logger.warning(f"⚠️ User {target_uid} has no servers")
             return
@@ -1127,11 +1127,11 @@ async def admin_user_servers_report(update: Update, context: ContextTypes.DEFAUL
         txt = f"👤 **گزارش سرورهای کاربر {target_uid}**\n\n"
         for s in servers:
             txt += f"🔹 **{s['name']}**\n   🌐 {s['ip']}\n   📡 {s['last_status']}\n\n"
-        
+
         kb = [[InlineKeyboardButton("🔙 بازگشت", callback_data=f"admin_u_manage_{target_uid}")]]
         await safe_edit_message(update, txt, reply_markup=InlineKeyboardMarkup(kb))
         logger.info(f"✅ User {target_uid} servers report displayed")
-        
+
     except Exception as e:
         logger.error(f"❌ Error in admin_user_servers_report:  {e}", exc_info=True)
         await safe_edit_message(update, f"❌ خطا:  {e}")

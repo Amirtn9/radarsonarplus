@@ -4,6 +4,15 @@
  const id=k=>document.getElementById(k);
  const pickServer=id('web-show-server'),pickConfig=id('web-show-config');
  if(!pickServer||!pickConfig)return;
+ const authMethod=id('new-server-auth-method');
+ function toggleAuthFields(){
+   const useKey=authMethod?.value==='private_key';
+   id('new-server-password-field').hidden=useKey;
+   id('new-server-private-key-fields').hidden=!useKey;
+   id('new-server-password').required=!useKey;
+   id('new-server-private-key').required=useKey;
+ }
+ authMethod?.addEventListener('change',toggleAuthFields);toggleAuthFields();
  function show(which){
    id('web-server-form').hidden=which!=='server';id('web-config-form').hidden=which!=='config';
    id('web-ops-result').textContent='';tabClick('web-create');
@@ -48,17 +57,22 @@
    if(!scan||scan.ip!==ip||scan.port!==port){id('web-ops-result').textContent='ابتدا اتصال SSH را بررسی کنید.';return;}
    if(scan.fingerprint!==expected){id('web-ops-result').textContent='اثر انگشت با مقدار تأییدشده مطابقت ندارد. سرور ثبت نشد.';return;}
    if(btn)btn.disabled=true;id('web-ops-result').textContent='در حال احراز هویت SSH و ثبت ایمن…';
+   const method=authMethod?.value||'password';
    const data={name:id('new-server-name').value,ip,location_type:id('new-server-location').value,
-     port,username:id('new-server-user').value,password:id('new-server-password').value,
+     port,username:id('new-server-user').value,auth_method:method,
+     password:method==='password'?id('new-server-password').value:null,
+     private_key:method==='private_key'?id('new-server-private-key').value:null,
+     key_passphrase:method==='private_key'?id('new-server-key-passphrase').value:null,
      ws_port:Number(id('new-server-ws').value),group_id:Number(id('new-server-group').value),expected_fingerprint:expected,
      install_agent:!!id('new-server-install-agent').checked};
    try{
-     const v=await jsonPost('/api/operations/server',data);id('new-server-password').value='';
+     const v=await jsonPost('/api/operations/server',data);
      id('web-ops-result').textContent=`سرور #${v.id} با SSH معتبر ثبت شد؛ مسیر: ${v.route==='direct'?'مرکزی':'Agent'}. `+(v.install_job_id?'نصب Agent به صف اضافه شد.':v.install_error?'سرور ثبت شد اما صف نصب در دسترس نبود؛ از جزئیات سرور دوباره اقدام کنید.':'نصب Agent درخواست نشده است.');
      if(v.install_job_id)watchInstall(v.id);
      resetScan(); id('new-server-fingerprint').value='';
    }catch(err){id('web-ops-result').textContent='ثبت ناموفق: '+err.message;}
-   finally{if(btn)btn.disabled=false;data.password='';}
+   finally{if(btn)btn.disabled=false;data.password='';data.private_key='';data.key_passphrase='';
+     id('new-server-password').value='';id('new-server-private-key').value='';id('new-server-key-passphrase').value='';}
  });
  async function loadGroups(){
    const host=id('web-group-list');if(!host)return;

@@ -277,14 +277,15 @@ def test_rollout_worker_recovers_reserved_rollback_after_process_restart():
     assert "rollback_attempts INTEGER NOT NULL DEFAULT 0" in source
 
 
-def test_service_monitor_schema_is_installed_by_bot_and_web_startup():
+def test_service_monitor_schema_is_installed_by_shared_versioned_migration_runner():
     root = Path(__file__).resolve().parents[1]
     bot = (root / "bot.py").read_text(encoding="utf-8")
     portal = (root / "pro_portal.py").read_text(encoding="utf-8")
-    assert "from service_monitor import install_schema as service_monitor_schema" in bot
-    assert '("service_monitor", service_monitor_schema)' in bot
-    assert "install_schema as install_service_monitor_schema" in portal
-    assert "await asyncio.to_thread(install_service_monitor_schema,store.db)" in portal
+    migrations = (root / "schema_migrations.py").read_text(encoding="utf-8")
+    assert "from schema_migrations import run_startup_migrations" in bot
+    assert "from schema_migrations import run_startup_migrations" in portal
+    assert '(10, "service_monitor", service_monitor_schema)' in migrations
+    assert "pg_advisory_lock" in migrations and "pg_advisory_unlock" in migrations
 
 
 def test_runtime_migration_disables_legacy_unmapped_service_restart_rules():

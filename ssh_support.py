@@ -3,6 +3,7 @@ import base64
 import fcntl
 import hashlib
 import ipaddress
+from ssh_credentials import paramiko_auth_kwargs
 import os
 from pathlib import Path
 import re
@@ -75,7 +76,7 @@ def describe_ssh_error(exc):
         return 'HOST_KEY_CHANGED: کلید SSH سرور تغییر کرده است؛ اثرانگشت را از کنسول سرور بررسی کنید.'
 
     if _safe_isinstance(exc, getattr(paramiko_module, 'AuthenticationException', ())):
-        return 'AUTH_FAILED: نام کاربری، رمز یا روش ورود SSH پذیرفته نشد.'
+        return 'AUTH_FAILED: نام کاربری یا روش احراز هویت SSH پذیرفته نشد.'
 
     no_valid_connections = getattr(
         ssh_exception_module,
@@ -124,9 +125,10 @@ def connect_ssh(host, port, username, password, relay_node=None):
             if relay_node is not None:
                 from ssh_relay import RelaySocket
                 relay_sock = RelaySocket.connect(relay_node,host,port)
-            client.connect(host, port=port, username=str(username).strip(), password=password,
+            auth_kwargs = paramiko_auth_kwargs(password, paramiko)
+            client.connect(host, port=port, username=str(username).strip(),
                            sock=relay_sock, timeout=10, banner_timeout=15, auth_timeout=15,
-                           allow_agent=False, look_for_keys=False)
+                           allow_agent=False, look_for_keys=False, **auth_kwargs)
         except BaseException:
             if relay_sock is not None: relay_sock.close()
             raise
@@ -202,8 +204,10 @@ def authenticate_candidate(candidate, expected, username, password, relay_node=N
         if relay_node is not None:
             from ssh_relay import RelaySocket
             relay_sock = RelaySocket.connect(relay_node,candidate['host'],candidate['port'])
-        client.connect(candidate['host'],port=ssh_port(candidate['port']),username=str(username).strip(),password=password,
-            sock=relay_sock,timeout=10,banner_timeout=15,auth_timeout=15,allow_agent=False,look_for_keys=False)
+        auth_kwargs = paramiko_auth_kwargs(password, paramiko)
+        client.connect(candidate['host'],port=ssh_port(candidate['port']),username=str(username).strip(),
+            sock=relay_sock,timeout=10,banner_timeout=15,auth_timeout=15,allow_agent=False,look_for_keys=False,
+            **auth_kwargs)
     finally:
         # Close Paramiko's transport *before* the underlying WebSocket.
         # Previously closing the WebSocket while Paramiko was still reading

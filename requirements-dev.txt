@@ -1,4 +1,4 @@
-# Optional test dependencies, not used by production install.
-pytest>=8.0,<9.0
-pytest-asyncio>=0.23,<2.0
-httpx>=0.27,<1.0
+# CI and local regression suite.
+pytest==9.2.0
+pytest-asyncio==1.3.0
+httpx==0.28.1

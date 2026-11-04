@@ -439,7 +439,7 @@ async def alert_admin(context, text):
     if not SUPER_ADMIN_ID: return
     try:
         await context.bot.send_message(chat_id=SUPER_ADMIN_ID, text=text, parse_mode='Markdown')
-    except: pass
+    except Exception: pass
 
 async def server_report_job(context):
     if 'server-report' in _ACTIVE_JOB_TYPES:return

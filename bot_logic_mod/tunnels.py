@@ -46,7 +46,7 @@ async def tunnel_list_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.callback_query:
             try:
                 await update.callback_query.message.reply_text("❌ خطایی در نمایش منو رخ داد. لطفاً دوباره تلاش کنید.")
-            except: pass
+            except Exception: pass
 
 async def perform_fast_scan(context, uid, mode):
     """تست سریع کانفیگ‌ها قبل از نمایش لیست"""
@@ -107,7 +107,7 @@ async def perform_fast_scan(context, uid, mode):
                             )
                         else:
                             cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
-            except:
+            except Exception:
                 pass # اگر خطا داد، وضعیت قبلی بماند یا Fail شود
         conn.commit()
 
@@ -128,7 +128,7 @@ async def show_tunnels_by_mode(update: Update, context: ContextTypes.DEFAULT_TYP
     page = 1
     if len(data_parts) > 3:
         try: page = int(data_parts[3])
-        except: page = 1
+        except Exception: page = 1
 
     delete_mode = False
     if len(data_parts) > 4:
@@ -245,7 +245,7 @@ async def manage_single_sub_menu(update: Update, context: ContextTypes.DEFAULT_T
                 f"⏳ انقضا: <code>{exp_str}</code>\n"
                 f"➖➖➖➖➖➖➖➖➖➖\n"
             )
-    except: pass
+    except Exception: pass
 
     per_page = 8
     total_items = len(items)
@@ -330,7 +330,7 @@ async def delete_full_subscription(update: Update, context: ContextTypes.DEFAULT
     # 2. Report actual result, never announce a deletion denied by ownership.
     try:
         await safe_callback_answer(query, "✅ اشتراک حذف شد." if sub else "❌ اشتراک پیدا نشد یا اجازه حذف ندارید.", show_alert=True)
-    except: pass
+    except Exception: pass
     
     # 3. رفرش لیست ساب‌ها (نکته مهم: استفاده از custom_data به جای تغییر query.data)
     await show_tunnels_by_mode(update, context, custom_data="list_mode_sub")
@@ -393,14 +393,14 @@ async def background_update_all(context, uid, configs, monitor):
                         )
                     else:
                         cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
-                except:
+                except Exception:
                     cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
             conn.commit()
 
     # پیام اتمام
     try:
         await context.bot.send_message(chat_id=uid, text="✅ **وضعیت تمام کانفیگ‌ها بروزرسانی شد.**")
-    except: pass
+    except Exception: pass
 async def handle_single_config_auto(update: Update, context: ContextTypes.DEFAULT_TYPE, link: str):
     """پردازش خودکار کانفیگ تکی بدون پرسش اضافی"""
     uid = shared_uid(update)
@@ -467,7 +467,7 @@ async def handle_single_config_auto(update: Update, context: ContextTypes.DEFAUL
         except Exception as e:
             logger.error(f"Auto Add Error: {e}")
             try: await status_msg.edit_text(f"❌ خطا: {e}")
-            except: pass
+            except Exception: pass
         finally:
              if USER_ACTIVE_TASKS.get(uid) is asyncio.current_task(): USER_ACTIVE_TASKS.pop(uid,None)
 
@@ -638,13 +638,13 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
     uid = shared_uid(update)
     try:
         cid = int(query.data.split('_')[2])
-    except:
+    except Exception:
         await safe_callback_answer(query, "❌ خطا در دریافت شناسه کانفیگ.", show_alert=True)
         return
     
     # نمایش لودینگ روی دکمه (بدون تغییر پیام اصلی)
     try: await safe_callback_answer(query, "🔄 آغاز تست دقیق (۱۰ مگابایت)...", cache_time=0)
-    except: pass
+    except Exception: pass
 
     # 1. دریافت اطلاعات کانفیگ و سرور مانیتورینگ
     with db.get_connection() as (conn, cur):
@@ -765,7 +765,7 @@ async def view_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         try:
             parsed = json.loads(content)
             content = json.dumps(parsed, indent=2)
-        except: pass
+        except Exception: pass
 
     # اگر خیلی طولانی بود فایل بده، وگرنه متن
     if len(content) > 4000:
@@ -777,7 +777,7 @@ async def view_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.message.reply_text(f"📝 **کد کانفیگ:**\n\n`{content}`", parse_mode='Markdown')
     
     try: await safe_callback_answer(query, )
-    except: pass
+    except Exception: pass
 
 async def delete_config_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -938,7 +938,7 @@ async def show_config_details(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     try:
         cid = int(query.data.split('_')[2])
-    except:
+    except Exception:
         await safe_callback_answer(query, "❌ خطا در شناسه کانفیگ")
         return
 
@@ -948,7 +948,7 @@ async def show_config_details(update: Update, context: ContextTypes.DEFAULT_TYPE
         
     if not cfg:
         try: await safe_callback_answer(query, "❌ کانفیگ یافت نشد یا حذف شده است.", show_alert=True)
-        except: pass
+        except Exception: pass
         await tunnel_list_menu(update, context)
         return
 
@@ -1076,7 +1076,7 @@ async def delete_item_from_list_action(update: Update, context: ContextTypes.DEF
     
     try:
         await safe_callback_answer(query, "🗑 حذف شد.", show_alert=False)
-    except: pass
+    except Exception: pass
     
     # 2. محاسبه اینکه آیا صفحه فعلی هنوز آیتم دارد یا خیر
     # اگر آخرین آیتم صفحه را حذف کرده باشیم، باید به صفحه قبل برویم
@@ -1196,7 +1196,7 @@ async def show_account_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         join_date = datetime.strptime(user['added_date'], '%Y-%m-%d %H:%M:%S')
         j_join = jdatetime.date.fromgregorian(date=join_date.date())
         join_str = f"{j_join.day} {jdatetime.date.j_months_fa[j_join.month - 1]} {j_join.year}"
-    except:
+    except Exception:
         join_str = "نامشخص"
 
     access, time_left = db.check_access(uid, SUPER_ADMIN_ID)
@@ -1242,12 +1242,12 @@ async def refresh_conf_dash_action(update: Update, context: ContextTypes.DEFAULT
     # 1. بررسی اینکه آیا کاربر تسک فعالی دارد یا خیر (جلوگیری از اسپم توسط یک نفر)
     if uid in USER_ACTIVE_TASKS and not USER_ACTIVE_TASKS[uid].done():
         try: await safe_callback_answer(query, "⚠️ عملیات قبلی هنوز تمام نشده است!", show_alert=True)
-        except: pass
+        except Exception: pass
         return
 
     # نمایش پیام موقت
     try: await safe_callback_answer(query, "🚀 تست در پس‌زمینه شروع شد...", cache_time=1)
-    except: pass
+    except Exception: pass
     
     status_msg = await query.message.reply_text(
         "⏳ **در حال بروزرسانی وضعیت (Ping Only)...**\n"
@@ -1272,7 +1272,7 @@ async def refresh_conf_dash_action(update: Update, context: ContextTypes.DEFAULT
             
             # حذف پیام انتظار
             try: await status_msg.delete()
-            except: pass
+            except Exception: pass
             
             # بازگشت خودکار به داشبورد بروز شده (به کاربر اطلاع می‌دهد تمام شد)
             # چون update قدیمی است، باید پیام جدید بفرستیم یا ادیت کنیم
@@ -1281,7 +1281,7 @@ async def refresh_conf_dash_action(update: Update, context: ContextTypes.DEFAULT
             
             # ارسال نوتیفیکیشن که تمام شد
             try: await context.bot.send_message(chat_id=uid, text="✅ **تست پینگ همگانی به پایان رسید.**")
-            except: pass
+            except Exception: pass
 
         except Exception as e:
             logger.error(f"Background Ping Error: {e}")
@@ -1332,7 +1332,7 @@ async def run_quick_ping_check(context, uid, configs, monitor):
                         )
                     else:
                         cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
-                except:
+                except Exception:
                     cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
             conn.commit()
 

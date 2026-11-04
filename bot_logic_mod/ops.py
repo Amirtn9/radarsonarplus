@@ -83,7 +83,7 @@ async def auto_reboot_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             freq_map = {1: "هر روز", 2: "هر ۲ روز", 7: "هفتگی", 14: "هر ۲ هفته", 30: "ماهانه"}
             freq_txt = freq_map.get(days, f"هر {days} روز")
             status_txt = f"✅ {freq_txt} - ساعت {time_str}"
-        except:
+        except Exception:
             status_txt = "⚠️ نامعتبر"
 
     txt = (
@@ -104,7 +104,7 @@ async def ask_reboot_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """پرسیدن ساعت از کاربر"""
     try:
         await safe_callback_answer(update.callback_query, )
-    except:
+    except Exception:
         pass
 
     txt = (
@@ -183,7 +183,7 @@ async def save_auto_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         await safe_callback_answer(query, msg, show_alert=True)
-    except:
+    except Exception:
         pass
 
     await auto_update_menu(update, context)
@@ -353,7 +353,7 @@ async def admin_approve_payment_action(update: Update, context: ContextTypes.DEF
         await safe_edit_message(update, f"✅ پرداخت #{pay_id} تایید شد.\nسرویس {plan_name} برای کاربر فعال گردید.")
         try:
             await context.bot.send_message(chat_id=user_id, text=f"🎉 **تبریک! پرداخت شما تایید شد.**\n\n✅ اشتراک **{plan_name}** فعال شد.")
-        except:
+        except Exception:
             pass
     else:
         await safe_edit_message(update, "❌ خطا: این پرداخت قبلاً تایید شده است.")
@@ -404,7 +404,7 @@ async def dashboard_sort_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     try:
         await safe_callback_answer(query, )
-    except:
+    except Exception:
         pass
 
     # حالت فعلی رو می‌خونیم
@@ -457,7 +457,7 @@ async def monitor_settings_panel(update: Update, context: ContextTypes.DEFAULT_T
     
     if update.callback_query:
         try: await safe_callback_answer(update.callback_query, )
-        except: pass
+        except Exception: pass
 
     # بررسی اینکه آیا سرور مانیتورینگ وجود دارد یا خیر
     with db.get_connection() as (conn, cur):
@@ -515,7 +515,7 @@ async def get_iran_port(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['iran_port'] = port
         await update.message.reply_text("👤 **نام کاربری (Username) سرور ایران:**\n(معمولاً root)", reply_markup=keyboard.get_cancel_markup())
         return GET_IRAN_USER
-    except:
+    except Exception:
         await update.message.reply_text("❌ لطفاً عدد وارد کنید.")
         return GET_IRAN_PORT
 

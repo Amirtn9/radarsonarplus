@@ -29,6 +29,10 @@ def install_schema(db):
     db.execute('''CREATE UNIQUE INDEX IF NOT EXISTS web_agent_one_pending
             ON web_agent_install_jobs(server_id) WHERE state IN ('pending','running')''')
     # A running operation may have changed the remote host before the crash.
+
+
+def recover_interrupted_jobs(db):
+    """Mark stale in-flight installs for operator review on every process start."""
     db.execute('''UPDATE web_agent_install_jobs SET state='failed',stage='interrupted',
         error_code='WORKER_RESTARTED_VERIFY_BEFORE_RETRY',updated_at=NOW()
         WHERE state='running' AND updated_at < NOW()-INTERVAL '30 minutes' ''')

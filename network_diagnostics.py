@@ -14,7 +14,7 @@ def checkhost_ping(host):
     try:
         target=ipaddress.ip_address(str(host))
         if not target.is_global:return 'unsupported_target'
-        headers={'Accept':'application/json','User-Agent':'RadarSonarPlus/6.9'}
+        headers={'Accept':'application/json','User-Agent':'RadarSonarPlus/6.9.2'}
         response=requests.get('https://check-host.net/check-ping',
                               params={'host':str(target),'max_nodes':5},
                               headers=headers,timeout=4)

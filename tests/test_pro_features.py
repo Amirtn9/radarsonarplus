@@ -72,7 +72,7 @@ def test_api_declares_auth_dependency_and_frontend_avoids_html_injection():
 
 def test_bot_integration_has_pro_jobs_and_menu_handlers():
     bot=(ROOT/'bot.py').read_text();dispatch=(ROOT/'dispatcher.py').read_text();kb=(ROOT/'keyboard.py').read_text()
-    assert 'await _startup_step("pro_store", pro_schema, db)' in bot
+    assert 'await _startup_step("schema_migrations", run_startup_migrations, db)' in bot
     assert 'STARTUP_STAGE_FAILED stage=%s' in bot
     assert 'PostgreSQL readiness verified' in bot
     for name in ('multi_probe_job','digest_job','cleanup_job'): assert name in bot
