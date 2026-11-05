@@ -23,7 +23,7 @@ import ssl
 from datetime import datetime, timedelta
 import logging
 
-AGENT_VERSION = '6.9.2'
+AGENT_VERSION = '6.9.3'
 AGENT_PROTOCOL = 2
 
 logger = logging.getLogger('sonar.agent')  # ✅ خودکار به سیستم متصل می‌شه
@@ -53,7 +53,8 @@ WORK_DIR = os.environ.get("SONAR_AGENT_WORK_DIR", os.path.join(USER_HOME, "xray_
 XRAY_BIN = os.path.join(WORK_DIR, "xray")
 LOG_FILE = os.path.join(USER_HOME, "agent_debug.log")
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-TEST_URL = "http://www.google.com/generate_204"
+TEST_URL = "https://www.gstatic.com/generate_204"
+DEFAULT_HEALTH_URLS = (TEST_URL, "https://cp.cloudflare.com/generate_204", "https://www.google.com/generate_204")
 RUNTIME_LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_runtime.lock.json")
 
 if not os.path.exists(WORK_DIR):
@@ -111,7 +112,7 @@ def _curl_failure(exitcode, status=None):
 def _health_urls():
     # Operator-configured endpoints; absence preserves the original default.
     raw=os.getenv('SONAR_AGENT_HEALTH_URLS','')
-    if not raw:return (TEST_URL,)
+    if not raw:return DEFAULT_HEALTH_URLS
     urls=[]
     for value in raw.split(',')[:4]:
         try:
@@ -122,7 +123,7 @@ def _health_urls():
             urls.append(value.strip())
         except ValueError:
             continue
-    return tuple(urls) if urls else (TEST_URL,)
+    return tuple(urls) if urls else DEFAULT_HEALTH_URLS
 
 def check_port_open(port, timeout=5):
     start = time.time()
@@ -694,11 +695,11 @@ def _lowprio_shell(cmd: str) -> str:
 def test_config_logic(outbound, dl_size_mb=0.5):
     """لاجیک اصلی تست کانفیگ (Ping + optional Download Speed)."""
     if not os.path.isfile(XRAY_BIN) or not os.path.isfile(os.path.join(WORK_DIR,'geoip.dat')):
-        return {"status":"Fail","msg":"XRAY_NOT_READY: install the pinned runtime and geodata","ping":0,"jitter":0,"down":None,"up":None}
+        return {"status":"Unknown","msg":"XRAY_NOT_READY: install the pinned runtime and geodata","ping":0,"jitter":0,"down":None,"up":None}
     try:
         local_port = get_free_port()
     except (OSError,RuntimeError):
-        return {"status":"Fail","msg":"XRAY_TEST_PORT_UNAVAILABLE",
+        return {"status":"Unknown","msg":"XRAY_TEST_PORT_UNAVAILABLE",
                 "error_code":"XRAY_TEST_PORT_UNAVAILABLE","ping":0,"jitter":0,
                 "down":None,"up":None,"score":0}
     conf_file = os.path.join(WORK_DIR, f"config_{local_port}_{os.urandom(6).hex()}.json")
@@ -717,7 +718,7 @@ def test_config_logic(outbound, dl_size_mb=0.5):
 
         proc = subprocess.Popen(_lowprio_prefix() + [XRAY_BIN, "-c", conf_file], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if not check_port_open(local_port):
-            return {"status": "Fail", "msg": "Core Start Fail", "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
+            return {"status": "Unknown", "msg": "XRAY_CORE_START_FAILED", "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
 
         # socks5h delegates hostname resolution to Xray/remote egress.
         # socks5:// performed resolution locally, causing false failures.
@@ -725,24 +726,42 @@ def test_config_logic(outbound, dl_size_mb=0.5):
         pings = []
         failure_codes=[]
 
-        # Ping Test (3 tries)
-        for _ in range(3):
-            # Distinguish unreachable measurement targets from broken Xray.
-            for target_url in _health_urls():
-                try:
-                    cmd = _lowprio_prefix() + ["curl", "--proxy", prox, "--silent", "--show-error",
-                                                "--output", "/dev/null", "--write-out", "%{http_code} %{time_total}",
-                                                "--max-time", "4", target_url]
-                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
-                    parts = res.stdout.split()
-                    if res.returncode == 0 and len(parts) == 2 and parts[0] == "204":
-                        pings.append(float(parts[1]) * 1000)
-                        break
-                    failure_codes.append(_curl_failure(res.returncode,parts[0] if parts else None))
-                except subprocess.TimeoutExpired:
-                    failure_codes.append('TIMEOUT')
-                except (ValueError, OSError):
-                    failure_codes.append('HTTP_CONNECTION_ERROR')
+        # A blocked measurement site is not proof that a WireGuard egress is
+        # broken. Try independent HTTPS destinations within one bounded budget,
+        # then reuse the successful destination for comparable latency samples.
+        targets = list(_health_urls())
+        successful_target = None
+        deadline = time.monotonic() + 18
+        for attempt in range(6):
+            remaining = deadline - time.monotonic()
+            if remaining < 1 or len(pings) >= 3:
+                break
+            target_url = successful_target or (targets.pop(0) if targets else None)
+            if target_url is None:
+                break
+            maximum = max(1, min(6, int(remaining)))
+            try:
+                cmd = _lowprio_prefix() + ["curl", "--proxy", prox, "--noproxy", "",
+                    "--silent", "--show-error", "--output", "/dev/null",
+                    "--write-out", "%{http_code} %{time_total}", "--connect-timeout", "4",
+                    "--max-time", str(maximum), target_url]
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=maximum+2, check=False)
+                parts = res.stdout.split()
+                if res.returncode == 0 and len(parts) == 2 and parts[0] == "204":
+                    latency = float(parts[1]) * 1000
+                    if not math.isfinite(latency) or latency <= 0:
+                        raise ValueError('Invalid measured latency')
+                    pings.append(latency)
+                    successful_target = target_url
+                else:
+                    failure_codes.append(_curl_failure(res.returncode, parts[0] if parts else None))
+                    successful_target = None
+            except subprocess.TimeoutExpired:
+                failure_codes.append('TIMEOUT')
+                successful_target = None
+            except (ValueError, OSError):
+                failure_codes.append('HTTP_CONNECTION_ERROR')
+                successful_target = None
 
         if not pings:
             code=('XRAY_ERROR' if proc.poll() is not None else

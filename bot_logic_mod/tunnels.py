@@ -7,6 +7,20 @@ from bot_logic_mod.base import *  # noqa
 from monitor_fleet import select_monitor_in_cursor
 from access_policy import valid_subscription_url, monitoring_setting
 
+def persist_config_results(uid, configs, results):
+    """All legacy test buttons feed the same history/alert pipeline.
+
+    Transport/core errors are not failed configuration measurements.
+    """
+    from pro_jobs import _record
+    for cfg, (ok,payload) in zip(configs,results):
+        if not ok:
+            continue
+        result=payload if isinstance(payload,dict) else extract_safe_json(payload)
+        if isinstance(result,dict) and result.get('status') in ('OK','Fail'):
+            _record(uid,cfg['id'],'default',result)
+
+
 # 🚇 TUNNEL CONFIG MANAGER (ADVANCED)
 # ==============================================================================
 async def tunnel_list_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -88,28 +102,7 @@ async def perform_fast_scan(context, uid, mode):
     # اجرای همزمان همه تست‌ها
     results = await asyncio.gather(*tasks)
 
-    # آپدیت دیتابیس
-    with db.get_connection() as (conn, cur):
-        for idx, (ok, output) in enumerate(results):
-            cid = configs[idx]['id']
-            try:
-                if ok:
-                    import re
-                    json_match = re.search(r'(\{.*\})', output.strip(), re.DOTALL)
-                    if json_match:
-                        res = json.loads(json_match.group(1))
-                        if res.get("status") == "OK":
-                            ping = res.get('ping', 0)
-                            score = res.get('score', 0)
-                            cur.execute(
-                                "UPDATE tunnel_configs SET last_status='OK', last_ping=%s, quality_score=%s WHERE id=%s AND owner_id=%s",
-                                (ping, score, cid, uid)
-                            )
-                        else:
-                            cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
-            except Exception:
-                pass # اگر خطا داد، وضعیت قبلی بماند یا Fail شود
-        conn.commit()
+    await run_sync(persist_config_results,uid,configs,results)
 
 # تابع جدید برای نمایش لیست بر اساس مود انتخاب شده
 async def show_tunnels_by_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, custom_data=None):
@@ -380,22 +373,7 @@ async def background_update_all(context, uid, configs, monitor):
         
         results = await asyncio.gather(*tasks)
         
-        # ثبت نتایج در دیتابیس
-        with db.get_connection() as (conn, cur):
-            for idx, (ok, output) in enumerate(results):
-                cid = chunk[idx]['id']
-                try:
-                    res = json.loads(output.strip())
-                    if res.get("status") == "OK":
-                        cur.execute(
-                            "UPDATE tunnel_configs SET last_status='OK', last_ping=%s, last_jitter=%s, quality_score=%s WHERE id=%s AND owner_id=%s",
-                            (res.get('ping',0), res.get('jitter',0), 10, cid, uid)
-                        )
-                    else:
-                        cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
-                except Exception:
-                    cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
-            conn.commit()
+        await run_sync(persist_config_results,uid,chunk,results)
 
     # پیام اتمام
     try:
@@ -687,6 +665,7 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not ok or not isinstance(res, dict):
             res = {"status": "Error", "msg": "Agent unreachable / Invalid response"}
         
+        await run_sync(persist_config_results,uid,[cfg],[(ok,res)])
         # 7. تحلیل نتایج و نمایش گزارش
         if res.get("status") == "OK":
             ping = res.get('ping', 0)
@@ -700,16 +679,6 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
             elif score >= 5: q_icon = "⚖️ معمولی"
             else: q_icon = "⚠️ ضعیف"
             
-            # 🔧 نسخه ۴.۲: کوئری در ترد جداگانه، نه روی event loop
-            def _save_ok():
-                with db.get_connection() as (conn, cur):
-                    cur.execute(
-                        "UPDATE tunnel_configs SET last_status='OK', last_ping=%s, last_jitter=%s, last_speed_up=%s, last_speed_down=%s, quality_score=%s WHERE id=%s AND owner_id=%s",
-                        (ping, jitter, up, down, score, cid, uid)
-                    )
-                    conn.commit()
-            await run_sync(_save_ok)
-            
             report = (
                 f"✅ **نتیجه تست دقیق (Heavy)** 🟢\n"
                 f"➖➖➖➖➖➖➖➖➖➖\n"
@@ -721,24 +690,19 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"📤 **Upload:** `{up}`"
             )
         else:
-            # ثبت خطا در دیتابیس (🔧 v4.2: خارج از event loop)
-            def _save_fail():
-                with db.get_connection() as (conn, cur):
-                    cur.execute("UPDATE tunnel_configs SET last_status='Fail', quality_score=0 WHERE id=%s AND owner_id=%s", (cid, uid))
-                    conn.commit()
-            await run_sync(_save_fail)
-            
-            error_msg = res.get('msg', 'Timeout/Filtering')
+            from tunnel_logic import probe_note
+            error_msg = probe_note(res)
+            headline='⛔️ **عدم برقراری ارتباط** 🔴' if res.get('status')=='Fail' else '⚪ **سنجش معتبر انجام نشد؛ وضعیت قبلی حفظ شد**'
             report = (
-                f"⛔️ **عدم برقراری ارتباط** 🔴\n"
+                f"{headline}\n"
                 f"➖➖➖➖➖➖➖➖➖➖\n"
                 f"🏷 نام: `{cfg['name']}`\n\n"
                 f"❌ خطا: `{error_msg}`\n"
-                f"💡 _ممکن است سرور پاسخ ندهد، تایم‌اوت شده باشد یا آی‌پی فیلتر باشد._"
+                f"💡 _این نتیجه مربوط به مسیر همین نود است؛ خطای Agent اثبات قطعی کانفیگ نیست._"
             )
             
     except Exception as e:
-        report = f"❌ خطای سیستمی در اجرای تست:\n`{e}`"
+        report = f"⚪ سنجش کامل نشد ({type(e).__name__})؛ ابتدا Agent و مسیر نود را بررسی کنید."
 
     # استفاده از ماژول کیبورد
     reply_markup = keyboard.config_test_result_kb(
@@ -1313,35 +1277,14 @@ async def run_quick_ping_check(context, uid, configs, monitor):
     
     # تعریف تابع کمکی برای آپدیت دیتابیس در ترد جداگانه
     def db_batch_update(results_chunk, config_chunk):
-        with db.get_connection() as (conn, cur):
-            for idx, (ok, output) in enumerate(results_chunk):
-                cid = config_chunk[idx]['id']
-                try:
-                    res = extract_safe_json(output)
-                    if res and res.get("status") == "OK":
-                        ping = res.get('ping', 0)
-                        jitter = res.get('jitter', 0)
-                        new_score = 10
-                        if ping > 1000: new_score = 2
-                        elif ping > 500: new_score = 5
-                        elif ping > 200: new_score = 8
-                        
-                        cur.execute(
-                            "UPDATE tunnel_configs SET last_status='OK', last_ping=%s, last_jitter=%s, quality_score=%s WHERE id=%s AND owner_id=%s",
-                            (ping, jitter, new_score, cid, uid)
-                        )
-                    else:
-                        cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
-                except Exception:
-                    cur.execute("UPDATE tunnel_configs SET last_status='Fail' WHERE id=%s AND owner_id=%s", (cid, uid))
-            conn.commit()
+        persist_config_results(uid,config_chunk,results_chunk)
 
     async def _probe(cfg):
         """یک تست سبک روی وب‌سوکت، با رعایت صف عادلانه."""
         async with tunnel_manager.global_sem, tunnel_manager._user_sem(uid):
             try:
                 ok, data = await ServerMonitor.ws_test_config(
-                    ip, ws_port, token, cfg['link'], size=0.2, timeout=20
+                    ip, ws_port, token, cfg['link'], size=0.2, timeout=35
                 )
             except Exception as e:
                 logger.warning("quick ping failed for %s: %s", cfg.get('id'), e)

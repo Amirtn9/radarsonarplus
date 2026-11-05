@@ -1,7 +1,13 @@
 'use strict';
 // Only use Telegram-signed initData; never store credentials in URL or browser storage.
 let tg=window.Telegram?.WebApp||null;
-let auth=tg?.initData||'';
+// The signed launch payload is available even when Telegram's CDN is slow.
+// It is still verified by the server; initDataUnsafe is never authentication.
+function signedLaunchData(){
+ try{return new URLSearchParams(window.location?.hash?.replace(/^#/,'')||'').get('tgWebAppData')||'';}catch{return '';}
+}
+let auth=tg?.initData||signedLaunchData();
+function isMiniApp(){return !!auth||!!signedLaunchData()||!!(tg?.platform&&tg.platform!=='unknown');}
 let telegramSdkPromise=null;
 let panelBooting=false;
 let panelBootComplete=false;
@@ -9,7 +15,7 @@ let panelAuthenticated=false;
 let lateTelegramReady=false;
 
 function loadTelegramWebApp(timeoutMs=1800){
- if(window.Telegram?.WebApp){tg=window.Telegram.WebApp;auth=String(tg.initData||'');return Promise.resolve(tg);}
+ if(window.Telegram?.WebApp){tg=window.Telegram.WebApp;auth=String(tg.initData||auth||signedLaunchData());return Promise.resolve(tg);}
  if(telegramSdkPromise)return telegramSdkPromise;
  telegramSdkPromise=new Promise(resolve=>{
    let settled=false;
@@ -21,7 +27,7 @@ function loadTelegramWebApp(timeoutMs=1800){
    };
    script.onload=()=>{
      const loaded=window.Telegram?.WebApp||null;
-     if(loaded){tg=loaded;auth=String(loaded.initData||'');}
+     if(loaded){tg=loaded;auth=String(loaded.initData||auth||signedLaunchData());}
      if(!settled)finish(loaded);
      else if(loaded&&auth){
        lateTelegramReady=true;
@@ -46,7 +52,7 @@ async function request(path,options={}){
   // Use signed Telegram initData until it is exchanged for an HttpOnly cookie session.
   const method=String(options.method||'GET').toUpperCase();
   const response=await fetch(path,{...options,credentials:'same-origin',cache:'no-store',headers:{...(auth&&!cookieAuth?{Authorization:'tma '+auth}:{}),...((!auth||cookieAuth)&&method!=='GET'&&method!=='HEAD'?{'X-CSRF-Token':csrfToken}:{}),...options.headers}});
-  if(response.status===401){if(!auth){$('web-auth').hidden=false;}else{const banner=$('session-warning');if(banner)banner.hidden=false;}}
+  if(response.status===401){if(!isMiniApp()){$('web-auth').hidden=false;}else{const banner=$('session-warning');if(banner)banner.hidden=false;}}
   if(!response.ok){let message=`خطای ارتباط (${response.status})`;try{const d=await response.json();message=d.detail||message;}catch{}throw Error(message);}
   if(options.raw)return response;
   return response.json();
@@ -171,7 +177,7 @@ async function loadTeam(){const host=$('team-list');host.replaceChildren(elem('p
 async function loadAudit(){const host=$('audit-list');host.replaceChildren(elem('p','در حال دریافت...','muted'));
  try{const result=await request('/api/audit');host.replaceChildren();if(!result.length)host.append(elem('p','تاریخچه‌ای ثبت نشده است.','muted'));result.forEach(row=>host.append(simpleEntry(row.event+' | '+row.target,'کاربر '+row.actor_id+' • '+row.created_at)));}
  catch(e){host.replaceChildren(elem('p',e.message,'bad'));}}
-async function loadPreferences(){try{const p=await request('/api/preferences');$('daily_digest').checked=!!p.daily_digest;$('multi_probe').checked=!!p.multi_probe;const rules=await request('/api/rules');const host=$('rule-list');host.replaceChildren();if(!rules.length)host.append(elem('p','قانون هشدار اختصاصی ثبت نشده است.','muted'));rules.forEach(r=>host.append(simpleEntry(r.event,r.action+' | '+(r.enabled?'فعال':'غیرفعال'))));}catch(e){toast(e.message);}}
+async function loadPreferences(){window.SonarConfigAlerts?.load();try{const p=await request('/api/preferences');$('daily_digest').checked=!!p.daily_digest;$('multi_probe').checked=!!p.multi_probe;const rules=await request('/api/rules');const host=$('rule-list');host.replaceChildren();if(!rules.length)host.append(elem('p','قانون هشدار اختصاصی ثبت نشده است.','muted'));rules.forEach(r=>host.append(simpleEntry(r.event,r.action+' | '+(r.enabled?'فعال':'غیرفعال'))));}catch(e){toast(e.message);}}
 async function loadHealth(){if(!state.admin)return;const host=$('health-output');host.textContent='در حال بررسی سلامت...';try{const data=await request('/api/diagnostics/health');host.textContent=JSON.stringify(data,null,2);}catch(e){host.textContent=e.message;}}
 async function supportZip(){const days=Number($('diagnostic-days')?.value||7),remote=$('diagnostic-remote')?.checked!==false;try{$('download-btn').disabled=true;toast(`در حال جمع‌آوری لاگ کامل ${days} روز اخیر...`);const result=await request(`/api/diagnostics/bundle?days=${days}&include_remote=${remote}`,{raw:true});const blob=await result.blob();const url=URL.createObjectURL(blob);const a=elem('a');a.href=url;a.download=`sonar-v6.9-full-logs-${days}d.zip`;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);toast('ZIP آماده شد؛ فایل‌های اصلی روی سرور حذف یا تغییر نکرده‌اند.');}catch(e){toast(e.message);}finally{$('download-btn').disabled=false;}}
 async function drawTrend(item){try{const points=await request('/api/metrics/'+Number(item.id)+'?days=7');$('trend-title').textContent='تاریخچه کیفیت: '+String(item.name||item.id);const vals=points.filter(x=>x.ok&&x.ping!=null&&Number.isFinite(Number(x.ping))&&Number(x.ping)>0).slice(0,80).reverse();const canvas=$('trend-canvas'),ctx=canvas.getContext?.('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.fillStyle='#111a28';ctx.fillRect(0,0,w,h);
@@ -212,6 +218,7 @@ async function boot(){
    await prepareMiniAppSession();
    try{
      const me=await request('/api/me');
+     if(!auth&&!cookieAuth){const session=await request('/api/web/csrf');csrfToken=session.csrf||'';cookieAuth=true;}
      state.admin=!!me.admin;
      $('admin-tab').hidden=!me.admin;
      if($('balancer-tab'))$('balancer-tab').hidden=!me.admin;
@@ -219,11 +226,13 @@ async function boot(){
      if($('dashboard-balancer-btn'))$('dashboard-balancer-btn').hidden=!me.admin;
      if($('dashboard-balancer-quick'))$('dashboard-balancer-quick').hidden=!me.admin;
      $('web-auth').hidden=true;
+     if($('session-warning'))$('session-warning').hidden=true;
      panelAuthenticated=true;
-     setStatus('متصل');tabClick('overview');
+     setStatus('متصل');const initialView=new URLSearchParams(window.location?.search||'').get('view');tabClick(initialView&&Object.prototype.hasOwnProperty.call(titles,initialView)?initialView:'overview');
    }catch(e){
      setStatus('اتصال ناموفق',false);
-     if(!auth)$('web-auth').hidden=false;else toast(e.message);
+     $('web-auth').hidden=isMiniApp();
+     if(isMiniApp()){if($('session-warning')){const banner=$('session-warning');banner.textContent='ورود خودکار انجام نشد: '+e.message+'؛ مینی‌اپ را از دکمه همین ربات دوباره باز کنید.';banner.hidden=false;}toast(e.message);}
      $('last-test').textContent=e.message;
    }
  }finally{

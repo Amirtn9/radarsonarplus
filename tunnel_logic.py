@@ -54,6 +54,21 @@ GLOBAL_TEST_LIMIT = int(_os.getenv("SONAR_GLOBAL_TEST_LIMIT", "8"))
 PER_USER_TEST_LIMIT = int(_os.getenv("SONAR_USER_TEST_LIMIT", "2"))
 
 
+def probe_note(data):
+    """Safe, actionable diagnostics; never echo a raw config or core exception."""
+    code=(data or {}).get('error_code') or (data or {}).get('msg')
+    return {
+        'DNS_ERROR':'حل نام در مسیر سنجش ناموفق است؛ DNS و خروجی نود را بررسی کنید.',
+        'SOCKS_PROXY_DNS_ERROR':'حل نام پراکسی ناموفق است؛ وضعیت Agent را بررسی کنید.',
+        'TCP_ERROR':'ارتباط TCP از این نود برقرار نشد؛ مسیر و پورت مقصد را بررسی کنید.',
+        'TLS_ERROR':'تأیید TLS ناموفق است؛ ساعت، نام دامنه و گواهی را بررسی کنید.',
+        'TIMEOUT':'مقصدهای سنجش در مهلت تعیین‌شده پاسخ ندادند؛ با نود یا شبکه دیگر مقایسه کنید.',
+        'HTTP_UNEXPECTED':'مقصد سنجش پاسخ مورد انتظار نداد؛ محدودیت مسیر خروجی را بررسی کنید.',
+        'XRAY_ERROR':'پردازش هسته متوقف شد؛ Agent و سازگاری کانفیگ را بررسی کنید.',
+        'XRAY_CORE_START_FAILED':'هسته تست اجرا نشد؛ این نتیجه اثبات قطعی کانفیگ نیست.',
+    }.get(str(code),'سنجش از این نود ناموفق بود؛ نتیجه گوشی را با مسیر و زمان همین نود مقایسه کنید.')
+
+
 class TunnelLogic:
     def __init__(self):
         self.db = Database()
@@ -160,6 +175,13 @@ class TunnelLogic:
             if stale:
                 cur.execute("""DELETE FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s
                                AND type='sub_item' AND link = ANY(%s)""", (uid,sub_id,list(stale)))
+            cur.execute("SELECT id,link FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (uid,sub_id))
+            saved_ids = {item['link']:item['id'] for item in cur.fetchall()}
+            samples = [(uid,saved_ids[row[3]],'default',row[7]=='OK',row[8],row[9])
+                       for row in rows if row[7] in ('OK','Fail') and row[3] in saved_ids]
+            if samples:
+                execute_values(cur, '''INSERT INTO pro_metrics(owner_id,config_id,region,ok,ping,jitter)
+                    VALUES %s''', samples)
             conn.commit()
             logger.info('Subscription sync owner=%s sub=%s kept=%s added=%s removed=%s delete_enabled=%s',
                         uid,sub_id,len(common),len(fresh),len(stale),allow_delete)
@@ -282,6 +304,10 @@ class TunnelLogic:
                 report_lines.append(f"<b>{html.escape(str(c_name))}</b>\n"
                                     f"├ 📶 Ping: <code>{data.get('ping',0)}</code>\n"
                                     f"└ ⭐ Score: <code>{score}/10</code>")
+            elif status=='Fail':
+                report_lines.append(f"❌ <b>{html.escape(str(c_name)[:180])}</b>\n{probe_note(data)}")
+            else:
+                report_lines.append(f"⚪ {html.escape(str(c_name)[:180])}: نتیجه معتبر دریافت نشد؛ ابتدا Agent را بررسی کنید.")
         diff = await run_sync(self._bulk_save_sub_items, uid, sub_id, rows, allow_delete=authoritative)
         if not diff:
             await self._refresh_state(uid,sub_id,'failed',error='SUB_SAVE_FAILED')
@@ -324,8 +350,11 @@ class TunnelLogic:
                 report_lines.append(
                     f"<b>{html.escape(cfg['name'])}</b>\n📶 {data.get('ping', 0)}ms | {bar}"
                 )
-            else:
+            elif isinstance(data, dict) and data.get('status') == 'Fail':
                 fail_ids.append(cfg['id'])
+                report_lines.append(f"❌ <b>{html.escape(cfg['name'][:180])}</b>\n{probe_note(data)}")
+            else:
+                report_lines.append(f"⚪ {html.escape(cfg['name'])}: سنجش انجام نشد؛ وضعیت قبلی حفظ شد.")
 
         await run_sync(self._bulk_update_singles, ok_rows, fail_ids)
         return report_lines

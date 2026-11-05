@@ -384,12 +384,12 @@ async def probe(update,context):
     for monitor in monitors:
         label=f"{monitor.get('location_type') or 'unknown'}:{monitor.get('name') or monitor['id']}:{monitor['id']}"[:80]
         try:
-            ok,data=await asyncio.wait_for(tunnel_manager._test_via_ws(monitor,cfg['link'],size=.25,timeout=25),timeout=32)
-            result=data if ok and isinstance(data,dict) else {'status':'Fail'}
+            ok,data=await asyncio.wait_for(tunnel_manager._test_via_ws(monitor,cfg['link'],size=.25,timeout=35),timeout=42)
+            result=data if ok and isinstance(data,dict) else {'status':'Unknown'}
         except Exception:
-            result={'status':'Fail'}
+            result={'status':'Unknown'}
         await invoke(_record,owner,cid,label,result)
-        texts.append(f'{"✅" if result.get("status")=="OK" else "❌"} {e(label)} | {e(result.get("ping","?"))} ms')
+        texts.append(f'{"✅" if result.get("status")=="OK" else "❌" if result.get("status")=="Fail" else "⚪"} {e(label)} | {e(result.get("ping","?"))} ms')
     await invoke(store.audit,owner,uid,'manual_probe',f'config:{cid}')
     await display(update,'🌐 <b>تست چندنقطه‌ای کانفیگ</b>\n'+ '\n'.join(texts) +'\n\nتست موفق از یک منطقه، سلامت در همه مناطق را تضمین نمی‌کند.',kb(nav()))
 

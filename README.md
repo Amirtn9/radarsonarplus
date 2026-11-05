@@ -1,3 +1,5 @@
+> نسخه ۶.۹.۳: [ورود خودکار مینی‌اپ، اعلان پیشرفته کانفیگ و آموزش تعاملی](docs/RELEASE_6_9_3_FA.md). پس از ارتقای مرکز، Agent نود مانیتورینگ را هم به‌روز کنید.
+
 <div align="center">
   <img src="assets/sonar-radar-logo.png" alt="SONAR RADAR logo" width="240" />
   <h1>SONAR RADAR PRO</h1>

@@ -20,7 +20,7 @@ _running=False
 def claim_notifications(db, limit=30):
     """Short lease lets interrupted workers be retried after restart."""
     with db.get_connection() as (conn,cur):
-        cur.execute("""SELECT id,owner_id,event_type,message,attempts FROM pro_notification_outbox
+        cur.execute("""SELECT id,owner_id,event_type,event_key,message,attempts FROM pro_notification_outbox
            WHERE sent_at IS NULL AND skipped_at IS NULL AND dead_at IS NULL
              AND next_attempt_at<=NOW() AND (claimed_until IS NULL OR claimed_until<NOW())
            ORDER BY id FOR UPDATE SKIP LOCKED LIMIT %s""",(max(1,min(50,int(limit))),))
@@ -62,10 +62,17 @@ async def flush_notifications(context, pro=None):
             prefs=await asyncio.to_thread(pro.preferences,uid)
             if quiet_now(prefs):
                 await asyncio.to_thread(mark_notification,pro.db,ident,'quiet');continue
-            if not await asyncio.to_thread(pro.should_notify,uid,row['event_type']):
+            from config_alerts import delivery_policy
+            enabled, quiet=await asyncio.to_thread(delivery_policy,pro.db,uid,row['event_type'],row.get('event_key',''))
+            if not enabled:
+                await asyncio.to_thread(mark_notification,pro.db,ident,'skipped');continue
+            if quiet:
+                await asyncio.to_thread(mark_notification,pro.db,ident,'quiet');continue
+            rule_event={'config_down':'probe_failure','config_recovery':'recovery'}.get(row['event_type'],row['event_type'])
+            if not await asyncio.to_thread(pro.should_notify,uid,rule_event):
                 await asyncio.to_thread(mark_notification,pro.db,ident,'skipped');continue
             delivered=await send_notification(context,uid,f'{row["message"]}\nرویداد #{ident}',
-                                              'down',db=pro.db)
+                                              'report' if row['event_type']=='config_report' else 'down',db=pro.db)
             if not delivered:
                 raise RuntimeError('NO_TELEGRAM_DESTINATION_DELIVERED')
         except Exception:

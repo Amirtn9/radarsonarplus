@@ -82,7 +82,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = keyboard.main_menu_kb(user_id, is_monitor_ready, SUPER_ADMIN_ID)
 
     # No network-bound statistics calls on the home screen: navigation must be immediate.
-    txt = ("📡 *SONAR RADAR | Pro 6.9.2*\n"
+    txt = ("📡 *SONAR RADAR | Pro 6.9.3*\n"
            "━━━━━━━━━━━━━━━━━\n"
            f"👤 اعتبار شما: `{remaining}`\n\n"
            "به کدام بخش نیاز دارید؟\n"
@@ -155,7 +155,8 @@ async def web_token_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
          '🔐 **کد یک‌بارمصرف ورود به وب‌سایت**\n\n'
          f'`{code}`\n\n'
          'اعتبار: ۸ دقیقه • پس از اولین استفاده باطل می‌شود.\n'
-         'این کد را در صفحه ورود وب‌سایت وارد کنید و با کسی به اشتراک نگذارید.\n'
+         'این کد فقط برای وب‌سایت در مرورگر است؛ مینی‌اپ داخل تلگرام خودکار وارد می‌شود و کد نمی‌خواهد.\n'
+         'کد را با کسی به اشتراک نگذارید.\n'
          f'🌐 {web_url}', reply_markup=InlineKeyboardMarkup(rows))
 
 # ==============================================================================

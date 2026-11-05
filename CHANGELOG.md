@@ -1,3 +1,14 @@
+# RadarSonarPlus 6.9.3 — Mini App login, config alerts and interactive training (2026-11-05)
+
+- Separate automatic Telegram Mini App authentication from manual standalone website login, including signed launch-data fallback when the SDK CDN is unavailable.
+- Probe independent HTTPS health destinations through SOCKS with a bounded time budget; preserve unknown state on Agent/core failures instead of falsely marking configurations offline.
+- Unify legacy, manual, subscription and scheduled configuration test persistence, and update dashboard health counts from new samples.
+- Add migration 12 with durable configuration alert state, per-workspace controls, score-change cooldown, quiet hours, per-config muting, scheduled test batches and score reports.
+- Add role-filtered Persian training with local Vazirmatn fonts, categorized lessons, a searchable dictionary generated from actual button sources and mobile/desktop layouts.
+- Add PostgreSQL, Node and local HTTPS Chromium regressions for the new workflows. Operational Telegram and customer WireGuard paths still require staging validation.
+
+See [راهنمای ارتقا و تغییرات فارسی](docs/RELEASE_6_9_3_FA.md).
+
 # RadarSonarPlus 6.9.2 — Security, migration and release hardening (2026-11-04)
 
 - Added a shared PostgreSQL migration ledger and session-level advisory lock so Bot and Web startup cannot race additive schema changes.

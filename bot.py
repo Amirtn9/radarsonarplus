@@ -189,6 +189,8 @@ def main():
     register_all_handlers(app)
     from service_bot import register as register_service_handlers
     register_service_handlers(app)
+    from config_alert_bot import register as register_config_alerts
+    register_config_alerts(app)
     from fleet_bot import register as register_fleet
     register_fleet(app)
 
@@ -209,6 +211,11 @@ def main():
         app.job_queue.run_repeating(cronjobs.auto_backup_send_job, interval=3600, first=300)
         app.job_queue.run_repeating(cronjobs.check_bonus_expiry_job, interval=43200, first=600)
         from pro_jobs import multi_probe_job, digest_job, cleanup_job
+        from config_alerts import config_alert_job, scheduled_config_probe_job
+        app.job_queue.run_repeating(config_alert_job, interval=15, first=20,
+                                    job_kwargs={'max_instances':1,'coalesce':True})
+        app.job_queue.run_repeating(scheduled_config_probe_job, interval=30, first=40,
+                                    job_kwargs={'max_instances':1,'coalesce':True})
         app.job_queue.run_repeating(multi_probe_job, interval=1800, first=300,
                                     job_kwargs={'max_instances': 1, 'coalesce': True})
         app.job_queue.run_repeating(digest_job, interval=3600, first=360,

@@ -524,7 +524,7 @@ class Database:
     def remove_user(self, user_id):
         """Delete tenant data transactionally; preserve no orphan pro/team records."""
         owner = int(user_id)
-        tables = ('pro_server_monitor_state','pro_notification_outbox','pro_services','pro_metrics','pro_favorites','pro_tags','pro_incidents',
+        tables = ('config_alert_settings','pro_server_monitor_state','pro_notification_outbox','pro_services','pro_metrics','pro_favorites','pro_tags','pro_incidents',
                   'pro_audit','pro_rules','pro_preferences','pro_team',
                   'tunnel_configs','server_stats','settings',
                   'servers','groups','channels')

@@ -4,6 +4,7 @@ Never executes remote shell commands. DB and scoring work run off asyncio loop.
 from __future__ import annotations
 import asyncio
 import logging
+import math
 import os
 import re
 import hashlib
@@ -101,14 +102,30 @@ def _parse_speed(v):
 
 
 def _record(uid,cid,region,data):
+    if not isinstance(data,dict) or data.get('status') not in ('OK','Fail'):
+        return None
     ok=isinstance(data,dict) and data.get('status')=='OK'
     try:ping=float(data.get('ping') or 0) if ok else None
     except (ValueError,TypeError):ping=None
     try:jitter=float(data.get('jitter') or 0) if ok else None
     except (ValueError,TypeError):jitter=None
-    store.record_metric(uid,cid,region,ok,ping,jitter,
-                        _parse_speed(data.get('down')) if ok else None,
-                        _parse_speed(data.get('up')) if ok else None)
+    if ok and (ping is None or jitter is None or not math.isfinite(ping) or not math.isfinite(jitter) or ping<=0 or jitter<0):
+        return None
+    # The displayed latest status and its history sample commit together.
+    with store.db.get_connection() as (conn,cur):
+        cur.execute('''INSERT INTO pro_metrics(owner_id,config_id,region,ok,ping,jitter,down_mbps,up_mbps)
+            SELECT owner_id,id,%s,%s,%s,%s,%s,%s FROM tunnel_configs WHERE id=%s AND owner_id=%s''',
+            (str(region)[:80],ok,ping,jitter,_parse_speed(data.get('down')) if ok else None,
+             _parse_speed(data.get('up')) if ok else None,cid,uid))
+        if cur.rowcount!=1:
+            conn.rollback()
+            return None
+        cur.execute('''UPDATE tunnel_configs SET last_status=%s,last_ping=%s,last_jitter=%s,
+            quality_score=%s,last_speed_down=%s,last_speed_up=%s WHERE id=%s AND owner_id=%s''',
+            ('OK' if ok else 'Fail',ping,jitter,round(score_config(ping,jitter,ok)/10),
+             (f"{data['down']} Mbps" if isinstance(data.get('down'),(int,float)) else str(data['down'])) if data.get('down') is not None else None,
+             (f"{data['up']} Mbps" if isinstance(data.get('up'),(int,float)) else str(data['up'])) if data.get('up') is not None else None,cid,uid))
+        conn.commit()
     with store.db.get_connection() as(conn,cur):
         cur.execute('''SELECT ok FROM pro_metrics WHERE owner_id=%s AND config_id=%s AND region=%s
                        ORDER BY id DESC LIMIT 2''',(uid,cid,region))
@@ -136,25 +153,13 @@ async def _do_probe(uid,cfg,monitor,sem,user_sem,context=None):
     async with user_sem:
         async with sem:
             try:
-                ok,data=await asyncio.wait_for(tunnel_manager._test_via_ws(monitor,cfg['link'],size=.25,timeout=25),timeout=32)
-                result=data if ok and isinstance(data,dict) else {'status':'Fail'}
+                ok,data=await asyncio.wait_for(tunnel_manager._test_via_ws(monitor,cfg['link'],size=.25,timeout=35),timeout=42)
+                result=data if ok and isinstance(data,dict) else {'status':'Unknown'}
             except Exception:
-                result={'status':'Fail'}
+                result={'status':'Unknown'}
             region=f"{monitor.get('location_type') or 'unknown'}:{monitor.get('name') or monitor['id']}:{monitor['id']}"[:80]
             try:
-                incident=await asyncio.to_thread(_record,uid,cfg['id'],region,result)
-                if context and incident and (incident['occurrences']==1 or result.get('status')=='OK'):
-                    event='recovery' if result.get('status')=='OK' else 'probe_failure'
-                    # Enqueue even during quiet hours; the persistent dispatcher
-                    # makes the delivery decision when the restriction has ended.
-                    message=(f'✅ بازیابی کانفیگ #{cfg["id"]} در {region} تأیید شد.'
-                             if result.get('status')=='OK' else
-                             f'🚨 هشدار سونار: کانفیگ #{cfg["id"]} دو بار متوالی از {region} ناموفق بود.')
-                    key=f'probe:{incident["id"]}:{event}'
-                    await asyncio.to_thread(store.db.execute,
-                        '''INSERT INTO pro_notification_outbox(owner_id,event_key,event_type,message)
-                           VALUES(%s,%s,%s,%s) ON CONFLICT(event_key) DO NOTHING''',
-                        (uid,key,event,message))
+                await asyncio.to_thread(_record,uid,cfg['id'],region,result)
             except Exception:log.exception('Probe persistence error user=%s config=%s',uid,cfg['id'])
 
 

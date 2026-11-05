@@ -14,7 +14,7 @@
    }catch(err){el('login-error').textContent=err.message;}finally{if(btn)btn.disabled=false;}
  });
  async function initSession(){
-    if(auth)return;
+    if(auth||isMiniApp()||panelBooting)return;
     try {const r=await request('/api/web/csrf');csrfToken=r.csrf||'';}
     catch(e){/* anonymous sessions see the login form after boot */}
  }

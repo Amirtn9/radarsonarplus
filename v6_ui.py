@@ -82,9 +82,9 @@ MENUS = {
  'tools': ('🧰 <b>ابزارها</b>\n\nبرای بررسی ارتباط، شبکه و کیفیت سرویس‌ها.',
     [('📍 تست Ping','manual_ping_start'),('🔧 عملیات گروهی سرورها','global_ops_menu'),('🏆 کیفیت کانفیگ‌ها','pro_rank'),('🏷 برچسب‌ها','pro_tags')]),
  'settings': ('⚙️ <b>تنظیمات</b>\n\nزمان‌بندی، کانال اعلان و تنظیمات خودکار را از همین بخش کنترل کنید.',
-    [('⏰ زمان‌بندی و هشدارها','menu_schedules'),('🗓 کرون‌جاب‌ها','cronjob_hub_main'),('📢 کانال اعلان‌ها','channels_menu'),('⚙️ همه تنظیمات','settings_menu'),('🇮🇷 سرور مانیتورینگ','monitor_settings_panel')]),
+    [('🔔 اعلان کانفیگ‌ها','ca_home'),('⏰ زمان‌بندی و هشدارها','menu_schedules'),('🗓 کرون‌جاب‌ها','cronjob_hub_main'),('📢 کانال اعلان‌ها','channels_menu'),('⚙️ همه تنظیمات','settings_menu'),('🇮🇷 سرور مانیتورینگ','monitor_settings_panel')]),
  'account': ('👤 <b>حساب و همکاران</b>\n\nپروفایل، اعتبار و فضای کاری مشترک.',
-    [('👤 پروفایل من','user_profile'),('💳 اعتبار و اشتراک','wallet_menu'),('👥 هم‌گروهی و فضای مشترک','ui_team_home'),('🤝 دعوت دوستان','referral_menu'),('📱 پنل وب','gen_web_token'),('💎 مرکز Pro','pro_home')]),
+    [('👤 پروفایل من','user_profile'),('💳 اعتبار و اشتراک','wallet_menu'),('👥 هم‌گروهی و فضای مشترک','ui_team_home'),('🤝 دعوت دوستان','referral_menu'),('🌐 کد ورود وب‌سایت','gen_web_token'),('💎 مرکز Pro','pro_home')]),
  'admin': ('👑 <b>مدیریت ربات</b>\n\nاین بخش فقط برای مدیر اصلی است.',
     [('👥 مدیریت کاربران','admin_users_page_1'),('🔎 جست‌وجوی کاربر','admin_search_start'),('🖥 سرورهای کاربران','admin_all_servers_1'),('🛰 مدیریت ایجنت‌ها','admin_agent_dashboard'),('📊 ترافیک Agentها','fleet_traffic'),('📦 پشتیبان‌گیری','admin_backup_get'),('📢 پیام همگانی','admin_broadcast_start'),('⚙️ تنظیمات مدیریت','admin_panel_main'),('🩺 عیب‌یابی','v6_diag')]),
 }
@@ -312,27 +312,48 @@ async def diag_zip(update, context):
 
 
 async def guide_menu(update, context):
-    """Accessible from Telegram, with a full public HTTPS mini-app if deployed."""
-    import os
-    from urllib.parse import urlsplit
+    from guide_content import content
+    from urllib.parse import urlsplit, urlunsplit
     from telegram import WebAppInfo
-    url=os.getenv('SONAR_WEBAPP_URL','').strip()
-    parsed=urlsplit(url)
+    import os
+    chapters=content(is_admin(update))['chapters']
+    parsed=urlsplit(os.getenv('SONAR_WEBAPP_URL','').strip())
     buttons=[]
     if parsed.scheme=='https' and parsed.hostname and not parsed.username and not parsed.password:
-        guide_url=url.rstrip('/').split('?',1)[0]+'/guide'
-        buttons.append([B('🌐 باز کردن راهنمای تصویری',web_app=WebAppInfo(url=guide_url))])
-    buttons.extend([[B('🖥 شروع افزودن سرور',callback_data='add_server')],
-                    [B('⚙️ تنظیم کانال‌ها',callback_data='channels_menu')],
-                    [B('⬅️ صفحه اصلی',callback_data='main_menu')]])
-    txt=('📚 <b>راهنمای کامل سونار رادار</b>\n\n'
-         '🖥 <b>سرورها:</b> از «سرورهای من ← افزودن سرور» نام، IP، پورت SSH، نام کاربری و رمز را مرحله‌به‌مرحله وارد کنید. اثر انگشت SSH را مستقل تأیید کنید.\n\n'
-         '🛰 <b>Agent:</b> از صفحه سرور، امکانات پیشرفته ← نصب/رفع ایجنت را بزنید؛ نصب مستقیم، در صورت لزوم بسته آفلاین و سپس صحت TLS/WSS بررسی می‌شود.\n\n'
-         '🧩 <b>کانفیگ‌ها:</b> افزودن، مشاهده، تست و رتبه‌بندی بر اساس آخرین داده‌های سنجش.\n\n'
-         '📢 <b>اعلان‌ها:</b> در تنظیمات، کانال را ثبت کنید؛ ربات باید مجوز ارسال پیام داشته باشد. سپس نوع هشدار و زمان‌بندی گزارش را انتخاب کنید.\n\n'
-         '👥 <b>هم‌گروهی:</b> درخواست با آیدی عددی فرستاده می‌شود و فقط بعد از تأیید همکار، اطلاعات فنی مشترک می‌شود.\n\n'
-         '💡 برای آموزش کامل و پرسش‌های متداول، نسخه وب راهنما را باز کنید.')
-    await show(update,txt,M(buttons))
+        guide_url=urlunsplit((parsed.scheme,parsed.netloc,'/guide','',''))
+        buttons.append([B('📚 آکادمی تعاملی؛ آموزش کامل و فرهنگ دکمه‌ها',web_app=WebAppInfo(url=guide_url))])
+    for item in chapters:
+        buttons.append([B(item['title'],callback_data=f"v6_lesson_{item['id']}_0")])
+    buttons.append([B('⬅️ صفحه اصلی',callback_data='main_menu')])
+    text=('📚 <b>آکادمی سونار رادار</b>\n\n'
+          'آموزش‌ها به ترتیب از شروع کار تا اعلان و نگهداری دسته‌بندی شده‌اند. '
+          'در هر آموزش، اقدام، نتیجه مورد انتظار و نکته‌های مهم را جدا می‌بینید.\n\n'
+          '🌐 نسخه تعاملی: جست‌وجو، فونت وزیر درشت، مسیر تصویری و فرهنگ دکمه‌های واقعی.\n'
+          '💬 نسخه ربات: یکی از دسته‌های زیر را انتخاب کنید.\n\n'
+          'ورود Mini App داخل تلگرام خودکار است؛ کد یک‌بارمصرف فقط برای ورود مستقل وب است.')
+    await show(update,text,M(buttons))
+
+
+async def guide_lesson(update,context):
+    from guide_content import content
+    import html
+    tail=update.callback_query.data.removeprefix('v6_lesson_')
+    key, raw_page=tail.rsplit('_',1)
+    chapter=next((item for item in content(is_admin(update))['chapters'] if item['id']==key),None)
+    if chapter is None:
+        await _safe_answer(update.callback_query,'این آموزش برای حساب شما در دسترس نیست.',show_alert=True)
+        return
+    page=int(raw_page); lessons=chapter['lessons']; per_page=3
+    if page<0 or page*per_page>=len(lessons):
+        return
+    text='📚 <b>'+html.escape(chapter['title'])+'</b>\n'+html.escape(chapter['summary'])+'\n\n'
+    for lesson in lessons[page*per_page:(page+1)*per_page]:
+        text+='🔹 <b>'+html.escape(lesson['button'])+'</b>\n'+html.escape(lesson['action'])+'\n↳ '+html.escape(lesson['result'])+'\n\n'
+    pagination=[]
+    if page:pagination.append(B('قبلی',callback_data=f'v6_lesson_{key}_{page-1}'))
+    if (page+1)*per_page<len(lessons):pagination.append(B('بعدی',callback_data=f'v6_lesson_{key}_{page+1}'))
+    buttons=([pagination] if pagination else [])+[[B('📚 دسته‌های آموزش',callback_data='v6_guide')]]
+    await show(update,text,M(buttons))
 
 
 def register(app):
@@ -340,6 +361,7 @@ def register(app):
     register_workspace(app)
     app.add_handler(SecureCommandHandler('menu',dashboard),group=0)
     app.add_handler(SecureCallbackQueryHandler(guide_menu,pattern=r'^v6_guide$'),group=0)
+    app.add_handler(SecureCallbackQueryHandler(guide_lesson,pattern=r'^v6_lesson_[a-z-]+_\d+$'),group=0)
     app.add_handler(SecureCommandHandler('doctor',diag_menu),group=0)
     app.add_handler(SecureCallbackQueryHandler(dashboard,pattern=r'^v6_home$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(return_to_section,pattern=r'^v6_return$'),group=0)

@@ -60,18 +60,22 @@ def main_menu_kb(user_id, is_monitor_ready, admin_id):
 def account_dashboard_kb():
     """منوی داخلی حساب کاربری و کیف پول"""
     kb = [
-        [InlineKeyboardButton('📱 راه‌اندازی پنل گرافیکی', callback_data='gen_web_token')],
+        [InlineKeyboardButton('🌐 کد ورود وب‌سایت', callback_data='gen_web_token')],
         [InlineKeyboardButton('📊 مرکز حرفه‌ای', callback_data='pro_home')],
         [InlineKeyboardButton("🔙 بازگشت به بخش قبلی", callback_data='v6_return')]
     ]
+    app_button=_webapp_button()
+    if app_button:kb.insert(0,[InlineKeyboardButton('📱 مینی‌اپ (ورود خودکار)',web_app=app_button.web_app)])
     return InlineKeyboardMarkup(kb)
 
 def user_profile_kb():
     """دکمه‌های پروفایل کاربری"""
     kb = [
-        [InlineKeyboardButton('📱 پنل گرافیکی', callback_data='gen_web_token')],
+        [InlineKeyboardButton('🌐 کد ورود وب‌سایت', callback_data='gen_web_token')],
         [InlineKeyboardButton("🔙 بازگشت به بخش قبلی", callback_data='v6_return')]
     ]
+    app_button=_webapp_button()
+    if app_button:kb.insert(0,[InlineKeyboardButton('📱 مینی‌اپ (ورود خودکار)',web_app=app_button.web_app)])
     return InlineKeyboardMarkup(kb)
 
 def add_service_selection_kb():
@@ -111,7 +115,7 @@ def admin_main_kb():
         [InlineKeyboardButton("💳 تنظیمات پرداخت و ولت", callback_data='admin_pay_settings')],
         [InlineKeyboardButton("📡 تنظیمات مانیتورینگ تانل", callback_data='monitor_settings_panel')],
         [InlineKeyboardButton("🛠 تنظیمات و وضعیت ایجنت‌ها", callback_data='admin_agent_dashboard')],
-        [InlineKeyboardButton("🏢 مدیریت سازمانی 6.9.2", callback_data='admin_enterprise_dashboard')],
+        [InlineKeyboardButton("🏢 مدیریت سازمانی 6.9.3", callback_data='admin_enterprise_dashboard')],
         [InlineKeyboardButton("📋 عملیات سازمانی", callback_data='admin_enterprise_operations'),
          InlineKeyboardButton("🚀 انتشار Agent", callback_data='admin_enterprise_rollouts')],
         [InlineKeyboardButton("🔙 بازگشت", callback_data='v6_return')]

@@ -236,11 +236,14 @@ def test_db_authoritative_sync_keeps_stable_ids_and_real_pruning(monkeypatch):
             if 'DELETE FROM tunnel_configs' in sql:
                 for link in args[-1]:self.items.pop(link,None)
         def fetchone(self):return {'id':7}
-        def fetchall(self):return [{'link':name} for name in self.items]
+        def fetchall(self):return [{'link':name,'id':item['id']} for name,item in self.items.items()]
         def commit(self):pass
     db=DB()
     t.db=db
     def insert(cur,sql,rows):
+        if 'INSERT INTO pro_metrics' in sql:
+            db.metrics=rows
+            return
         for r in rows:
             db.last_id+=1
             db.items[r[3]]={'id':db.last_id,'status':r[7],'ping':r[8]}
@@ -251,6 +254,7 @@ def test_db_authoritative_sync_keeps_stable_ids_and_real_pruning(monkeypatch):
     assert db.items['vless://remain']['id']==101
     assert db.items['vless://remain']['ping']==36
     assert 'vless://removed' not in db.items
+    assert db.metrics==[(1,201,'default',False,None,None)]
     assert db.items['vless://new']['status']=='Fail'
     before=dict(db.items)
     result=t._bulk_save_sub_items(1,7,[row('vless://remain','Unknown')],allow_delete=False)
@@ -270,7 +274,8 @@ def test_legacy_subscription_handlers_enforce_ownership():
     assert 'SELECT name FROM tunnel_configs WHERE id=%s AND owner_id=%s' in source
     assert '(sub_id, shared_uid(update))' in source
     assert 'api.qrserver.com' not in source
-    assert 'UPDATE tunnel_configs SET last_status=\'Fail\' WHERE id=%s AND owner_id=%s' in source
+    assert 'persist_config_results' in source
+    assert 'WHERE id=%s AND owner_id=%s' in (ROOT/'pro_jobs.py').read_text()
 
 
 def test_agent_fetch_uses_strict_completeness():

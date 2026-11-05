@@ -27,6 +27,7 @@ def _registry():
     from subscription_health import install_schema as subscription_health_schema
     from web_agent_jobs import install_schema as web_agent_jobs_schema
     from web_login import install_schema as web_login_schema
+    from config_alerts import install_schema as config_alert_schema
 
     return (
         (2, "pro_store", pro_store_schema),
@@ -39,6 +40,7 @@ def _registry():
         (9, "agent_traffic", agent_traffic_schema),
         (10, "service_monitor", service_monitor_schema),
         (11, "web_agent_jobs", web_agent_jobs_schema),
+        (12, "config_alerts", config_alert_schema),
     )
 
 

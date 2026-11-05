@@ -30,7 +30,7 @@ from service_monitor import ServiceStore
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
-app=FastAPI(title='RadarSonarPlus 6.9.2',docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='RadarSonarPlus 6.9.3',docs_url=None,redoc_url=None,openapi_url=None)
 
 @app.on_event('startup')
 async def _configure_executor():
@@ -90,8 +90,9 @@ async def actor(request:Request,authorization:str=Header(default='')):
         uid=int(session_data['user_id'])
         cookie_auth=True
         if request.method not in ('GET','HEAD','OPTIONS'):
-            expected=os.getenv('SONAR_WEB_ORIGIN','').rstrip('/')
-            if not expected or request.headers.get('origin')!=expected:
+            expected=os.getenv('SONAR_WEB_ORIGIN','').rstrip('/') or str(request.base_url).rstrip('/')
+            allowed_origins={value for value in (expected,str(request.base_url).rstrip('/')) if value.startswith('https://')}
+            if request.headers.get('origin') not in allowed_origins:
                 raise HTTPException(status_code=403,detail='Origin check failed')
             sent=request.headers.get('x-csrf-token','')
             from web_login import valid_token
@@ -141,6 +142,17 @@ async def index():return FileResponse(BASE/'pro_web'/'index.html')
 @app.get('/guide')
 async def public_guide():return FileResponse(BASE/'pro_web'/'guide.html')
 
+@app.get('/api/guide/public')
+async def public_guide_content():
+    from guide_content import content
+    return JSONResponse(content(False),headers={'Cache-Control':'no-store'})
+
+@app.get('/api/guide')
+async def private_guide_content(uid:int=Depends(actor)):
+    from guide_content import content
+    return JSONResponse(content(bool(SUPER_ADMIN_ID and uid==SUPER_ADMIN_ID)),
+                        headers={'Cache-Control':'private, no-store'})
+
 class WebCode(BaseModel):
     code: str = Field(min_length=28,max_length=128)
 
@@ -180,7 +192,12 @@ async def miniapp_session(request:Request,response:Response,authorization:str=He
     initData is intentionally short-lived; the resulting HttpOnly cookie keeps a
     Mini App usable after that short verification window without weakening it.
     """
-    require_web_origin(request)
+    # A signed Mini App launched on the current HTTPS host can authenticate
+    # without the separately configured standalone website login origin.
+    expected=os.getenv('SONAR_WEB_ORIGIN','').rstrip('/') or str(request.base_url).rstrip('/')
+    allowed_origins={value for value in (expected,str(request.base_url).rstrip('/')) if value.startswith('https://')}
+    if request.headers.get('origin') not in allowed_origins:
+        raise HTTPException(status_code=403,detail='Mini App origin check failed')
     if not authorization.startswith('tma '):
         raise HTTPException(status_code=401,detail='Telegram authorization required')
     secret=get_bot_token()
@@ -386,6 +403,21 @@ async def set_preferences(body:PreferencesUpdate,uid:int=Depends(actor)):
 async def me(uid:int=Depends(actor)):
     return {'id':uid,'admin': bool(SUPER_ADMIN_ID and uid==SUPER_ADMIN_ID),'version':(BASE/'VERSION').read_text().strip()}
 
+
+from config_alerts import AlertSettings
+
+@app.get('/api/config-alerts')
+async def config_alert_settings(uid:int=Depends(actor)):
+    from config_alerts import settings
+    owner=await guarded(store.workspace,uid)
+    return await guarded(settings,store.db,owner)
+
+@app.post('/api/config-alerts')
+async def update_config_alert_settings(body:AlertSettings,uid:int=Depends(actor)):
+    from config_alerts import save_settings
+    owner=await guarded(store.workspace,uid)
+    return await guarded(save_settings,store,uid,owner,body.model_dump())
+
 @app.get('/api/rules')
 async def rules(uid:int=Depends(actor),owner:int|None=None):
     return await guarded(store.rules,uid,owner)
@@ -426,7 +458,7 @@ async def diagnostic_bundle(days:int=Query(default=7,ge=1,le=30),
     except Exception as exc:
         log.exception('Diagnostic report failed at stage=%s type=%s',stage,type(exc).__name__)
         raise HTTPException(status_code=503,detail=f'Diagnostic report unavailable at stage {stage}: {type(exc).__name__}')
-    return FileResponse(path,media_type='application/zip',filename=f'radarsonarplus-v6.9.2-full-logs-{days}d.zip',
+    return FileResponse(path,media_type='application/zip',filename=f'radarsonarplus-v6.9.3-full-logs-{days}d.zip',
                         background=BackgroundTask(path.unlink,missing_ok=True))
 
 class TeamUpdate(BaseModel):
