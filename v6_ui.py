@@ -320,7 +320,7 @@ async def guide_menu(update, context):
     parsed=urlsplit(os.getenv('SONAR_WEBAPP_URL','').strip())
     buttons=[]
     if parsed.scheme=='https' and parsed.hostname and not parsed.username and not parsed.password:
-        guide_url=urlunsplit((parsed.scheme,parsed.netloc,'/guide','',''))
+        guide_url=urlunsplit((parsed.scheme,parsed.netloc,'/guide','v=6.9.3.1',''))
         buttons.append([B('📚 آکادمی تعاملی؛ آموزش کامل و فرهنگ دکمه‌ها',web_app=WebAppInfo(url=guide_url))])
     for item in chapters:
         buttons.append([B(item['title'],callback_data=f"v6_lesson_{item['id']}_0")])
@@ -328,7 +328,7 @@ async def guide_menu(update, context):
     text=('📚 <b>آکادمی سونار رادار</b>\n\n'
           'آموزش‌ها به ترتیب از شروع کار تا اعلان و نگهداری دسته‌بندی شده‌اند. '
           'در هر آموزش، اقدام، نتیجه مورد انتظار و نکته‌های مهم را جدا می‌بینید.\n\n'
-          '🌐 نسخه تعاملی: جست‌وجو، فونت وزیر درشت، مسیر تصویری و فرهنگ دکمه‌های واقعی.\n'
+          '🌐 راهنمای کامل: دسته‌بندی موضوعی، جست‌وجو و توضیح دکمه‌ها.\n'
           '💬 نسخه ربات: یکی از دسته‌های زیر را انتخاب کنید.\n\n'
           'ورود Mini App داخل تلگرام خودکار است؛ کد یک‌بارمصرف فقط برای ورود مستقل وب است.')
     await show(update,text,M(buttons))

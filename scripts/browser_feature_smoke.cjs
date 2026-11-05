@@ -42,10 +42,10 @@ function launch(uid,ageSeconds=0){
   await page.evaluate(()=>window.SonarTheme.set('light'));
   await page.screenshot({path:output+'/settings-mobile.png',fullPage:true});
   await page.goto(base+'/guide#'+launch(901));
-  await page.waitForFunction(()=>document.getElementById('audience').textContent.includes('مدیر تأییدشده'));
+  await page.waitForFunction(()=>document.getElementById('audience').textContent.includes('کاربر و مدیر'));
   assert.ok(await page.locator('#admin-fleet').count());
   await page.goto(base+'/guide#'+launch(901,3600));
-  await page.waitForFunction(()=>document.getElementById('audience').textContent.includes('مدیر تأییدشده'));
+  await page.waitForFunction(()=>document.getElementById('audience').textContent.includes('کاربر و مدیر'));
   assert.ok(await page.locator('#admin-fleet').count());
   await page.locator('#guide-search').fill('وایرگارد');
   await page.waitForFunction(()=>document.getElementById('guide-status').textContent.includes('پیدا شد'));

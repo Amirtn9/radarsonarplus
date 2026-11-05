@@ -21,10 +21,10 @@
    }catch{}}
   }
   let data;try{data=await api('/api/guide');}catch{data=await api('/api/guide/public');}
-  byId('audience').textContent=data.admin?'آموزش کاربر و مدیر تأییدشده':'راهنمای کاربران';
+  byId('audience').textContent=data.admin?'راهنمای کاربر و مدیر':'راهنمای کاربران';
   const count=data.chapters.reduce((total,chapter)=>total+chapter.lessons.length,0);
   byId('lesson-count').textContent=`${count.toLocaleString('fa-IR')} آموزش · ${data.buttons.length.toLocaleString('fa-IR')} دکمه`;
-  status.textContent=data.admin?'دسترسی مدیریت شما روی سرور تأیید شد؛ دسته‌های مدیریتی نیز در دسترس‌اند.':'آموزش‌های کاربری آماده‌اند. برای محتوای مرتبط با حساب، راهنما را از دکمه داخل ربات باز کنید.';
+  status.textContent=data.admin?'برای مطالعه، دسته موردنظر را انتخاب کنید.':'برای مطالعه، دسته موردنظر را انتخاب کنید.';
   for(const chapter of data.chapters){
    const section=node('section',null,'reveal');section.id=chapter.id;section.dataset.search=chapter.title+' '+chapter.summary;
    section.append(node('h2',chapter.title),node('p',chapter.summary,'chapter-summary'));

@@ -1,5 +1,6 @@
 # RadarSonarPlus 6.9.3 — Mini App login, config alerts and interactive training (2026-11-05)
 
+- Corrected guide overflow in narrow Telegram windows and enlarged text, replaced the horizontal category strip with wrapping rows, shortened the mobile header, and removed implementation details from user-facing copy. Verified 18 viewport/text-size combinations in Chromium.
 - Separate automatic Telegram Mini App authentication from manual standalone website login, including signed launch-data fallback when the SDK CDN is unavailable.
 - Probe independent HTTPS health destinations through SOCKS with a bounded time budget; preserve unknown state on Agent/core failures instead of falsely marking configurations offline.
 - Unify legacy, manual, subscription and scheduled configuration test persistence, and update dashboard health counts from new samples.
