@@ -19,11 +19,35 @@
     catch(e){/* anonymous sessions see the login form after boot */}
  }
  initSession();
- function closeMenu(){document.body.classList.remove('menu-open');el('nav-scrim').hidden=true;el('menu-trigger')?.setAttribute('aria-expanded','false');}
- function openMenu(){document.body.classList.add('menu-open');el('nav-scrim').hidden=false;el('menu-trigger')?.setAttribute('aria-expanded','true');}
+ function closeMenu(){document.body.classList.remove('menu-open');el('nav-scrim').hidden=true;el('quick-menu').hidden=true;el('menu-trigger')?.setAttribute('aria-expanded','false');}
+ function openMenu(){
+  const host=el('quick-menu');host.replaceChildren();
+  const groups=[['منابع و دسترسی',['overview','servers','configs','fleet']],['پایش و گزارش',['rankings','services','incidents','reports']],['مدیریت و همکاری',['enterprise','team','channels','audit','settings','balancer','support']]];
+  for(const [title,tabs] of groups){
+   const section=safeNode('section');section.append(safeNode('h3',title));
+   for(const tab of tabs){
+    const source=document.querySelector(`#side-navigation [data-tab="${tab}"]`);
+    if(!source||source.hidden)continue;
+    const button=safeNode('button',source.textContent.trim());button.type='button';button.dataset.quickTab=tab;
+    button.onclick=()=>{tabClick(tab);closeMenu();el('menu-trigger').focus();};section.append(button);
+   }
+   host.append(section);
+  }
+  const guide=safeNode('a','راهنمای گام‌به‌گام ←');guide.href='/guide';host.append(guide);
+  document.body.classList.add('menu-open');el('nav-scrim').hidden=false;host.hidden=false;el('menu-trigger')?.setAttribute('aria-expanded','true');
+  host.querySelector('button')?.focus();
+ }
  el('menu-trigger')?.addEventListener('click',()=>document.body.classList.contains('menu-open')?closeMenu():openMenu());
  el('nav-scrim')?.addEventListener('click',closeMenu);
- document.addEventListener('keydown',event=>{if(event.key==='Escape'&&document.body.classList.contains('menu-open'))closeMenu();});
+ document.addEventListener('keydown',event=>{
+  if(!document.body.classList.contains('menu-open'))return;
+  if(event.key==='Escape'){closeMenu();el('menu-trigger').focus();}
+  if(event.key==='Tab'){
+   const targets=[...el('quick-menu').querySelectorAll('button,a')],first=targets[0],last=targets.at(-1);
+   if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}
+   else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}
+  }
+ });
  document.querySelectorAll('#side-navigation .navbtn').forEach(b=>b.addEventListener('click',closeMenu));
  document.querySelectorAll('[data-mobile-tab]').forEach(button=>button.addEventListener('click',()=>{
    const tab=button.dataset.mobileTab;
@@ -49,7 +73,9 @@
  });
  function pct(v){if(v===null||v===undefined||v==='')return null;const x=Number(v);return Number.isFinite(x)&&x>=0&&x<=100?x:null;}
  function dial(metric,value){const host=document.querySelector(`[data-dial="${metric}"]`);if(!host)return;
-  const val=pct(value),needle=host.querySelector('.needle');host.querySelector('.dial-number').textContent=val===null?'—':`${Math.round(val)}٪`;
+  const val=pct(value),needle=host.querySelector('.needle');host.querySelector('.dial-number').textContent=val===null?'—':`${val.toLocaleString('fa-IR',{maximumFractionDigits:1})}٪`;
+  host.setAttribute('role','meter');host.setAttribute('aria-label',metric.toUpperCase());host.setAttribute('aria-valuemin','0');host.setAttribute('aria-valuemax','100');
+  if(val===null){host.removeAttribute('aria-valuenow');host.setAttribute('aria-valuetext','اندازه‌گیری نشده');}else{host.setAttribute('aria-valuenow',String(val));host.setAttribute('aria-valuetext',val.toLocaleString('fa-IR')+' درصد');}
   if(needle)needle.style.transform=`translateX(-50%) rotate(${val===null?-90:(-90+180*val/100)}deg)`;
   host.classList.toggle('unavailable',val===null);
  }
@@ -63,13 +89,14 @@
      const x=await request(`/api/console/servers/${id}`);
      if(state.tab!=='server-detail'||Number(window.SonarConsole.currentServerId?.())!==id)return;
      dial('cpu',x.last_cpu);dial('ram',x.last_ram);dial('disk',x.last_disk);dial('swap',null);
-     const stamp=x.last_checked_at?new Date(x.last_checked_at):null;
+     const stamp=x.last_checked_at?new Date(window.SonarTelemetry.time(x.last_checked_at)):null;
      const age=stamp&&Number.isFinite(stamp.getTime())?Math.max(0,Math.round((Date.now()-stamp.getTime())/1000)):null;
-     el('sensor-freshness').textContent=age===null?'هیچ نمونه‌ای ثبت نشده':age>180?`⚠️ نمونه قدیمی: ${Math.round(age/60)} دقیقه پیش`:`آخرین نمونه: ${age} ثانیه پیش`;
-     el('sensor-freshness').classList.toggle('stale',age===null||age>180);
-   }catch(err){el('sensor-freshness').textContent='Agent یا دیتابیس در دسترس نیست';}
+     window.SonarTelemetry.live(el('sensor-freshness'),x);
+     for(const key of ['cpu','ram','disk','swap'])document.querySelector(`[data-dial="${key}"]`)?.classList.toggle('stale',age===null||age>180||x.last_status!=='Online');
+   }catch(err){window.SonarTelemetry.live(el('sensor-freshness'),null);}
    finally{loading=false;}
  }
+ function resetSensors(){for(const key of ['cpu','ram','disk','swap'])dial(key,null);window.SonarTelemetry.live(el('sensor-freshness'),null);}
  const originalOpen=window.SonarConsole?.openDetails;
  if(originalOpen){window.SonarConsole.openDetails=(kind,id)=>{
    originalOpen(kind,id);if(kind==='server'){lastId=id;loadSensors();window.SonarWebAgent?.watchInstall?.(id);}if(kind==='config'){lastConfigId=id;}
@@ -130,6 +157,7 @@
    catch(e){host.replaceChildren(safeNode('p',e.message,'bad'));}
  });
  window.SonarNext={loadFleet,loadSensors};
+ window.SonarNext.resetSensors=resetSensors;
 })();
 
 // The following view binds to the same existing authenticated web API.

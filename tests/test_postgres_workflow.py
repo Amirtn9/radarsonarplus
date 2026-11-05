@@ -344,5 +344,14 @@ def test_reporting_windows_exports_and_owner_boundary(isolated_database):
     pro=ProStore(db)
     assert len(server_history(pro,901,sid,1)['samples'])==1
     assert len(server_history(pro,901,sid,48)['samples'])==2
+    current=server_history(pro,901,sid,1)['latest']
+    assert current['cpu']==25 and current['ram']==50
+    assert current['time'].endswith('+00:00')
+    # Two observations inside one bucket: the graph averages them, while the
+    # current gauge must keep the exact newest percentage (including zero).
+    db.execute('INSERT INTO server_stats(server_id,cpu,ram,disk,created_at) VALUES(%s,0,42.6,13.6,NOW()+INTERVAL \'1 second\')',(sid,))
+    result=server_history(pro,901,sid,1)
+    assert result['latest']['cpu']==0
+    assert result['latest']['ram']==42.6 and result['latest']['disk']==13.6
     with pytest.raises(PermissionError):server_history(pro,902,sid,48)
     with pytest.raises(ValueError):server_history(pro,901,sid,2)

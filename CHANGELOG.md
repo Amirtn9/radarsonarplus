@@ -1,3 +1,12 @@
+# RadarSonarPlus 6.9.4 — live telemetry and share-transport fixes (2026-11-05)
+
+- Unify time-based, HiDPI, theme-aware resource and latency charts with gradients, per-series controls and pointer/keyboard sample inspection.
+- Use exact latest observations for gauges; retain zero and decimal percentages, correct light-theme fact contrast and explicitly interpret legacy UTC timestamps.
+- Refresh detail history every 15 seconds, expire LIVE on stale/offline/error states and clear previous-server readings when switching records.
+- Add role-aware categorized quick navigation, contextual server help and responsive translucent training controls.
+- Preserve VLESS encryption and VMess/VLESS XHTTP options; verify ten synthetic transport combinations against the checksum-pinned Xray runtime.
+- See [گزارش اصلاحات و نحوه اعمال](docs/RELEASE_6_9_4_FA.md) for validation scope and the required Agent update.
+
 # Web reporting and matte/light workspace refresh (2026-11-05)
 
 - Add scoped report overview and UTF-8 CSV export, five time windows, bounded full-period history aggregation and timestamp-based charts.

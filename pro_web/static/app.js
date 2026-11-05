@@ -132,6 +132,7 @@ function rowItem(item){const root=elem('article',null,'item'),detail=elem('div')
  if(state.tab==='rankings')subtitle=`پینگ: ${item.ping??'—'} ms | جیتر: ${item.jitter??'—'} ms`;
  if(state.tab==='incidents')subtitle=`${item.severity||'warning'} • ${item.status==='open'?'باز':'بررسی‌شده'} • ${item.occurrences||0} مرتبه`;
  detail.append(elem('small',subtitle));root.append(detail);
+ if(state.tab==='servers'){const live=elem('span','','live-label');window.SonarTelemetry?.live(live,item);detail.append(live);}
  const controls=elem('div',null,'tools');
  if(['servers','configs'].includes(state.tab)){const b=elem('button',item.favorite?'★':'☆');b.setAttribute('aria-label','تغییر علاقه‌مندی');b.onclick=async()=>{try{const v=await jsonPost('/api/favorites',{kind:state.tab==='servers'?'server':'config',rid:item.id});item.favorite=v.favorite;b.textContent=v.favorite?'★':'☆';toast('علاقه‌مندی ذخیره شد');}catch(e){toast(e.message);}};controls.append(b);}
  if(['servers','configs'].includes(state.tab)){const tag=elem('button','🏷 برچسب');tag.setAttribute('aria-label','افزودن برچسب');tag.onclick=async()=>{const value=prompt('برچسب کوتاه بنویسید (حداکثر ۳۲ کاراکتر):');if(!value)return;try{await jsonPost('/api/console/tags',{kind:state.tab==='servers'?'server':'config',rid:item.id,tag:value.trim()});toast('برچسب ذخیره شد');}catch(e){toast(e.message);}};controls.append(tag);const details=elem('button','جزئیات');details.className='primary';details.onclick=()=>window.SonarConsole?.openDetails(state.tab==='servers'?'server':'config',item.id);controls.append(details);}
@@ -181,10 +182,17 @@ async function loadAudit(){const host=$('audit-list');host.replaceChildren(elem(
 async function loadPreferences(){window.SonarConfigAlerts?.load();try{const p=await request('/api/preferences');$('daily_digest').checked=!!p.daily_digest;$('multi_probe').checked=!!p.multi_probe;const rules=await request('/api/rules');const host=$('rule-list');host.replaceChildren();if(!rules.length)host.append(elem('p','قانون هشدار اختصاصی ثبت نشده است.','muted'));rules.forEach(r=>host.append(simpleEntry(r.event,r.action+' | '+(r.enabled?'فعال':'غیرفعال'))));}catch(e){toast(e.message);}}
 async function loadHealth(){if(!state.admin)return;const host=$('health-output');host.textContent='در حال بررسی سلامت...';try{const data=await request('/api/diagnostics/health');host.textContent=JSON.stringify(data,null,2);}catch(e){host.textContent=e.message;}}
 async function supportZip(){const days=Number($('diagnostic-days')?.value||7),remote=$('diagnostic-remote')?.checked!==false;try{$('download-btn').disabled=true;toast(`در حال جمع‌آوری لاگ کامل ${days} روز اخیر...`);const result=await request(`/api/diagnostics/bundle?days=${days}&include_remote=${remote}`,{raw:true});const blob=await result.blob();const url=URL.createObjectURL(blob);const a=elem('a');a.href=url;a.download=`sonar-v6.9-full-logs-${days}d.zip`;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);toast('ZIP آماده شد؛ فایل‌های اصلی روی سرور حذف یا تغییر نکرده‌اند.');}catch(e){toast(e.message);}finally{$('download-btn').disabled=false;}}
-async function drawTrend(item){try{const points=await request('/api/metrics/'+Number(item.id)+'?days=7');$('trend-title').textContent='تاریخچه کیفیت: '+String(item.name||item.id);const vals=points.filter(x=>x.ok&&x.ping!=null&&Number.isFinite(Number(x.ping))&&Number(x.ping)>0).slice(0,80).reverse();const canvas=$('trend-canvas'),ctx=canvas.getContext?.('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.fillStyle='#111a28';ctx.fillRect(0,0,w,h);
-if(!vals.length){$('trend-info').textContent='تست موفقی ثبت نشده است.';$('trend').showModal();return;}
-const samples=vals.map(x=>Number(x.ping)),max=Math.max(...samples,100)*1.1;ctx.strokeStyle='#344558';ctx.lineWidth=1;for(let i=0;i<5;i++){let y=15+i*(h-35)/4;ctx.beginPath();ctx.moveTo(35,y);ctx.lineTo(w-10,y);ctx.stroke();}ctx.strokeStyle='#75dcac';ctx.lineWidth=3;ctx.beginPath();samples.forEach((value,i)=>{let x=35+i*(w-55)/Math.max(samples.length-1,1),y=h-20-value*(h-40)/max;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();$('trend-info').textContent=`تعداد: ${vals.length} | حداقل: ${Math.min(...samples)}ms | حداکثر: ${Math.max(...samples)}ms`;$('trend').showModal();
-}catch(e){toast(e.message);}}
+async function drawTrend(item){
+ try{
+  const points=await request('/api/metrics/'+Number(item.id)+'?days=7');
+  $('trend-title').textContent='تاریخچه کیفیت: '+String(item.name||item.id);
+  const values=points.map(p=>({time:p.measured_at,ping:p.ok&&p.ping!=null&&Number(p.ping)>0?Number(p.ping):null}));
+  const good=values.filter(p=>p.ping!==null);
+  $('trend').showModal();
+  window.SonarTelemetry?.render($('trend-canvas'),values,{unit:'ms',series:[{key:'ping',label:'تأخیر',color:'#16ac7b'}]});
+  $('trend-info').textContent=good.length?`${good.length.toLocaleString('fa-IR')} تست موفق از ${values.length.toLocaleString('fa-IR')} · حداقل ${Math.min(...good.map(p=>p.ping))} ms · حداکثر ${Math.max(...good.map(p=>p.ping))} ms · زمان محلی شما`:'تست موفقی ثبت نشده است؛ فاصله‌های خالی به معنی نبود سنجش موفق هستند.';
+ }catch(e){toast(e.message);}
+}
 $('refresh').onclick=()=>{tabClick(state.tab);};
 document.querySelectorAll('.navbtn').forEach(b=>b.addEventListener('click',()=>tabClick(b.dataset.tab)));
 document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>tabClick(b.dataset.go)));
@@ -278,35 +286,12 @@ function resetResource(message){
  for(const id of ['resource-cpu','resource-ram','resource-time','resource-disk'])$(id).textContent='—';
  $('resource-temp').textContent='داده‌ای موجود نیست';$('resource-traffic').textContent='داده‌ای موجود نیست';
  $('resource-message').textContent=message;
- const canvas=$('resource-chart'),ctx=canvas?.getContext?.('2d');if(ctx)ctx.clearRect(0,0,canvas.width,canvas.height);
+ window.SonarTelemetry?.live($('resource-live'),null,null);
+ window.SonarTelemetry?.render($('resource-chart'),[],{hours:Number($('resource-hours')?.value||24)});
 }
-function validPercent(v){return v===null||v===undefined?null:(Number.isFinite(Number(v))?Math.min(100,Math.max(0,Number(v))):null);}
-function renderResourceChart(samples){
- const canvas=$('resource-chart'),ctx=canvas.getContext?.('2d');if(!ctx)return;
- const w=canvas.width,h=canvas.height,top=24,bottom=h-34,left=50,right=w-20;
- const light=document.documentElement.dataset.theme==='light';
- ctx.clearRect(0,0,w,h);
- ctx.fillStyle=light?'#fbfcff':'#111c30';ctx.fillRect(0,0,w,h);
- ctx.font='13px system-ui';ctx.textAlign='left';
- for(let i=0;i<=4;i++){
-   const y=top+(bottom-top)*i/4;
-   ctx.strokeStyle=light?'#e6eaf2':'#304156';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();
-   ctx.fillStyle=light?'#64748b':'#a2b4cb';ctx.fillText(`${100-i*25}%`,8,y+4);
- }
- const times=samples.map(point=>Date.parse(point.time));const first=times[0],last=times.at(-1);
- ctx.fillStyle=light?'#64748b':'#a2b4cb';ctx.textAlign='center';
- if(Number.isFinite(first))for(const ratio of [0,.5,1])ctx.fillText(new Date(first+(last-first)*ratio).toLocaleTimeString('fa-IR',{hour:'2-digit',minute:'2-digit'}),left+(right-left)*ratio,h-8);
- const palette=[['cpu','#0a84ff'],['ram','#a78bfa'],['disk','#40b79b']];
- for(const [key,color] of palette){
-   ctx.beginPath();ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=3;ctx.lineCap='round';ctx.lineJoin='round';let connected=false;
-   samples.forEach((point,index)=>{
-     const value=validPercent(point[key]);if(value===null){connected=false;return;}
-     const x=left+(Number.isFinite(times[index])&&last>first?(times[index]-first)/(last-first):index/Math.max(1,samples.length-1))*(right-left),y=bottom-value*(bottom-top)/100;
-     if(index>0&&times[index]-times[index-1]>Math.max(300000,Number($('resource-hours')?.value||24)*15000))connected=false;
-     if(!connected)ctx.moveTo(x,y);else ctx.lineTo(x,y);ctx.fillRect(x-2,y-2,4,4);connected=true;
-   });
-   ctx.stroke();
- }
+function validPercent(v){return v===null||v===undefined?null:(Number.isFinite(Number(v))&&Number(v)>=0&&Number(v)<=100?Number(v):null);}
+function renderResourceChart(samples,latest){
+ window.SonarTelemetry?.render($('resource-chart'),samples,{hours:Number($('resource-hours')?.value||24),latest});
 }
 async function loadResourceChart(){
  const id=Number($('resource-server').value),sequence=++state.resourceRequest;
@@ -315,7 +300,8 @@ async function loadResourceChart(){
  try{
    const result=await request('/api/server-resources/'+id+'?hours='+Number($('resource-hours')?.value||24));
    if(sequence!==state.resourceRequest||Number($('resource-server').value)!==id)return;
-   const samples=Array.isArray(result.samples)?result.samples:[],last=samples.at(-1);
+   const samples=Array.isArray(result.samples)?result.samples:[],last=result.latest||samples.at(-1);
+   window.SonarTelemetry?.live($('resource-live'),result.server,last?.time);
    const cpu=validPercent(last?.cpu),ram=validPercent(last?.ram);
    $('resource-cpu').textContent=cpu===null?'—':cpu.toFixed(1)+'٪';
    $('resource-ram').textContent=ram===null?'—':ram.toFixed(1)+'٪';
@@ -324,7 +310,7 @@ async function loadResourceChart(){
    $('resource-traffic').parentElement.hidden=result.network==null;
    $('resource-temp').textContent=result.temperature==null?'پشتیبانی نشده':`${result.temperature}°C`;
    $('resource-traffic').textContent=result.network==null?'پشتیبانی نشده':String(result.network);
-   renderResourceChart(samples);
+   renderResourceChart(samples,result.latest);
    $('resource-message').textContent=samples.length?`${samples.length.toLocaleString('fa-IR')} نمونه ثبت‌شده · بازه انتخاب‌شده · آبی CPU / بنفش RAM / سبز دیسک`:'هنوز داده‌ای از مصرف منابع ثبت نشده است. وضعیت اتصال ایجنت را بررسی کنید.';
  }catch(err){if(sequence===state.resourceRequest)resetResource(err.message);}
 }

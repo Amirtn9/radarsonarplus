@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sonar Radar Pro 6.9.3 | resilient GitHub deployment manager
+# Sonar Radar Pro 6.9.4 | resilient GitHub deployment manager
 # Supported: Ubuntu/Debian with systemd. Never execute remotely piped scripts as root.
 set -Eeuo pipefail
 umask 077
@@ -1621,7 +1621,7 @@ ui_input() {
 menu_whiptail() {
   local choice domain email action service path source
   while true; do
-    choice="$(whiptail --title 'SONAR RADAR PRO 6.9.3' --backtitle 'Deployment  |  Operations  |  Recovery' \
+    choice="$(whiptail --title 'SONAR RADAR PRO 6.9.4' --backtitle 'Deployment  |  Operations  |  Recovery' \
       --menu 'Select an operation. Destructive actions are clearly marked.' 24 88 16 \
       '01' 'Install / Resume full stack (preserve existing data)' \
       '02' 'Safe update (backup + rollback)' \
@@ -1675,7 +1675,7 @@ menu_text() {
   while true; do
     clear 2>/dev/null || true
     printf '\n%b  ╭──────────────────────────────────────────────────────────────────────╮%b\n' "$C_BLUE" "$C_RESET"
-    printf '%b  │%b  SONAR RADAR PRO 6.9.3  ·  DEPLOYMENT & OPERATIONS CONSOLE             %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
+    printf '%b  │%b  SONAR RADAR PRO 6.9.4  ·  DEPLOYMENT & OPERATIONS CONSOLE             %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
     printf '%b  ╰──────────────────────────────────────────────────────────────────────╯%b\n' "$C_BLUE" "$C_RESET"
     printf '  %-37s %-37s\n' 'INSTALL & UPDATE' 'OPERATIONS'
     printf '  01  Install / Resume full stack     06  Service control\n'
@@ -1746,7 +1746,7 @@ case "${1:-}" in
   --uninstall) uninstall_app;;
   --purge) purge_project;;
   --help|-h) cat <<'USAGE'
-Sonar Radar Pro 6.9.3 | Deployment Manager
+Sonar Radar Pro 6.9.4 | Deployment Manager
   sudo bash install.sh                 Interactive whiptail/ANSI deployment console
   sudo bash install.sh --check         Offline source and OS checks
   sudo bash install.sh --install       Fresh FULL installation: Bot + DB + Mini App

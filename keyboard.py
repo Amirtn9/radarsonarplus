@@ -115,7 +115,7 @@ def admin_main_kb():
         [InlineKeyboardButton("💳 تنظیمات پرداخت و ولت", callback_data='admin_pay_settings')],
         [InlineKeyboardButton("📡 تنظیمات مانیتورینگ تانل", callback_data='monitor_settings_panel')],
         [InlineKeyboardButton("🛠 تنظیمات و وضعیت ایجنت‌ها", callback_data='admin_agent_dashboard')],
-        [InlineKeyboardButton("🏢 مدیریت سازمانی 6.9.3", callback_data='admin_enterprise_dashboard')],
+        [InlineKeyboardButton("🏢 مدیریت سازمانی 6.9.4", callback_data='admin_enterprise_dashboard')],
         [InlineKeyboardButton("📋 عملیات سازمانی", callback_data='admin_enterprise_operations'),
          InlineKeyboardButton("🚀 انتشار Agent", callback_data='admin_enterprise_rollouts')],
         [InlineKeyboardButton("🔙 بازگشت", callback_data='v6_return')]

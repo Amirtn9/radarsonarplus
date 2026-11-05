@@ -23,7 +23,7 @@ import ssl
 from datetime import datetime, timedelta
 import logging
 
-AGENT_VERSION = '6.9.3'
+AGENT_VERSION = '6.9.4'
 AGENT_PROTOCOL = 2
 
 logger = logging.getLogger('sonar.agent')  # ✅ خودکار به سیستم متصل می‌شه
@@ -502,6 +502,23 @@ def install_xray():
 # 🧩 PARSING & TESTING LOGIC
 # ==============================================================================
 
+def _xhttp_settings(values):
+    """Keep transport options from both URI and VMess JSON share formats."""
+    extra = values.get('extra')
+    if isinstance(extra, str):
+        extra = json.loads(extra) if extra.strip() else {}
+    if extra is not None and not isinstance(extra, dict):
+        raise ValueError('XHTTP extra must be an object')
+    settings = {
+        'host': values.get('host') or '',
+        'path': values.get('path') or '/',
+        'mode': values.get('mode') or 'auto',
+    }
+    if extra:
+        settings['extra'] = extra
+    return settings
+
+
 def parse_xray_config(link):
     """Parse common v2ray/xray share links into a minimal Xray outbound."""
     try:
@@ -529,6 +546,9 @@ def parse_xray_config(link):
                 }
             elif net == 'grpc':
                 stream["grpcSettings"] = {"serviceName": c.get('path', '') or ""}
+            elif net in ('xhttp', 'splithttp'):
+                stream['network'] = 'xhttp'
+                stream['xhttpSettings'] = _xhttp_settings(c)
 
             if tls == 'tls':
                 stream["tlsSettings"] = {
@@ -573,6 +593,9 @@ def parse_xray_config(link):
                 }
             elif net == 'grpc':
                 stream['grpcSettings'] = {"serviceName": q.get('serviceName', [''])[0] or ""}
+            elif net in ('xhttp', 'splithttp'):
+                stream['network'] = 'xhttp'
+                stream['xhttpSettings'] = _xhttp_settings({key: value[0] for key, value in q.items()})
 
             if sec == 'tls':
                 stream['tlsSettings'] = {
@@ -598,7 +621,7 @@ def parse_xray_config(link):
                         "port": int(p.port or 443),
                         "users": [{
                             "id": p.username,
-                            "encryption": "none",
+                            "encryption": q.get('encryption', ['none'])[0] or 'none',
                             "flow": q.get('flow', [''])[0] or ""
                         }]
                     }]

@@ -152,7 +152,7 @@ class ProStore:
         owner=self.workspace(actor,owner)
         table=_resource_table(kind)
         page=max(1,min(int(page),10000));per_page=max(1,min(int(per_page),50))
-        sql=f"SELECT r.id,r.name,r.last_status,{'r.ip,r.is_active,r.location_type' if kind=='server' else 'r.type,r.last_ping,r.last_jitter,r.quality_score'}, EXISTS(SELECT 1 FROM pro_favorites f WHERE f.owner_id=r.owner_id AND f.resource_type=%s AND f.resource_id=r.id) favorite FROM {table} r WHERE r.owner_id=%s"
+        sql=f"SELECT r.id,r.name,r.last_status,{'r.ip,r.is_active,r.location_type,r.last_checked_at' if kind=='server' else 'r.type,r.last_ping,r.last_jitter,r.quality_score'}, EXISTS(SELECT 1 FROM pro_favorites f WHERE f.owner_id=r.owner_id AND f.resource_type=%s AND f.resource_id=r.id) favorite FROM {table} r WHERE r.owner_id=%s"
         params=[kind,owner]
         if kind=='config':sql+=" AND r.type IN ('single','sub_item','json','sub_source')"
         if term:

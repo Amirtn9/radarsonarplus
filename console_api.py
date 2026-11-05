@@ -17,6 +17,11 @@ def safe_status(value):
 
 
 def when(value):
+    # PostgreSQL's legacy TIMESTAMP columns store UTC without an offset. Make
+    # that explicit so browsers in Tehran do not shift observations by 3:30.
+    from datetime import datetime, timezone
+    if isinstance(value,datetime) and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc).isoformat()
     return value.isoformat() if hasattr(value, 'isoformat') else value
 
 

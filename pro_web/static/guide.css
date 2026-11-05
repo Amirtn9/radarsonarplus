@@ -97,3 +97,18 @@ footer { font-size: .85rem; color: var(--muted); text-align: center; padding: 20
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
 }
+
+/* Translucent controls with a solid-color fallback in older WebViews. */
+body{background:radial-gradient(ellipse at 10% 0%,#82b9f01a,transparent 45%),var(--bg)}
+.hero{background:radial-gradient(ellipse at 20% 0%,#72c8ef18,transparent 65%),linear-gradient(140deg,#142a38,#16212d);border-bottom:1px solid #ffffff18}
+.hero-actions .button,nav a,summary{transition:background .2s,box-shadow .2s,transform .2s}
+.hero-actions .button{background:linear-gradient(145deg,#ffffff38,#ffffff14);border:1px solid #ffffff45;color:#f1fffc;box-shadow:inset 0 1px 0 #ffffff30,0 8px 24px #0002;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-radius:16px}
+.hero-actions .button:hover{background:#ffffff30;transform:translateY(-1px)}
+nav a{border-radius:14px;box-shadow:inset 0 1px 0 #ffffff16,0 3px 12px #00000005}
+details{border-radius:18px;box-shadow:0 5px 24px #00000006}
+summary{list-style:none;display:flex;gap:12px;align-items:center;line-height:1.9}
+summary::-webkit-details-marker{display:none}summary::after{content:'+';margin-inline-start:auto;flex-shrink:0;width:26px;height:26px;line-height:26px;text-align:center;font-size:20px;font-weight:400;border:1px solid var(--border);border-radius:50%;color:var(--accent)}
+details[open]>summary::after{content:'−'}details[open]{border-color:var(--accent)}
+@supports (backdrop-filter:blur(16px)){nav a{background:color-mix(in srgb,var(--card) 84%,transparent);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}}
+a:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+@media(prefers-reduced-motion:reduce){.hero-actions .button,nav a,summary{transition:none}}

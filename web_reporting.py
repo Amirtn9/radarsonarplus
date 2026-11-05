@@ -17,7 +17,7 @@ def finite_json(value):
 def server_history(store,uid,sid,hours=24):
     if hours not in WINDOWS:raise ValueError('بازه زمانی معتبر نیست')
     owner=store.workspace(uid)
-    server=store.db.execute('SELECT id,name,last_checked_at,last_agent_status FROM servers WHERE id=%s AND owner_id=%s',(sid,owner),fetch='one')
+    server=store.db.execute('SELECT id,name,last_status,last_checked_at,last_agent_status,last_cpu,last_ram,last_disk FROM servers WHERE id=%s AND owner_id=%s',(sid,owner),fetch='one')
     if not server:raise PermissionError('Server is not in your workspace')
     # Bound chart size while preserving the entire requested period, not just
     # the most recent LIMIT rows. Nulls remain null, never synthetic zeroes.
@@ -35,7 +35,15 @@ def server_history(store,uid,sid,hours=24):
         for key in ('cpu','ram','disk','traffic_gb'):
             value=sample[key]
             if value is not None and (not math.isfinite(value) or value<0 or (key!='traffic_gb' and value>100)):sample[key]=None
-    return {'server':dict(server),'samples':samples,'hours':hours,'retention_hours':720,'temperature':None,'network':samples[-1]['traffic_gb'] if samples else None}
+    latest=store.db.execute('SELECT cpu,ram,disk,created_at FROM server_stats WHERE server_id=%s ORDER BY created_at DESC LIMIT 1',(sid,),fetch='one')
+    # Gauges show the exact latest observation, rather than the average of a
+    # time bucket (which can disagree with the detail page's current values).
+    current=None
+    if latest:
+        stamp=latest['created_at']
+        current={key:float(latest[key]) if latest[key] is not None and math.isfinite(float(latest[key])) and 0<=float(latest[key])<=100 else None for key in ('cpu','ram','disk')}
+        current['time']=(stamp.replace(tzinfo=timezone.utc) if stamp.tzinfo is None else stamp).isoformat()
+    return {'server':dict(server),'latest':current,'samples':samples,'hours':hours,'retention_hours':720,'temperature':None,'network':samples[-1]['traffic_gb'] if samples else None}
 
 
 def router(store,actor,guarded):
