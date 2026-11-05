@@ -437,7 +437,7 @@ class Database:
                 'INSERT INTO server_stats (server_id, cpu, ram) VALUES (%s, %s, %s)',
                 stats_list
             )
-            cur.execute("DELETE FROM server_stats WHERE created_at < NOW() - INTERVAL '1 day'")
+            cur.execute("DELETE FROM server_stats WHERE created_at < NOW() - INTERVAL '30 days'")
             conn.commit()
 
     def is_monitor_active(self):
@@ -778,13 +778,13 @@ class Database:
             cur.execute("""UPDATE servers SET last_status=%s,last_error=%s,last_cpu=%s,last_ram=%s,
                 last_disk=%s,last_agent_status=%s,last_checked_at=NOW()
                 WHERE id=%s AND owner_id=%s RETURNING id""",
-                ('Online' if online else 'Offline',str(stats.get('error') or stats.get('agent_error') or '')[:1000],
+                ('Online' if online else 'Offline' if stats.get('status')=='Offline' else 'Unknown',str(stats.get('error') or stats.get('agent_error') or '')[:1000],
                  stats.get('cpu') if online else None,stats.get('ram') if online else None,
                  stats.get('disk') if online else None,stats.get('agent_status','Offline'),server['id'],server['owner_id']))
             if cur.fetchone() and online:
                 cur.execute('''INSERT INTO server_stats(server_id,cpu,ram,disk,traffic_gb,bytes_sent,bytes_recv,uptime_sec)
                     VALUES(%s,%s,%s,%s,%s,%s,%s,%s)''',
-                    (server['id'],stats.get('cpu',0),stats.get('ram',0),stats.get('disk'),
+                    (server['id'],stats.get('cpu'),stats.get('ram'),stats.get('disk'),
                      stats.get('traffic_gb'),stats.get('bytes_sent'),stats.get('bytes_recv'),stats.get('uptime_sec')))
             cur.execute("DELETE FROM server_stats WHERE created_at<NOW()-INTERVAL '30 days'")
             conn.commit()

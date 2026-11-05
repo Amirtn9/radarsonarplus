@@ -45,7 +45,7 @@ let csrfToken='';
 const $=id=>document.getElementById(id);
 const state={tab:'overview',index:1,search:'',admin:false,listingRequest:0,resourceRequest:0,onlyFavorites:false,incidentStatus:'unresolved'};
 window.SonarWebAuth={getCsrf:()=>csrfToken,setCsrf:value=>{csrfToken=String(value||'');}};
-const titles={overview:'داشبورد',servers:'مدیریت سرورها',configs:'کانفیگ‌ها و اشتراک‌ها',rankings:'رتبه‌بندی کیفیت',incidents:'مرکز رخدادها',enterprise:'مرکز سازمانی',team:'اعضای تیم',audit:'فعالیت‌ها',settings:'تنظیمات',support:'مرکز عیب‌یابی',fleet:'استخر Agentهای چندمنطقه‌ای',balancer:'بالانسر مسیرها',services:'مانیتورینگ سرویس‌ها',channels:'کانال‌های اعلان', 'server-detail':'جزئیات سرور','config-detail':'جزئیات کانفیگ','web-create':'افزودن منبع جدید'};
+const titles={overview:'داشبورد',servers:'مدیریت سرورها',configs:'کانفیگ‌ها و اشتراک‌ها',rankings:'رتبه‌بندی کیفیت',incidents:'مرکز رخدادها',enterprise:'مرکز سازمانی',team:'اعضای تیم',audit:'فعالیت‌ها',settings:'تنظیمات',reports:'گزارش‌ها',support:'مرکز عیب‌یابی',fleet:'استخر Agentهای چندمنطقه‌ای',balancer:'بالانسر مسیرها',services:'مانیتورینگ سرویس‌ها',channels:'کانال‌های اعلان', 'server-detail':'جزئیات سرور','config-detail':'جزئیات کانفیگ','web-create':'افزودن منبع جدید'};
 const elem=(tag,text,cl)=>{const el=document.createElement(tag);if(text!=null)el.textContent=String(text);if(cl)el.className=cl;return el;};
 function toast(text){$('toast').textContent=text;$('toast').classList.add('visible');clearTimeout(toast.delay);toast.delay=setTimeout(()=>$('toast').classList.remove('visible'),4000);}
 async function request(path,options={}){
@@ -116,6 +116,7 @@ function tabClick(name){if(!Object.prototype.hasOwnProperty.call(titles,name)||(
   if(name==='team')loadTeam();
   if(name==='audit')loadAudit();
   if(name==='settings')loadPreferences();
+  if(name==='reports')window.SonarReports?.load();
   if(name==='support')loadHealth();
   if(name==='channels')window.SonarConsole?.loadChannels();
   if(name==='fleet')window.SonarNext?.loadFleet?.();
@@ -274,7 +275,7 @@ async function loadResourceServers(){
  }catch(err){resetResource(err.message);}finally{select.disabled=false;}
 }
 function resetResource(message){
- for(const id of ['resource-cpu','resource-ram','resource-time'])$(id).textContent='—';
+ for(const id of ['resource-cpu','resource-ram','resource-time','resource-disk'])$(id).textContent='—';
  $('resource-temp').textContent='داده‌ای موجود نیست';$('resource-traffic').textContent='داده‌ای موجود نیست';
  $('resource-message').textContent=message;
  const canvas=$('resource-chart'),ctx=canvas?.getContext?.('2d');if(ctx)ctx.clearRect(0,0,canvas.width,canvas.height);
@@ -292,13 +293,17 @@ function renderResourceChart(samples){
    ctx.strokeStyle=light?'#e6eaf2':'#304156';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();
    ctx.fillStyle=light?'#64748b':'#a2b4cb';ctx.fillText(`${100-i*25}%`,8,y+4);
  }
- const palette=[['cpu','#0a84ff'],['ram','#a78bfa']];
+ const times=samples.map(point=>Date.parse(point.time));const first=times[0],last=times.at(-1);
+ ctx.fillStyle=light?'#64748b':'#a2b4cb';ctx.textAlign='center';
+ if(Number.isFinite(first))for(const ratio of [0,.5,1])ctx.fillText(new Date(first+(last-first)*ratio).toLocaleTimeString('fa-IR',{hour:'2-digit',minute:'2-digit'}),left+(right-left)*ratio,h-8);
+ const palette=[['cpu','#0a84ff'],['ram','#a78bfa'],['disk','#40b79b']];
  for(const [key,color] of palette){
-   ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=3;ctx.lineCap='round';ctx.lineJoin='round';let connected=false;
+   ctx.beginPath();ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=3;ctx.lineCap='round';ctx.lineJoin='round';let connected=false;
    samples.forEach((point,index)=>{
      const value=validPercent(point[key]);if(value===null){connected=false;return;}
-     const x=left+index*(right-left)/Math.max(1,samples.length-1),y=bottom-value*(bottom-top)/100;
-     if(!connected)ctx.moveTo(x,y);else ctx.lineTo(x,y);connected=true;
+     const x=left+(Number.isFinite(times[index])&&last>first?(times[index]-first)/(last-first):index/Math.max(1,samples.length-1))*(right-left),y=bottom-value*(bottom-top)/100;
+     if(index>0&&times[index]-times[index-1]>Math.max(300000,Number($('resource-hours')?.value||24)*15000))connected=false;
+     if(!connected)ctx.moveTo(x,y);else ctx.lineTo(x,y);ctx.fillRect(x-2,y-2,4,4);connected=true;
    });
    ctx.stroke();
  }
@@ -308,17 +313,19 @@ async function loadResourceChart(){
  if(!Number.isSafeInteger(id)||id<1){resetResource('یک سرور انتخاب کنید.');return;}
  $('resource-message').textContent='در حال دریافت اطلاعات واقعی سرور…';
  try{
-   const result=await request('/api/server-resources/'+id);
+   const result=await request('/api/server-resources/'+id+'?hours='+Number($('resource-hours')?.value||24));
    if(sequence!==state.resourceRequest||Number($('resource-server').value)!==id)return;
    const samples=Array.isArray(result.samples)?result.samples:[],last=samples.at(-1);
    const cpu=validPercent(last?.cpu),ram=validPercent(last?.ram);
    $('resource-cpu').textContent=cpu===null?'—':cpu.toFixed(1)+'٪';
    $('resource-ram').textContent=ram===null?'—':ram.toFixed(1)+'٪';
    $('resource-time').textContent=last?.time?new Date(last.time).toLocaleString('fa-IR'):'—';
+   if($('resource-disk'))$('resource-disk').textContent=validPercent(last?.disk)===null?'—':validPercent(last?.disk).toFixed(1)+'٪';
+   $('resource-traffic').parentElement.hidden=result.network==null;
    $('resource-temp').textContent=result.temperature==null?'پشتیبانی نشده':`${result.temperature}°C`;
    $('resource-traffic').textContent=result.network==null?'پشتیبانی نشده':String(result.network);
    renderResourceChart(samples);
-   $('resource-message').textContent=samples.length?`${samples.length.toLocaleString('fa-IR')} نمونه ثبت‌شده · تاریخچه حداکثر ۲۴ ساعت · آبی CPU / بنفش RAM`:'هنوز داده‌ای از مصرف منابع ثبت نشده است. وضعیت اتصال ایجنت را بررسی کنید.';
+   $('resource-message').textContent=samples.length?`${samples.length.toLocaleString('fa-IR')} نمونه ثبت‌شده · بازه انتخاب‌شده · آبی CPU / بنفش RAM / سبز دیسک`:'هنوز داده‌ای از مصرف منابع ثبت نشده است. وضعیت اتصال ایجنت را بررسی کنید.';
  }catch(err){if(sequence===state.resourceRequest)resetResource(err.message);}
 }
 $('resource-server')?.addEventListener('change',loadResourceChart);
@@ -396,3 +403,7 @@ $('service-form')?.addEventListener?.('submit',async ev=>{
    resetServiceForm();await loadServices();
  }catch(err){toast(err.message);}finally{if(btn)btn.disabled=false;}
 });
+
+$('resource-hours')?.addEventListener('change',loadResourceChart);
+$('resource-refresh')?.addEventListener('click',loadResourceChart);
+window.setInterval?.(()=>{if(state.tab==='overview'&&document.visibilityState==='visible'&&$('resource-server')?.value)void loadResourceChart();},15000);

@@ -106,6 +106,9 @@ def test_web_miniapp_authentication_tenancy_and_pdf(isolated_database, monkeypat
     other = db.execute("INSERT INTO servers(owner_id,name,ip,port,username,password) VALUES(902,'Private other tenant','192.0.2.2',22,'audit',%s) RETURNING id", (credential,), fetch='one')['id']
     monkeypatch.setenv('SONAR_BOT_TOKEN', '123456:local-test-token-never-used-remotely')
     monkeypatch.setenv('SONAR_WEB_ORIGIN', 'https://testserver')
+    import web_reporting
+    async def idle_collector(db,stop):await stop.wait()
+    monkeypatch.setattr(web_reporting,'observation_worker',idle_collector)
     import pro_portal
     monkeypatch.setattr(pro_portal.store, 'db', db)
     pro_portal.get_bot_token.cache_clear()
@@ -126,7 +129,7 @@ def test_web_miniapp_authentication_tenancy_and_pdf(isolated_database, monkeypat
         assert client.post('/api/web/login', json={'code': code}, headers=headers).status_code == 401
         for endpoint in ('summary', 'resources/server', 'resources/config', 'subscriptions', 'rankings',
                          'incidents', 'notifications/delivery', 'audit', 'tags', 'team', 'preferences',
-                         'me', 'rules', 'services', 'enterprise/health', 'enterprise/operations',
+                         'me', 'rules', 'services', 'reports/overview', 'enterprise/health', 'enterprise/operations',
                          'enterprise/analytics', 'enterprise/health/policy', 'enterprise/backups/schedules',
                          'enterprise/tokens', 'enterprise/webhooks', 'enterprise/agent/rollouts'):
             response = client.get('/api/' + endpoint)
@@ -140,6 +143,10 @@ def test_web_miniapp_authentication_tenancy_and_pdf(isolated_database, monkeypat
             response=client.get('/api/guide')
             assert any(chapter['admin'] for chapter in response.json()['chapters'])
             assert 'no-store' in response.headers['cache-control']
+        report=client.get('/api/reports/overview').json()
+        assert [row['id'] for row in report['servers']]==[owned]
+        exported=client.get('/api/reports/servers.csv')
+        assert exported.status_code==200 and 'Owned server' in exported.text and 'Private other tenant' not in exported.text
         assert client.get('/api/summary?owner=902').status_code == 403
         details = client.get(f'/api/console/servers/{owned}')
         assert details.status_code == 200, details.text
@@ -324,3 +331,18 @@ def test_bot_alert_controls_and_guide_role_boundary(isolated_database,monkeypatc
         await v6_ui.guide_lesson(update,context)
         assert 'کانفیگ' in edits[-1][0]
     asyncio.run(run())
+
+
+def test_reporting_windows_exports_and_owner_boundary(isolated_database):
+    from schema_migrations import run_startup_migrations
+    from pro_store import ProStore
+    from web_reporting import server_history
+    db,_=isolated_database;run_startup_migrations(db)
+    db.execute('INSERT INTO users(user_id) VALUES(901),(902)')
+    sid=db.execute("INSERT INTO servers(owner_id,name) VALUES(901,'report') RETURNING id",fetch='one')['id']
+    db.execute("INSERT INTO server_stats(server_id,cpu,ram,created_at) VALUES(%s,25,50,NOW()),(%s,60,75,NOW()-INTERVAL '36 hours')",(sid,sid))
+    pro=ProStore(db)
+    assert len(server_history(pro,901,sid,1)['samples'])==1
+    assert len(server_history(pro,901,sid,48)['samples'])==2
+    with pytest.raises(PermissionError):server_history(pro,902,sid,48)
+    with pytest.raises(ValueError):server_history(pro,901,sid,2)

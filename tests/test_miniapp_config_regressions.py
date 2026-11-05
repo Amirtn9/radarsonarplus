@@ -110,3 +110,27 @@ def test_legacy_config_buttons_share_the_durable_pipeline(monkeypatch):
     assert all(row[0]==901 and row[2]=='default' for row in recorded)
     assert not any('last_status' in ast.unparse(node) for node in tree.body
                    if isinstance(node,ast.AsyncFunctionDef) and node.name in ('perform_fast_scan','background_update_all'))
+
+
+def test_web_collector_persists_real_observations_without_bot(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+    from web_reporting import observation_worker
+    from server_stats import StatsManager
+    import core
+    observed=[]
+    async def run():
+        stop=asyncio.Event()
+        class DB:
+            def execute(self,*args):
+                if 'SELECT last_id' in args[0]:return {'last_id':0}
+                return [{'id':1,'owner_id':901,'ip':'192.0.2.1','port':22,'username':'test','password':'encrypted-test','ws_port':8080}]
+            def check_access(self,owner):return True,'ok'
+            def persist_server_observation(self,server,result):observed.append((server,result));stop.set()
+        monkeypatch.setattr(core.sec,'decrypt',lambda value:'synthetic-test')
+        probe=AsyncMock(return_value={'status':'Online','cpu':25,'ram':50})
+        monkeypatch.setattr(StatsManager,'check_full_stats',probe)
+        await asyncio.wait_for(observation_worker(DB(),stop),timeout=3)
+        assert observed[0][1]['cpu']==25
+        assert probe.await_count==1
+    asyncio.run(run())

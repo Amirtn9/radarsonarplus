@@ -56,7 +56,7 @@ def test_every_local_static_asset_referenced_by_the_panel_exists():
         references.extend(re.findall(r'(?:src|href)=["\'](/static/[^"\']+)["\']', html))
     assert references, "Expected the panel to reference its local static assets"
     for reference in references:
-        asset = ROOT / "pro_web" / "static" / reference.removeprefix("/static/")
+        asset = ROOT / "pro_web" / "static" / reference.removeprefix("/static/").split("?",1)[0]
         assert asset.is_file(), f"Missing local panel asset: {reference}"
 
     assert "window.SonarNext={loadFleet,loadSensors}" in (

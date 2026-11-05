@@ -29,6 +29,8 @@ function launch(uid,ageSeconds=0){
   assert.equal(await page.locator('#session-warning').isVisible(),false);
   await page.locator('#ca-save').waitFor({state:'visible'});
   await page.waitForFunction(()=>!document.getElementById('ca-save').disabled);
+  const explanation=page.locator('#ca-failure_threshold').locator('..').locator('.field-help');
+  await explanation.locator('summary').click();assert.ok(await explanation.locator('p').isVisible());await explanation.locator('summary').click();
   await page.locator('#ca-notify_score').check();
   await page.locator('#ca-probe_interval_minutes').fill('5');
   await page.locator('#ca-score_delta').fill('15');
@@ -54,6 +56,23 @@ function launch(uid,ageSeconds=0){
   await page.screenshot({path:output+'/guide-mobile.png',fullPage:false});
   await page.setViewportSize({width:1440,height:1000});
   await page.screenshot({path:output+'/guide-desktop.png',fullPage:false});
+  await page.goto(base+'/?view=reports#'+launch(901));
+  await page.waitForSelector('#reports-servers tr');
+  assert.ok((await page.locator('#reports-servers').innerText()).includes('سرور آزمایشی گزارش'));
+  const download=page.waitForEvent('download');await page.locator('#reports-export').click();
+  assert.equal((await download).suggestedFilename(),'sonar-servers.csv');
+  await page.screenshot({path:output+'/reports-desktop.png',fullPage:false});
+  await page.goto(base+'/#'+launch(901));
+  await page.waitForFunction(()=>document.getElementById('resource-server').value!=='');
+  for(const hours of ['1','3','12','24','48']){
+   await page.locator('#resource-hours').selectOption(hours);
+   await page.waitForFunction(()=>document.getElementById('resource-message').textContent.includes('نمونه ثبت'));
+  }
+  await page.setViewportSize({width:390,height:844});
+  await page.evaluate(()=>window.SonarTheme.set('dark'));
+  await page.screenshot({path:output+'/dashboard-dark-mobile.png',fullPage:true});
+  const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));
+  assert.ok(dimensions.scroll<=dimensions.width+1,JSON.stringify(dimensions));
   await context.close();
   const user=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:390,height:844},reducedMotion:'reduce'});
   await user.route('https://telegram.org/**',route=>route.abort());

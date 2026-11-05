@@ -1,3 +1,10 @@
+# Web reporting and matte/light workspace refresh (2026-11-05)
+
+- Add scoped report overview and UTF-8 CSV export, five time windows, bounded full-period history aggregation and timestamp-based charts.
+- Retain historical observations for 30 days and collect observations in standalone Web processes with fair rotation and bounded remote requests.
+- Add contextual field help, grouped navigation and a monochrome light/matte dark presentation shared with Mini App.
+- Validation and remaining feature scope are documented in docs/WEB_REBUILD_FA.md.
+
 # RadarSonarPlus 6.9.3 — Mini App login, config alerts and interactive training (2026-11-05)
 
 - Corrected guide overflow in narrow Telegram windows and enlarged text, replaced the horizontal category strip with wrapping rows, shortened the mobile header, and removed implementation details from user-facing copy. Verified 18 viewport/text-size combinations in Chromium.

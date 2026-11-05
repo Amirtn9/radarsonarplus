@@ -44,11 +44,12 @@
         ['محل سرور',info.location_type||'—'],['گروه',info.group_id??'بدون گروه']
       ]));
       const note=node('p','نمایش داده‌های ذخیره‌شده؛ هیچ دستور جدیدی روی سرور اجرا نمی‌شود.','info-strip');host.append(note);
-      const chartData=await request(`/api/server-resources/${id}`);
+      const chartData=await request(`/api/server-resources/${id}?hours=${Number(byId('detail-hours')?.value||24)}`);
       if(!isCurrent('server',id,serial))return;
       drawChart(chartData.samples||[]);
     }catch(err){if(isCurrent('server',id,serial)){empty(host,err.message);byId('detail-chart-status').textContent='نمایش نمودار ممکن نیست.';}}
   }
+  byId('detail-hours')?.addEventListener('change',()=>{if(active.kind==='server')void loadServer();});
   function drawChart(values){
     const cvs=byId('detail-chart'),ctx=cvs?.getContext?.('2d');if(!ctx)return;
     const w=cvs.width,h=cvs.height;
@@ -59,7 +60,7 @@
       ctx.beginPath();ctx.lineWidth=2.7;ctx.strokeStyle=color;let continuous=false;
       values.forEach((p,i)=>{const v=Number(p[key]);if(p[key]==null||!Number.isFinite(v)){continuous=false;return;}const x=x0+(x1-x0)*i/Math.max(1,values.length-1);const y=y1-(y1-y0)*Math.max(0,Math.min(100,v))/100;if(!continuous)ctx.moveTo(x,y);else ctx.lineTo(x,y);continuous=true;});ctx.stroke();
     }
-    byId('detail-chart-status').textContent=values.length?`📈 ${values.length.toLocaleString('fa-IR')} نمونه · آبی CPU / بنفش RAM · حداکثر ۲۴ ساعت`:'داده‌ای ثبت نشده؛ اتصال Agent و مانیتورینگ را بررسی کنید.';
+    byId('detail-chart-status').textContent=values.length?`📈 ${values.length.toLocaleString('fa-IR')} نمونه · آبی CPU / بنفش RAM · بازه انتخاب‌شده`:'داده‌ای ثبت نشده؛ اتصال Agent و مانیتورینگ را بررسی کنید.';
   }
   async function loadConfig(){
     if(active.kind!=='config')return;

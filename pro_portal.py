@@ -258,7 +258,9 @@ async def bootstrap_additive_schemas():
         scheduled_backup_worker, rollout_worker
     )
     app.state.enterprise_stop=asyncio.Event()
+    from web_reporting import observation_worker
     app.state.enterprise_tasks=[
+        asyncio.create_task(observation_worker(store.db,app.state.enterprise_stop)),
         asyncio.create_task(operations_worker(store.db,app.state.enterprise_stop)),
         asyncio.create_task(webhook_worker(store.db,app.state.enterprise_stop)),
         asyncio.create_task(recovery_worker(store.db,app.state.enterprise_stop)),
@@ -316,14 +318,9 @@ async def resources(kind:str,uid:int=Depends(actor),owner:int|None=None,q:str=''
 
 
 @app.get('/api/server-resources/{server_id}')
-async def server_resources(server_id:int,uid:int=Depends(actor),owner:int|None=None):
-    def read():
-        workspace=store.workspace(uid,owner)
-        server=store.db.execute('SELECT id,name FROM servers WHERE id=%s AND owner_id=%s',(server_id,workspace),fetch='one')
-        if not server:raise ValueError('Server not found')
-        rows=store.db.execute("SELECT cpu,ram,created_at FROM server_stats WHERE server_id=%s AND created_at >= NOW()-INTERVAL '24 hours' ORDER BY created_at DESC LIMIT 288",(server_id,),fetch='all')
-        return {'server':dict(server),'samples':[{'cpu':r['cpu'],'ram':r['ram'],'time':(r['created_at'].replace(tzinfo=timezone.utc) if r['created_at'].tzinfo is None else r['created_at']).isoformat() if r['created_at'] else None} for r in reversed(rows)],'temperature':None,'network':None, 'retention_hours':24}
-    return await guarded(read)
+async def server_resources(server_id:int,uid:int=Depends(actor),hours:int=Query(default=24,ge=1,le=48)):
+    from web_reporting import server_history
+    return await guarded(server_history,store,uid,server_id,hours)
 
 @app.get('/api/subscriptions')
 async def subscription_overview(uid:int=Depends(actor)):
@@ -538,3 +535,6 @@ app.include_router(_make_operations_router(store, actor, guarded, SUPER_ADMIN_ID
 
 from ssh_terminal import make_router as _make_ssh_terminal_router
 app.include_router(_make_ssh_terminal_router(store, SUPER_ADMIN_ID, verify_tma=verify_init_data, get_bot_token=get_bot_token))
+
+from web_reporting import router as reporting_router
+app.include_router(reporting_router(store,actor,guarded))
