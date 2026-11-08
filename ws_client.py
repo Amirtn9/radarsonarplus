@@ -59,6 +59,7 @@ class _Conn:
     last_used_at: float
     lock: asyncio.Lock
     disposed: bool = False
+    generation: int = 0
 
     @property
     def is_open(self) -> bool:
@@ -118,6 +119,7 @@ class WebSocketPool:
         # connection during shutdown, not only those currently in an idle queue.
         self._all: Dict[int, _Conn] = {}
         self._closing = False
+        self._generation = 0
         self._global_lock = asyncio.Lock()
 
         # best-effort cleanup on exit
@@ -241,6 +243,7 @@ class WebSocketPool:
             return
         async with self._global_lock:
             self._closing = True
+            self._generation += 1
             connections = list(self._all.values())
             # Include any legacy queued sockets not yet registered in _all.
             for q in self._queues.values():
@@ -276,6 +279,7 @@ class WebSocketPool:
         async with self._global_lock:
             if self._closing:
                 raise ConnectionError("WebSocket pool is shutting down")
+            generation = self._generation
             q = self._queues.get(key)
             if q is None:
                 q = asyncio.LifoQueue()
@@ -304,8 +308,9 @@ class WebSocketPool:
             # connect outside global lock
             try:
                 conn = await asyncio.wait_for(self._connect(key), timeout=self.acquire_timeout)
+                conn.generation = generation
                 async with self._global_lock:
-                    closing = self._closing
+                    closing = self._closing or generation != self._generation
                     if not closing:
                         self._all[id(conn)] = conn
                 if closing:
@@ -315,6 +320,8 @@ class WebSocketPool:
             except BaseException:
                 # Cancellation must release reserved connection capacity too.
                 async with self._global_lock:
+                    if generation != self._generation:
+                        raise
                     self._counts[key] = max(0, self._counts.get(key, 1) - 1)
                     waiting = self._queues.get(key)
                     if waiting is not None and getattr(waiting, '_getters', None):
@@ -323,7 +330,6 @@ class WebSocketPool:
                 raise
 
         # 3) Pool is full -> wait for a connection to be released
-        q = self._queues[key]
         conn = await asyncio.wait_for(q.get(), timeout=self.acquire_timeout)
         if conn and conn.is_open:
             return conn
@@ -334,7 +340,7 @@ class WebSocketPool:
 
     def _release(self, conn: _Conn) -> None:
         # Never return a socket to a pool while it is being shut down.
-        if self._closing or not conn.is_open:
+        if self._closing or conn.disposed or conn.generation != self._generation or not conn.is_open:
             asyncio.create_task(self._dispose(conn))
             return
 
@@ -360,6 +366,8 @@ class WebSocketPool:
             pass
         async with self._global_lock:
             self._all.pop(id(conn), None)
+            if conn.generation != self._generation:
+                return
             self._counts[conn.key] = max(0, self._counts.get(conn.key, 1) - 1)
             queue = self._queues.get(conn.key)
             if queue is not None and getattr(queue, '_getters', None):

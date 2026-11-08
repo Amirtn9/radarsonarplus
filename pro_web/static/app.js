@@ -176,11 +176,13 @@ window.SonarDashboard={loadNotificationDelivery};
 async function loadTeam(){const host=$('team-list');host.replaceChildren(elem('p','در حال دریافت...','muted'));
  try{const result=await request('/api/team');host.replaceChildren();if(!result.length)host.append(elem('p','عضوی در این فضای کاری ثبت نشده است.','muted'));result.forEach(row=>host.append(simpleEntry('کاربر '+row.member_id,'نقش: '+row.role)));}
  catch(e){host.replaceChildren(elem('p',e.message,'bad'));}}
-async function loadAudit(){const host=$('audit-list');host.replaceChildren(elem('p','در حال دریافت...','muted'));
- try{const result=await request('/api/audit');host.replaceChildren();if(!result.length)host.append(elem('p','تاریخچه‌ای ثبت نشده است.','muted'));result.forEach(row=>host.append(simpleEntry(row.event+' | '+row.target,'کاربر '+row.actor_id+' • '+row.created_at)));}
+let auditRevision=0;
+window.addEventListener('sonar:logs-cleared',()=>{auditRevision++;$('audit-list')?.replaceChildren();$('recent-activity')?.replaceChildren();});
+async function loadAudit(){const version=++auditRevision;const host=$('audit-list');host.replaceChildren(elem('p','در حال دریافت...','muted'));
+ try{const result=await request('/api/audit');if(version!==auditRevision)return;host.replaceChildren();if(!result.length)host.append(elem('p','تاریخچه‌ای ثبت نشده است.','muted'));result.forEach(row=>host.append(simpleEntry(row.event+' | '+row.target,'کاربر '+row.actor_id+' • '+row.created_at)));}
  catch(e){host.replaceChildren(elem('p',e.message,'bad'));}}
 async function loadPreferences(){window.SonarConfigAlerts?.load();try{const p=await request('/api/preferences');$('daily_digest').checked=!!p.daily_digest;$('multi_probe').checked=!!p.multi_probe;const rules=await request('/api/rules');const host=$('rule-list');host.replaceChildren();if(!rules.length)host.append(elem('p','قانون هشدار اختصاصی ثبت نشده است.','muted'));rules.forEach(r=>host.append(simpleEntry(r.event,r.action+' | '+(r.enabled?'فعال':'غیرفعال'))));}catch(e){toast(e.message);}}
-async function loadHealth(){if(!state.admin)return;const host=$('health-output');host.textContent='در حال بررسی سلامت...';try{const data=await request('/api/diagnostics/health');host.textContent=JSON.stringify(data,null,2);}catch(e){host.textContent=e.message;}}
+async function loadHealth(){if(!state.admin)return;window.SonarLogs?.load(true);const host=$('health-output');host.textContent='در حال بررسی سلامت...';try{const data=await request('/api/diagnostics/health');host.textContent=JSON.stringify(data,null,2);}catch(e){host.textContent=e.message;}}
 async function supportZip(){const days=Number($('diagnostic-days')?.value||7),remote=$('diagnostic-remote')?.checked!==false;try{$('download-btn').disabled=true;toast(`در حال جمع‌آوری لاگ کامل ${days} روز اخیر...`);const result=await request(`/api/diagnostics/bundle?days=${days}&include_remote=${remote}`,{raw:true});const blob=await result.blob();const url=URL.createObjectURL(blob);const a=elem('a');a.href=url;a.download=`sonar-v6.9-full-logs-${days}d.zip`;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);toast('ZIP آماده شد؛ فایل‌های اصلی روی سرور حذف یا تغییر نکرده‌اند.');}catch(e){toast(e.message);}finally{$('download-btn').disabled=false;}}
 async function drawTrend(item){
  try{

@@ -24,7 +24,8 @@
   <script defer src="/static/balancer.js"></script>
   <script defer src="/static/subscriptions.js"></script>
   <link rel="stylesheet" href="/static/config_alerts.css">
-<link rel="stylesheet" href="/static/workspace.css?v=6.9.4"><script defer src="/static/reports.js?v=6.9.4"></script><script defer src="/static/server-help.js?v=6.9.4"></script></head>
+<link rel="stylesheet" href="/static/workspace.css?v=6.9.4"><script defer src="/static/reports.js?v=6.9.4"></script><script defer src="/static/server-help.js?v=6.9.4"></script><script defer src="/static/log-management.js"></script>
+</head>
 <body>
 <div id="web-auth" class="web-auth" hidden><section class="auth-card">
   <div class="auth-emblem"><img src="/static/sonar-radar-logo.png" alt="لوگوی SONAR RADAR"></div><h1>سونار رادار</h1>
@@ -211,7 +212,16 @@
     <p id="relay-status" class="muted" role="status"></p>
   </section>
 </section>
-<section id="support" class="view"><section class="panel"><h2>🩺 مرکز عیب‌یابی مدیر</h2><p class="muted">خروجی شامل لاگ‌های ربات و پنل، فایل‌های چرخشی، وضعیت عملیاتی دیتابیس و لاگ Agentهای ذخیره‌شده در بازه انتخابی است. خطوط و stack traceها حذف نمی‌شوند؛ مقادیر محرمانه در همان خط پوشانده می‌شوند. فایل‌های اصلی روی سرور دست‌نخورده باقی می‌مانند.</p><div class="diagnostic-controls"><label>بازه لاگ‌ها<select id="diagnostic-days"><option value="7" selected>۷ روز اخیر (پیشنهادی)</option><option value="1">۲۴ ساعت اخیر</option><option value="14">۱۴ روز اخیر</option><option value="30">۳۰ روز اخیر</option></select></label><label class="checkline"><input id="diagnostic-remote" type="checkbox" checked> شامل لاگ همه سرورهای ذخیره‌شده و Agentها</label></div><div class="quicklinks"><button class="primary" id="health-btn">بررسی سلامت</button><button id="download-btn">📦 دریافت ZIP کامل لاگ‌ها</button></div><pre id="health-output" class="healthlog">برای بررسی سلامت دکمه بالا را بزنید.</pre></section></section>
+<section id="support" class="view"><section class="panel"><h2>🩺 مرکز عیب‌یابی مدیر</h2><p class="muted">خروجی شامل لاگ‌های ربات و پنل، فایل‌های چرخشی، وضعیت عملیاتی دیتابیس و لاگ Agentهای ذخیره‌شده در بازه انتخابی است. خطوط و stack traceها حذف نمی‌شوند؛ مقادیر محرمانه در همان خط پوشانده می‌شوند. فایل‌های اصلی روی سرور دست‌نخورده باقی می‌مانند.</p><div class="diagnostic-controls"><label>بازه لاگ‌ها<select id="diagnostic-days"><option value="7" selected>۷ روز اخیر (پیشنهادی)</option><option value="1">۲۴ ساعت اخیر</option><option value="14">۱۴ روز اخیر</option><option value="30">۳۰ روز اخیر</option></select></label><label class="checkline"><input id="diagnostic-remote" type="checkbox" checked> شامل لاگ همه سرورهای ذخیره‌شده و Agentها</label></div><div class="quicklinks"><button class="primary" id="health-btn">بررسی سلامت</button><button id="download-btn">📦 دریافت ZIP کامل لاگ‌ها</button></div><pre id="health-output" class="healthlog">برای بررسی سلامت دکمه بالا را بزنید.</pre></section><section class="panel" id="managed-logs-panel"><h2>مدیریت لاگ‌های پایگاه داده</h2>
+<p class="muted">رویدادهای برنامه و تاریخچه فعالیت تمام کاربران؛ فقط مدیر اصلی دسترسی دارد. نگهداری لاگ برنامه ۳۰ روز و فعالیت‌ها ۹۰ روز است. فایل‌های چرخشی، journal سیستم و لاگ روی Nodeها جداگانه در خروجی عیب‌یابی باقی می‌مانند و با این دکمه حذف نمی‌شوند.</p>
+<form id="managed-log-form"><div class="diagnostic-controls">
+<label>بازه زمانی<select id="managed-log-window"><option value="24">۲۴ ساعت گذشته</option><option value="48">۴۸ ساعت گذشته</option><option value="168">۷ روز گذشته</option><option value="all">تمام لاگ‌های موجود</option><option value="custom">بازه دلخواه</option></select></label>
+<label>سطح<select id="managed-log-level"><option value="">همه سطوح</option><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option><option>CRITICAL</option></select></label>
+<label>دسته<select id="managed-log-category"><option value="">همه دسته‌ها</option><option value="api">API</option><option value="node">Node</option><option value="authentication">احراز هویت</option><option value="database">دیتابیس</option><option value="system">سیستم</option><option value="user_activity">فعالیت کاربران</option></select></label>
+</div><div id="managed-log-custom" class="diagnostic-controls" hidden><label>از (زمان محلی دستگاه)<input id="managed-log-start" type="datetime-local"></label><label>تا<input id="managed-log-end" type="datetime-local"></label></div>
+<button type="submit">اعمال فیلتر / تازه‌سازی</button></form>
+<p id="managed-log-count" role="status"></p><div id="managed-log-list" class="listitems"></div>
+<div class="quicklinks"><button id="managed-log-prev" type="button" disabled>صفحه قبل</button><button id="managed-log-next" type="button" disabled>صفحه بعد</button><button id="managed-log-delete" type="button" class="destructive">پاک‌سازی کامل لاگ‌های پایگاه داده</button></div></section></section>
     </main>
     <footer class="footer">SONAR RADAR PRO · 6.9.4 <span>•</span> ساخته‌شده برای مدیریت ساده‌تر</footer>
   </div>

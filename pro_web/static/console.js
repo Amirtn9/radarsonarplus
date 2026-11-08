@@ -77,10 +77,13 @@
       host.replaceChildren();items.forEach(entry=>{const item=node('article',null,'item');const description=node('div');description.append(node('strong','📢 '+entry.name),node('small',`نوع: ${entry.usage_type} · مقصد: ${entry.chat_hint} · تاپیک: ${entry.topic_id||'عمومی'}`));item.append(description);host.append(item);});
     }catch(err){if(state.tab==='channels')empty(host,err.message);}
   }
+  let activityRevision=0;
+  window.addEventListener('sonar:logs-cleared',()=>{activityRevision++;byId('recent-activity')?.replaceChildren();});
   async function loadRecent(){
+    const version=++activityRevision;
     const host=byId('recent-activity');if(!host)return;
     try{
-      const items=await request('/api/console/activity?limit=6');if(state.tab!=='overview')return;
+      const items=await request('/api/console/activity?limit=6');if(state.tab!=='overview'||version!==activityRevision)return;
       if(!Array.isArray(items)||!items.length){empty(host,'هنوز رویدادی ثبت نشده است.');return;}
       host.replaceChildren();items.forEach(x=>{const wrap=node('div',null,'console-timeline-item');wrap.append(node('span','●','console-timeline-point'));const d=node('div');d.append(node('strong',x.event),node('small',`کاربر ${x.actor_id} · ${localTime(x.time)}`));wrap.append(d);host.append(wrap);});
     }catch(err){if(state.tab==='overview')empty(host,err.message);}

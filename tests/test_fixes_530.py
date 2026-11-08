@@ -189,7 +189,7 @@ function element(id){return {id,textContent:'',value:'',classList:{add(){},remov
  addEventListener(){},replaceChildren(){},append(){},querySelector(){throw Error('An input has no child input')}}}
 const document={getElementById(id){if(!elements.has(id))elements.set(id,element(id));return elements.get(id)},
  querySelectorAll(){return []},createElement(tag){return element(tag)}};
-const context={document,window:{Telegram:{WebApp:{initData:'test',ready(){},expand(){}}},setTimeout},setTimeout,clearTimeout,
+ const context={document,window:{addEventListener(){},Telegram:{WebApp:{initData:'test',ready(){},expand(){}}},setTimeout},setTimeout,clearTimeout,
  fetch:async(path)=>{calls.push(path);return {ok:true,json:async()=>path==='/api/summary'?{servers:{active:0,total:0},configs:{healthy:0,total:0},incidents:0}:[]}}};
 vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);
 setTimeout(()=>{context.choose('configs');setTimeout(()=>{

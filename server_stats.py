@@ -47,7 +47,7 @@ class StatsManager:
             return ssh_res
         except Exception as e:
             logger.error(f"SSH Check failed for {ip}: {e}")
-            return {'status': 'Offline', 'error': 'Connection Failed', 'cpu': 0, 'ram': 0}
+            return {'status': 'Unknown', 'agent_status': 'Offline', 'error': 'Connection Failed'}
 
     @staticmethod
     def check_host_api(target):

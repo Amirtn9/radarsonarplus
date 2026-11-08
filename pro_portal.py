@@ -11,7 +11,7 @@ import hashlib
 import hmac
 import os
 from pathlib import Path
-from datetime import timezone
+from datetime import datetime, timezone
 from functools import lru_cache
 from fastapi import FastAPI, Depends, HTTPException, Header, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
@@ -22,6 +22,7 @@ from runtime import run_sync
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import secrets
+import time
 from web_login import digest as session_digest, redeem, create_session, identify, logout, logout_all, allow_login_attempt
 from subscription_health import summaries as subscription_summaries
 from pro_auth import verify_init_data
@@ -127,7 +128,17 @@ def shared_owner(uid:int, explicit:int|None=None):
 
 @app.middleware('http')
 async def headers(request:Request,call_next):
+    started=time.monotonic()
     response=await call_next(request)
+    route=getattr(request.scope.get('route'),'path','[unmatched]')
+    # Record mutations and failures; avoid duplicating frequent read-only polls.
+    # Templates exclude user IDs, query strings, credentials and arbitrary paths.
+    if request.url.path.startswith('/api/') and route!='/api/admin/logs' and (
+            request.method not in ('GET','HEAD','OPTIONS') or response.status_code>=400):
+        event_log=logging.getLogger('sonar.authentication' if '/web/' in route else 'sonar.api')
+        event_log.log(logging.WARNING if response.status_code>=400 else logging.INFO,
+                      '%s %s status=%s duration_ms=%.1f',request.method,route,
+                      response.status_code,(time.monotonic()-started)*1000)
     response.headers['Cache-Control']='no-store'
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['Referrer-Policy']='no-referrer'
@@ -250,6 +261,8 @@ async def bootstrap_additive_schemas():
     # Either service may start first; only one process applies a migration.
     from schema_migrations import run_startup_migrations
     await asyncio.to_thread(run_startup_migrations, store.db)
+    from log_management import attach_logging
+    app.state.database_logs=attach_logging(store.db,SUPER_ADMIN_ID)
     from web_agent_jobs import worker as web_agent_worker
     app.state.web_agent_stop=asyncio.Event()
     app.state.web_agent_task=asyncio.create_task(web_agent_worker(store.db,app.state.web_agent_stop))
@@ -280,6 +293,9 @@ async def stop_web_agent_queue():
         for task in getattr(app.state,'enterprise_tasks',[]):
             try: await asyncio.wait_for(task,timeout=20)
             except asyncio.TimeoutError: log.warning('Enterprise worker did not stop before timeout')
+    if hasattr(app.state,'database_logs'):
+        from log_management import detach_logging
+        await asyncio.to_thread(detach_logging,app.state.database_logs)
 
 @app.get('/healthz')
 async def health():return {'ok':True,'version':(BASE/'VERSION').read_text().strip()}
@@ -361,6 +377,25 @@ async def notification_delivery(uid:int=Depends(actor)):
 
 @app.get('/api/audit')
 async def audit(uid:int=Depends(actor),owner:int|None=None):return await guarded(store.audit_rows,uid,owner)
+
+
+@app.get('/api/admin/logs')
+async def admin_logs(uid:int=Depends(actor),window:str='24',start:datetime|None=None,
+                     end:datetime|None=None,level:str='',category:str='',
+                     page:int=Query(default=1,ge=1,le=10000),
+                     per_page:int=Query(default=50,ge=1,le=100)):
+    from log_management import LogStore
+    return await guarded(LogStore(store.db,SUPER_ADMIN_ID).list,uid,window,start,end,level,category,page,per_page)
+
+
+class ClearLogs(BaseModel):
+    confirmation:str=Field(max_length=40)
+
+
+@app.delete('/api/admin/logs')
+async def clear_admin_logs(body:ClearLogs,uid:int=Depends(actor)):
+    from log_management import LogStore
+    return await guarded(LogStore(store.db,SUPER_ADMIN_ID).clear,uid,body.confirmation)
 
 @app.get('/api/tags')
 async def tags(uid:int=Depends(actor),owner:int|None=None):return await guarded(store.tags,uid,owner)

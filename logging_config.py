@@ -149,7 +149,8 @@ _SENSITIVE = (
     (_redact_re.compile(r'(?i)(SONAR_AGENT_TOKEN|SONAR_DB_PASSWORD|password|authorization|token)([=:\s]+)([^\s,;]+)'), r'\1\2[REDACTED]'),
 )
 def redact(text):
-    result = str(text)
+    from diagnostics import sanitize
+    result = sanitize(str(text), hide_ips=False, hide_identifiers=False)
     for pattern, replacement in _SENSITIVE:
         result = pattern.sub(replacement, result)
     return result
@@ -191,7 +192,17 @@ class JSONFormatter(logging.Formatter):
                 else:
                     log_data[f"extra_{k}"] = v
 
-        return redact(json.dumps(log_data, ensure_ascii=False))
+        # Redact values before encoding: applying a text regex to encoded JSON
+        # can miss quoted keys and can corrupt escaped exception messages.
+        from diagnostics import SENSITIVE_KEY
+        def clean(value):
+            if isinstance(value, dict):
+                return {key: ('[REDACTED]' if SENSITIVE_KEY.search(str(key))
+                    else clean(item)) for key, item in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [clean(item) for item in value]
+            return redact(value) if isinstance(value, str) else value
+        return json.dumps(clean(log_data), ensure_ascii=False, default=str)
 
 
 # ───────────────────────────────────────────────────────

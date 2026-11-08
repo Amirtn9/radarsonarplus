@@ -410,10 +410,13 @@ class ServerMonitor:
         res = await ServerMonitor.ws_send_command(ip, ws_port, password, payload)
 
         if "error" in res:
-            return {"status": "Offline", "error": res["error"], "uptime_sec": 0, "traffic_gb": 0}
+            return {"status": "Offline", "error": res["error"]}
+
+        if not res or res.get('status') != 'Online':
+            return {'status': 'Unknown', 'error': 'INVALID_AGENT_STATS'}
 
         return {**res, 'status':'Online', 'transport':'wss', 'agent_status':'Online',
-                'traffic_out':res.get('traffic_gb',0)}
+                'traffic_out':res.get('traffic_gb')}
 
     # ---------------------------------------------------------
     # 🛠 INSTALLATION & SETUP

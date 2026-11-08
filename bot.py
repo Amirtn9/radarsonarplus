@@ -115,6 +115,9 @@ def main():
         # advisory lock. Their independent systemd startup order is irrelevant.
         from schema_migrations import run_startup_migrations
         await _startup_step("schema_migrations", run_startup_migrations, db)
+        from log_management import attach_logging
+        from settings import SUPER_ADMIN_ID
+        application.bot_data['database_logs']=attach_logging(db,SUPER_ADMIN_ID)
 
         from enterprise_runtime import (
             operations_worker, webhook_worker, recovery_worker,
@@ -146,6 +149,10 @@ def main():
         logger.info("BOT_STARTUP_READY marker=%s", ready_file)
 
     async def _post_shutdown(application):
+        handler=application.bot_data.pop('database_logs',None)
+        if handler:
+            from log_management import detach_logging
+            await asyncio.to_thread(detach_logging,handler)
         stop = application.bot_data.get("enterprise_stop")
         if stop:
             stop.set()

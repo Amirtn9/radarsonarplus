@@ -176,3 +176,5 @@ body { min-height: 100vh; min-height: 100dvh; overflow-x: hidden; }
   .view, .panel, .resource-panel { max-width: 100%; }
   .quicklinks > button, .fleet-actions > button { min-width: 0; max-width: 100%; }
 }
+
+#managed-log-list .item{min-width:0}#managed-log-list .item>div{min-width:0;max-width:100%}#managed-log-list pre{white-space:pre-wrap;overflow-wrap:anywhere;direction:ltr;text-align:left;max-height:24rem;overflow:auto}#managed-log-form input{max-width:100%;box-sizing:border-box}

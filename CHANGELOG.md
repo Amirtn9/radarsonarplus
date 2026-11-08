@@ -1,3 +1,11 @@
+# Agent reliability and database log management (2026-11-08)
+
+- Prevent late WebSocket handshakes from entering a reset pool; preserve unknown measurements on unavailable or invalid Agent stats.
+- Redact structured, fallback, diagnostic and audit logs, including nested secrets and complete Authorization values.
+- Add migration 13, bounded asynchronous database logging, admin-only time/category/level filters and transactional purge with queued-record invalidation.
+- Add PostgreSQL rollback/tenancy/CSRF and local TLS Agent/browser regressions. File/journal/remote purge, PasarGuard integration and live-server deployment remain outside this completed patch.
+- See [گزارش دقیق و محدودیت‌های آزمون](docs/AUDIT_LOG_RELIABILITY_2026_11_08_FA.md).
+
 # RadarSonarPlus 6.9.4 — live telemetry and share-transport fixes (2026-11-05)
 
 - Unify time-based, HiDPI, theme-aware resource and latency charts with gradients, per-series controls and pointer/keyboard sample inspection.

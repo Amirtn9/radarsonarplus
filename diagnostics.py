@@ -99,6 +99,9 @@ def sanitize(text: str, *, hide_ips: bool = True, hide_identifiers: bool = True)
     """Redact secret values while preserving all log lines and useful context."""
     value = str(text).replace('\x00', '')
     value = PRIVATE_BLOCK.sub('[REDACTED_PRIVATE_KEY]', value)
+    # Remove the whole authorization scheme/value before assignment matching;
+    # otherwise `Authorization: Bearer secret` only masks the word Bearer.
+    value = BEARER.sub(lambda m: m.group(1) + ' [REDACTED_AUTH]', value)
     value = SENSITIVE_ASSIGNMENT.sub(_redact_assignment, value)
     value = TOKEN.sub('[REDACTED_BOT_TOKEN]', value)
     value = BEARER.sub(lambda m: m.group(1) + ' [REDACTED_AUTH]', value)

@@ -16,6 +16,49 @@ pytestmark = pytest.mark.skipif(not DSN, reason='SONAR_TEST_DB_DSN is required f
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_database_log_windows_purge_rollback_and_operational_data(isolated_database):
+    from datetime import datetime, timedelta, timezone
+    from log_management import LogStore
+    from pro_store import ProStore
+    from schema_migrations import run_startup_migrations
+    db, _ = isolated_database
+    run_startup_migrations(db)
+    db.execute("INSERT INTO users(user_id,full_name) VALUES(901,'preserve admin')")
+    db.execute("INSERT INTO servers(owner_id,name,ip) VALUES(901,'preserve node','127.0.0.1')")
+    logs = LogStore(db, 901)
+    now = datetime.now(timezone.utc)
+    rows = [(now-timedelta(hours=hours), 'ERROR' if hours==30 else 'INFO', 'node',
+             'test', f'age-{hours}', 'recorded') for hours in (1,30,100,200)]
+    logs.write(rows)
+    for hours, expected in (('24',1),('48',2),('168',3),('all',4)):
+        assert logs.list(901, hours)['total'] == expected
+    assert logs.list(901,'all',level='ERROR')['total'] == 1
+    assert logs.list(901,'custom',now-timedelta(hours=40),now-timedelta(hours=2))['total'] == 1
+    assert len(logs.list(901,'all',page=2,per_page=2)['items']) == 2
+    pro = ProStore(db)
+    pro.audit(901,901,'test',detail='password=never-persist-this')
+    assert 'never-persist-this' not in db.execute('SELECT detail FROM pro_audit',fetch='one')['detail']
+    # Inject a real database failure after application-log deletion has run.
+    db.execute('''CREATE FUNCTION reject_log_purge() RETURNS trigger LANGUAGE plpgsql
+        AS $$ BEGIN RAISE EXCEPTION 'injected purge failure'; END $$''')
+    db.execute('''CREATE TRIGGER reject_log_purge BEFORE DELETE ON pro_audit
+        FOR EACH ROW EXECUTE FUNCTION reject_log_purge()''')
+    with pytest.raises(Exception, match='injected purge failure'):
+        logs.clear(901,'DELETE ALL LOGS')
+    assert logs.list(901,'all')['total'] == 5
+    db.execute('DROP TRIGGER reject_log_purge ON pro_audit')
+    assert logs.clear(901,'DELETE ALL LOGS')['ok']
+    assert logs.list(901,'all')['total'] == 0
+    # The writer can receive old queued batches after the purge completes.
+    logs.write(rows)
+    assert logs.list(901,'all')['total'] == 0
+    fresh = datetime.now(timezone.utc)
+    logs.write([(fresh,'INFO','system','test','new event','recorded')])
+    assert logs.list(901,'all')['total'] == 1
+    assert db.execute('SELECT full_name FROM users WHERE user_id=901',fetch='one')['full_name'] == 'preserve admin'
+    assert db.execute('SELECT name FROM servers WHERE owner_id=901',fetch='one')['name'] == 'preserve node'
+
+
 @pytest.fixture
 def isolated_database(monkeypatch, tmp_path):
     import psycopg2
@@ -33,6 +76,11 @@ def isolated_database(monkeypatch, tmp_path):
     database.Database._instance = None
     db = database.Database()
     monkeypatch.setenv('SONAR_STATE_DIR', str(tmp_path))
+    # Router factories capture their service stores at import time. A prior
+    # API unit test may already have imported the portal with a different DB.
+    if 'pro_portal' in sys.modules:
+        import importlib
+        importlib.reload(sys.modules['pro_portal'])
     try:
         yield db, config
     finally:
@@ -62,7 +110,31 @@ def test_parallel_startup_and_upgrade_preserve_existing_rows(isolated_database):
     from schema_migrations import run_startup_migrations
     assert run_startup_migrations(db) == []
     assert db.execute('SELECT full_name FROM users WHERE user_id=901', fetch='one')['full_name'] == 'preserve me'
-    assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 12
+    assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 13
+
+
+def test_log_purge_cookie_auth_requires_csrf_and_admin(isolated_database, monkeypatch):
+    from fastapi.testclient import TestClient
+    from schema_migrations import run_startup_migrations
+    from web_login import create_session
+    import pro_portal
+    db, _ = isolated_database
+    run_startup_migrations(db)
+    db.execute("INSERT INTO users(user_id,full_name) VALUES(901,'Admin'),(902,'Ordinary')")
+    monkeypatch.setattr(pro_portal.store,'db',db)
+    monkeypatch.setattr(pro_portal,'SUPER_ADMIN_ID',901)
+    monkeypatch.setenv('SONAR_WEB_ORIGIN','https://testserver')
+    client = TestClient(pro_portal.app,base_url='https://testserver')
+    session, csrf = create_session(db,901)
+    client.cookies.set('sonar_web_session',session)
+    body = {'confirmation':'DELETE ALL LOGS'}
+    assert client.request('DELETE','/api/admin/logs',json=body).status_code == 403
+    headers = {'Origin':'https://testserver','X-CSRF-Token':csrf}
+    assert client.request('DELETE','/api/admin/logs',headers=headers,json=body).status_code == 200
+    session, csrf = create_session(db,902)
+    client.cookies.set('sonar_web_session',session)
+    headers['X-CSRF-Token'] = csrf
+    assert client.request('DELETE','/api/admin/logs',headers=headers,json=body).status_code == 403
 
 
 def test_encrypted_backup_restore_is_atomic(isolated_database, monkeypatch, tmp_path):

@@ -45,7 +45,8 @@ def setup_logger():
     # Fallback ساده (اگر logging_config.py فعال نبود)
     # ───────────────────────────────────────────────────
 
-    log_format = logging.Formatter(
+    from logging_config import RedactedFormatter
+    log_format = RedactedFormatter(
         '%(asctime)s | %(levelname)-8s | %(filename)s:%(lineno)d | %(funcName)s | %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )

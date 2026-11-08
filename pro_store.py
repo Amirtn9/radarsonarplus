@@ -328,7 +328,8 @@ class ProStore:
 
     def audit(self,owner,actor,event,target='',detail=''):
         # Do not store credentials, links or full command text in audit details.
-        self.db.execute('INSERT INTO pro_audit(owner_id,actor_id,event,target,detail) VALUES(%s,%s,%s,%s,%s)',(owner,actor,event[:60],str(target)[:120],str(detail)[:200]))
+        from logging_config import redact
+        self.db.execute('INSERT INTO pro_audit(owner_id,actor_id,event,target,detail) VALUES(%s,%s,%s,%s,%s)',(owner,actor,redact(event)[:60],redact(target)[:120],redact(detail)[:200]))
 
     def audit_rows(self,actor,owner=None):
         owner=self.workspace(actor,owner)
