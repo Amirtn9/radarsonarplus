@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 import pytest
 
-from monitor_agent import parse_xray_config
+from monitor_agent import parse_xray_config, needs_compatibility_core
 
 UUID='00000000-0000-4000-8000-000000000001'
 KEY=base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip('=')
@@ -22,6 +22,7 @@ def share_cases():
         (8443,True,'random','mlkem768x25519plus.native.0rtt.'+KEY,'/sample?ed=2048'),
         (8443,True,'safari','none','/sample?ed=2048'),
         (2053,True,'chrome','none','/sample?ed=2048'),
+        (2053,False,'chrome','none','/sample?ed=2048'),
         (2086,False,'chrome','none','/sample?ed=2048'),
         (2083,True,'chrome','none','/sample?ed=2048'),
         (2096,True,'chrome','none','/sample?ed=2048')]:
@@ -67,6 +68,11 @@ def test_vless_xhttp_uri_keeps_mode_host_path_and_extra():
 @pytest.mark.parametrize('link,source',list(share_cases()))
 def test_real_pinned_core_accepts_synthetic_transport_combinations(link,source,tmp_path):
     config=tmp_path/'synthetic.json'
-    config.write_text(json.dumps({'outbounds':[parse_xray_config(link)]}))
-    result=subprocess.run([os.environ['SONAR_TEST_XRAY_BIN'],'run','-test','-config',str(config)],capture_output=True,text=True,timeout=10)
+    outbound=parse_xray_config(link)
+    binary=os.environ['SONAR_TEST_XRAY_BIN']
+    if needs_compatibility_core(outbound):
+        binary=os.getenv('SONAR_TEST_XRAY_COMPAT_BIN')
+        if not binary:pytest.skip('Verified plaintext compatibility runtime is required')
+    config.write_text(json.dumps({'outbounds':[outbound]}))
+    result=subprocess.run([binary,'run','-test','-config',str(config)],capture_output=True,text=True,timeout=10)
     assert result.returncode==0,result.stdout+result.stderr

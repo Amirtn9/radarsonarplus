@@ -19,11 +19,12 @@ import shutil
 import argparse
 import asyncio
 import hmac
+import copy
 import ssl
 from datetime import datetime, timedelta
 import logging
 
-AGENT_VERSION = '6.9.4'
+AGENT_VERSION = '6.9.5'
 AGENT_PROTOCOL = 2
 
 logger = logging.getLogger('sonar.agent')  # ✅ خودکار به سیستم متصل می‌شه
@@ -394,6 +395,18 @@ def parse_subscription_links(text_data, limit=600):
     """Parse ordinary, base64-decoded and structured subscriptions; unique URLs."""
     results, seen = [], set()
     if not text_data: return results
+    # A complete Xray profile is one test unit. Splitting its outbounds loses
+    # routing, DNS, balancers and chained proxy dependencies.
+    if text_data.lstrip().startswith('{'):
+        try:
+            profile=json.loads(text_data)
+            if isinstance(profile,dict) and (profile.get('protocol') or (
+                    isinstance(profile.get('outbounds'),list) and profile['outbounds'] and
+                    all(isinstance(o,dict) and o.get('protocol') for o in profile['outbounds']))):
+                return [{'name':str(profile.get('remarks') or profile.get('remark') or 'Xray profile')[:180],
+                         'link':json.dumps(profile,ensure_ascii=False)}]
+        except (ValueError,TypeError):
+            pass
     structured=_structured_sub_links(text_data)
     plain=[] if structured else [ln.strip() for ln in text_data.replace("\r", "\n").split("\n") if ln.strip()]
     for item in structured + [{'link':x,'name':None} for x in plain]:
@@ -409,24 +422,32 @@ def parse_subscription_links(text_data, limit=600):
 # 📦 XRAY MANAGER
 # ==============================================================================
 def install_xray():
+    """Install the latest stable core and an explicitly scoped legacy core."""
+    return _install_xray_release() and _install_xray_release(compat=True)
+
+
+def _install_xray_release(compat=False):
     """Install the checked-in, SHA256-pinned release and required geodata atomically."""
     import hashlib
     import platform
     from pathlib import Path
     import tempfile
-    url = os.getenv('SONAR_XRAY_URL', '')
-    expected = os.getenv('SONAR_XRAY_SHA256', '').lower()
+    install_dir = os.path.join(WORK_DIR,'compat') if compat else WORK_DIR
+    binary_path = os.path.join(install_dir,'xray')
+    url = '' if compat else os.getenv('SONAR_XRAY_URL', '')
+    expected = '' if compat else os.getenv('SONAR_XRAY_SHA256', '').lower()
     version = 'custom-pinned'
     if not url and not expected:
         try:
             lock = json.loads(Path(RUNTIME_LOCK_FILE).read_text())
+            if compat:lock=lock['compatibility']
             arch = {'amd64':'x86_64', 'arm64':'aarch64'}.get(platform.machine().lower(), platform.machine().lower())
             release = lock['assets'][arch]
             url, expected, version = release['url'], release['sha256'], lock['version']
         except (OSError, ValueError, KeyError):
             logger.error('Xray runtime lock missing or architecture unsupported')
             return False
-    local_archive = os.getenv('SONAR_XRAY_LOCAL_ARCHIVE', '')
+    local_archive = os.getenv('SONAR_XRAY_COMPAT_LOCAL_ARCHIVE' if compat else 'SONAR_XRAY_LOCAL_ARCHIVE', '')
     if not url or not re.fullmatch(r'[a-f0-9]{64}', expected):
         logger.warning('Xray installation requires a pinned URL and SHA-256')
         return False
@@ -439,19 +460,19 @@ def install_xray():
             value=hashlib.sha256()
             for block in iter(lambda:stream.read(1024*1024),b''): value.update(block)
             return value.hexdigest()
-    os.makedirs(WORK_DIR, mode=0o750, exist_ok=True)
-    metadata = Path(WORK_DIR) / 'runtime-installed.json'
+    os.makedirs(install_dir, mode=0o750, exist_ok=True)
+    metadata = Path(install_dir) / 'runtime-installed.json'
     try:
         saved=json.loads(metadata.read_text())
         if saved['archive_sha256']==expected and all(
-            digest(Path(WORK_DIR)/name)==saved['files'][name]
+            digest(Path(install_dir)/name)==saved['files'][name]
             for name in ('xray','geoip.dat','geosite.dat')
-        ) and os.access(XRAY_BIN, os.X_OK):
+        ) and os.access(binary_path, os.X_OK):
             return True
     except (OSError,ValueError,KeyError):
         pass
     try:
-        with tempfile.TemporaryDirectory(prefix='.xray-install-',dir=WORK_DIR) as temp:
+        with tempfile.TemporaryDirectory(prefix='.xray-install-',dir=install_dir) as temp:
             archive_path = str(Path(temp)/'runtime.zip')
             if local_archive:
                 local_path = Path(local_archive)
@@ -486,7 +507,7 @@ def install_xray():
             if result.returncode!=0:
                 raise RuntimeError('Xray architecture/executable check failed')
             for name in files:
-                os.replace(Path(temp)/name,Path(WORK_DIR)/name)
+                os.replace(Path(temp)/name,Path(install_dir)/name)
             staged=Path(temp)/'runtime-installed.json'
             staged.write_text(json.dumps({'version':version,'archive_sha256':expected,'files':files}))
             os.chmod(staged,0o600)
@@ -519,6 +540,31 @@ def _xhttp_settings(values):
     return settings
 
 
+def _enabled(value):
+    return value is True or str(value).lower() in ('1','true')
+
+
+def _server_name(explicit, host, address):
+    # v2rayN uses the transport Host as TLS SNI when SNI is omitted. Using
+    # the dial IP instead causes valid CDN WebSocket profiles to fail TLS.
+    return str(explicit or host or address or '').split(',')[0].strip()
+
+
+def _stream_transport(stream, values):
+    """Apply shared URI/VMess transport options without removing TLS settings."""
+    net=stream['network']
+    if net=='tcp' and values.get('headerType',values.get('type'))=='http':
+        hosts=[v.strip() for v in str(values.get('host') or '').split(',') if v.strip()]
+        paths=[v.strip() for v in str(values.get('path') or '/').split(',') if v.strip()]
+        stream['tcpSettings']={'header':{'type':'http','request':{'path':paths,'headers':{'Host':hosts}}}}
+    if net=='grpc':
+        stream['grpcSettings']={'serviceName':values.get('serviceName') or values.get('path') or '',
+                                'multiMode':str(values.get('mode','')).lower()=='multi'}
+    if net in ('xhttp','splithttp'):
+        stream['network']='xhttp'
+        stream['xhttpSettings']=_xhttp_settings(values)
+
+
 def parse_xray_config(link):
     """Parse common v2ray/xray share links into a minimal Xray outbound."""
     try:
@@ -528,7 +574,14 @@ def parse_xray_config(link):
 
         # JSON outbound (already)
         if link.startswith('{'):
-            return json.loads(link)
+            value=json.loads(link)
+            if not isinstance(value,dict):return None
+            if value.get('outbounds'):
+                if not isinstance(value['outbounds'],list) or not all(isinstance(o,dict) and o.get('protocol') for o in value['outbounds']):
+                    return None
+            elif not value.get('protocol'):
+                return None
+            return value
 
         # ----------------------------
         # VMESS
@@ -536,7 +589,7 @@ def parse_xray_config(link):
         if link.startswith('vmess://'):
             c = json.loads(decode_base64(link[8:]))
             net = c.get('net', 'tcp')
-            tls = c.get('tls', 'none')
+            tls = 'tls' if c.get('tls')=='tls' or _enabled(c.get('tls')) else 'none'
             stream = {"network": net, "security": tls or "none"}
 
             if net == 'ws':
@@ -553,10 +606,11 @@ def parse_xray_config(link):
             if tls == 'tls':
                 stream["tlsSettings"] = {
                     "serverName": (c.get('sni') or c.get('host') or c.get('add') or ""),
-                    "allowInsecure": False,
+                    "allowInsecure": _enabled(c.get('allowInsecure',c.get('insecure',False))),
                     "alpn": [x for x in str(c.get("alpn", "")).split(",") if x],
                     "fingerprint": c.get("fp") or "chrome"
                 }
+            _stream_transport(stream,c)
 
             return {
                 "protocol": "vmess",
@@ -599,8 +653,8 @@ def parse_xray_config(link):
 
             if sec == 'tls':
                 stream['tlsSettings'] = {
-                    "serverName": q.get('sni', [p.hostname or ""])[0] or (p.hostname or ""),
-                    "allowInsecure": q.get('allowInsecure',['false'])[0].lower() == 'true',
+                    "serverName": _server_name(q.get('sni',[''])[0],q.get('host',[''])[0],p.hostname),
+                    "allowInsecure": _enabled(q.get('allowInsecure',q.get('insecure',['false']))[0]),
                     "fingerprint": q.get('fp',['chrome'])[0] or 'chrome',
                     "alpn": [x for x in q.get('alpn',[''])[0].split(',') if x]
                 }
@@ -612,6 +666,7 @@ def parse_xray_config(link):
                     "shortId": q.get('sid', [''])[0] or "",
                     "spiderX": q.get('spx', ['/'])[0] or "/"
                 }
+            _stream_transport(stream,{key:value[0] for key,value in q.items()})
 
             return {
                 "protocol": "vless",
@@ -620,7 +675,7 @@ def parse_xray_config(link):
                         "address": p.hostname,
                         "port": int(p.port or 443),
                         "users": [{
-                            "id": p.username,
+                            "id": urllib.parse.unquote(p.username or ''),
                             "encryption": q.get('encryption', ['none'])[0] or 'none',
                             "flow": q.get('flow', [''])[0] or ""
                         }]
@@ -652,11 +707,12 @@ def parse_xray_config(link):
 
             if sec == 'tls':
                 stream['tlsSettings'] = {
-                    "serverName": q.get('sni', [p.hostname or ""])[0] or (p.hostname or ""),
-                    "allowInsecure": q.get('allowInsecure',['false'])[0].lower()=='true',
+                    "serverName": _server_name(q.get('sni',[''])[0],q.get('host',[''])[0],p.hostname),
+                    "allowInsecure": _enabled(q.get('allowInsecure',q.get('insecure',['false']))[0]),
                     "fingerprint": q.get('fp',['chrome'])[0],
                     "alpn": [x for x in q.get('alpn',[''])[0].split(',') if x]
                 }
+            _stream_transport(stream,{key:value[0] for key,value in q.items()})
 
             return {
                 "protocol": "trojan",
@@ -715,10 +771,78 @@ def _lowprio_shell(cmd: str) -> str:
     return f"{prefix} {cmd}" if prefix else cmd
 
 
+def build_probe_config(profile, local_port):
+    """Preserve complete profiles; isolate a share link to its own outbound."""
+    if not isinstance(profile,dict):raise ValueError('INVALID_CONFIG')
+    if profile.get('outbounds'):
+        config=copy.deepcopy(profile)
+        original=config.get('inbounds') or []
+        tag=next((i.get('tag') for i in original if isinstance(i,dict) and i.get('tag')), 'sonar-probe')
+        # User listeners/API must never be exposed on the monitoring host.
+        for field in ('api','stats','reverse'):
+            config.pop(field,None)
+    elif profile.get('protocol'):
+        config={'outbounds':[copy.deepcopy(profile)]}
+        tag='sonar-probe'
+    else:
+        raise ValueError('INVALID_CONFIG')
+    config['log']={'loglevel':'none'}
+    config['inbounds']=[{'tag':tag,'port':local_port,'listen':'127.0.0.1',
+                         'protocol':'socks','settings':{'udp':True}}]
+    # Do not inject geoip:ir/private direct rules: they can bypass the proxy
+    # under test or replace the original profile's routing decisions.
+    return config
+
+
+def needs_compatibility_core(profile):
+    """New Xray rejects explicitly plaintext public VLESS/Trojan profiles."""
+    outbounds=profile.get('outbounds',[profile])
+    for outbound in outbounds:
+        if outbound.get('protocol') not in ('vless','trojan'):continue
+        security=(outbound.get('streamSettings') or {}).get('security')
+        if security and security!='none':continue
+        settings=outbound.get('settings') or {}
+        if outbound['protocol']=='vless':
+            servers=settings.get('vnext') or [settings]
+            for server in servers:
+                try:
+                    address=ipaddress.ip_address(server.get('address',''))
+                    private_ranges=('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16','fc00::/7')
+                    if address.is_loopback or address.is_link_local or any(
+                            address in ipaddress.ip_network(network) for network in private_ranges):continue
+                except ValueError:
+                    if server.get('address')=='localhost':continue
+                users=server.get('users') or [settings]
+                if any(user.get('encryption','none')=='none' for user in users):return True
+        else:
+            return True
+    return False
+
+
+def runtime_versions():
+    """Read installed/expected versions, never claim that a lock is installed."""
+    from pathlib import Path
+    result={}
+    for name,directory in (('xray',Path(WORK_DIR)),('xray_compat',Path(WORK_DIR)/'compat')):
+        try:result[name+'_version']=json.loads((directory/'runtime-installed.json').read_text())['version']
+        except (OSError,ValueError,KeyError,TypeError):result[name+'_version']=None
+    try:
+        lock=json.loads(Path(RUNTIME_LOCK_FILE).read_text())
+        result['xray_expected_version']=lock['version']
+        result['xray_compat_expected_version']=lock['compatibility']['version']
+    except (OSError,ValueError,KeyError,TypeError):
+        pass
+    return result
+
+
 def test_config_logic(outbound, dl_size_mb=0.5):
     """لاجیک اصلی تست کانفیگ (Ping + optional Download Speed)."""
     if not os.path.isfile(XRAY_BIN) or not os.path.isfile(os.path.join(WORK_DIR,'geoip.dat')):
         return {"status":"Unknown","msg":"XRAY_NOT_READY: install the pinned runtime and geodata","ping":0,"jitter":0,"down":None,"up":None}
+    compat=needs_compatibility_core(outbound)
+    binary=os.path.join(WORK_DIR,'compat','xray') if compat else XRAY_BIN
+    if not os.path.isfile(binary):
+        return {'status':'Unknown','msg':'XRAY_COMPAT_NOT_READY','error_code':'XRAY_COMPAT_NOT_READY'}
     try:
         local_port = get_free_port()
     except (OSError,RuntimeError):
@@ -726,20 +850,20 @@ def test_config_logic(outbound, dl_size_mb=0.5):
                 "error_code":"XRAY_TEST_PORT_UNAVAILABLE","ping":0,"jitter":0,
                 "down":None,"up":None,"score":0}
     conf_file = os.path.join(WORK_DIR, f"config_{local_port}_{os.urandom(6).hex()}.json")
-    full_conf = {
-        "log": {"loglevel": "none"},
-        "inbounds": [{"port": local_port, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
-        "outbounds": [outbound, {"protocol": "freedom", "tag": "direct"}],
-        "routing": {"domainStrategy": "IPOnDemand", "rules": [{"type": "field", "ip": ["geoip:private", "geoip:ir"], "outboundTag": "direct"}]}
-    }
-
     proc = None
     try:
+        full_conf=build_probe_config(outbound,local_port)
         fd=os.open(conf_file, os.O_CREAT|os.O_EXCL|os.O_WRONLY, 0o600)
         with os.fdopen(fd,'w') as f:
             json.dump(full_conf, f)
 
-        proc = subprocess.Popen(_lowprio_prefix() + [XRAY_BIN, "-c", conf_file], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        # Prevent inherited global proxies/NO_PROXY from redirecting a probe.
+        # Compatibility core listeners are also restricted to loopback.
+        core_env=os.environ.copy()
+        go_debug=[v for v in core_env.get('GODEBUG','').split(',') if v and not v.startswith('multipathtcp=')]
+        core_env.update(XRAY_LOCATION_ASSET=os.path.dirname(binary),GODEBUG=','.join(go_debug+['multipathtcp=0']))
+        proc = subprocess.Popen(_lowprio_prefix() + [binary, "-c", conf_file], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,env=core_env)
         if not check_port_open(local_port):
             return {"status": "Unknown", "msg": "XRAY_CORE_START_FAILED", "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
 
@@ -748,13 +872,14 @@ def test_config_logic(outbound, dl_size_mb=0.5):
         prox = f"socks5h://127.0.0.1:{local_port}"
         pings = []
         failure_codes=[]
+        probes=[]
 
         # A blocked measurement site is not proof that a WireGuard egress is
         # broken. Try independent HTTPS destinations within one bounded budget,
         # then reuse the successful destination for comparable latency samples.
         targets = list(_health_urls())
         successful_target = None
-        deadline = time.monotonic() + 18
+        deadline = time.monotonic() + 24
         for attempt in range(6):
             remaining = deadline - time.monotonic()
             if remaining < 1 or len(pings) >= 3:
@@ -762,15 +887,19 @@ def test_config_logic(outbound, dl_size_mb=0.5):
             target_url = successful_target or (targets.pop(0) if targets else None)
             if target_url is None:
                 break
-            maximum = max(1, min(6, int(remaining)))
+            maximum = max(1, min(8, int(remaining)))
             try:
                 cmd = _lowprio_prefix() + ["curl", "--proxy", prox, "--noproxy", "",
                     "--silent", "--show-error", "--output", "/dev/null",
-                    "--write-out", "%{http_code} %{time_total}", "--connect-timeout", "4",
+                    "--write-out", "%{http_code} %{time_total}", "--connect-timeout", "6",
                     "--max-time", str(maximum), target_url]
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=maximum+2, check=False)
                 parts = res.stdout.split()
-                if res.returncode == 0 and len(parts) == 2 and parts[0] == "204":
+                probes.append({'target':urllib.parse.urlsplit(target_url).hostname,
+                               'http_status':parts[0] if parts else None,'curl_exit':res.returncode})
+                # v2rayN-style reachability: valid 2xx/3xx HTTPS responses
+                # establish traffic too; a site need not return exactly 204.
+                if res.returncode == 0 and len(parts) == 2 and parts[0].isdigit() and 200<=int(parts[0])<400:
                     latency = float(parts[1]) * 1000
                     if not math.isfinite(latency) or latency <= 0:
                         raise ValueError('Invalid measured latency')
@@ -790,10 +919,16 @@ def test_config_logic(outbound, dl_size_mb=0.5):
             code=('XRAY_ERROR' if proc.poll() is not None else
                   next((c for c in failure_codes if c not in ('TIMEOUT','HTTP_UNEXPECTED')),None)
                   or (failure_codes[-1] if failure_codes else 'TIMEOUT'))
-            return {"status": "Fail", "msg": code, "error_code": code,
+            # A measurement target's timeout, DNS or TLS error is not proof
+            # that this profile is broken. Preserve prior health/alert state.
+            return {"status": "Unknown", "msg": code, "error_code": code,'probes':probes,
+                    'tunnel_established':any(p['curl_exit']==0 and str(p['http_status']).isdigit()
+                                              and int(p['http_status'])>0 for p in probes),
+                    'core_mode':'compatibility' if compat else 'latest',
+                    'measurement_scope':'profile_route' if outbound.get('outbounds') else 'proxy',
                     "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
 
-        avg_ping = int(sum(pings) / len(pings))
+        avg_ping = max(1, int(sum(pings) / len(pings)))
         jitter = int(max(pings) - min(pings)) if len(pings) >= 2 else 0
 
         # Download Speed Test (Optional)
@@ -801,7 +936,7 @@ def test_config_logic(outbound, dl_size_mb=0.5):
         if dl_size_mb and dl_size_mb > 0.5:
             try:
                 url = f"https://speed.cloudflare.com/__down?bytes={int(dl_size_mb * 1024 * 1024)}"
-                cmd = _lowprio_prefix() + ["curl", "--proxy", prox, "--fail", "--silent", "--show-error",
+                cmd = _lowprio_prefix() + ["curl", "--proxy", prox, "--noproxy", "", "--fail", "--silent", "--show-error",
                                             "--write-out", "%{speed_download} %{size_download}", "--output", "/dev/null",
                                             "--max-time", "12", url]
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=False)
@@ -826,10 +961,15 @@ def test_config_logic(outbound, dl_size_mb=0.5):
         elif avg_ping > 150:
             score = 9
 
-        return {"status": "OK", "ping": avg_ping, "jitter": jitter, "down": dl_spd, "up": None, "speed_unit": "Mbps", "score": score}
+        versions=runtime_versions()
+        return {"status": "OK", "ping": avg_ping, "jitter": jitter, "down": dl_spd, "up": None, "speed_unit": "Mbps", "score": score,
+                'probes':probes,'core_mode':'compatibility' if compat else 'latest',
+                'core_version':versions.get('xray_compat_version' if compat else 'xray_version'),
+                'measurement_scope':'profile_route' if outbound.get('outbounds') else 'proxy'}
 
     except Exception as e:
-        return {"status": "Fail", "msg": str(e), "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
+        return {"status": "Unknown", "msg": 'PROBE_ERROR', "error_code":'PROBE_ERROR',
+                "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
 
     finally:
         try:
@@ -899,6 +1039,7 @@ async def get_stats():
             'traffic_gb':round((net.bytes_sent+net.bytes_recv)/(1024**3),2),
             'agent_usage':agent_usage_snapshot(),
             'agent_version':AGENT_VERSION,'agent_protocol':AGENT_PROTOCOL,
+            **runtime_versions(),
             'uptime_sec':uptime,'uptime_str':str(timedelta(seconds=uptime)),
             'capabilities':{'ssh_relay':True, 'xray_ready':os.path.isfile(XRAY_BIN) and os.path.isfile(os.path.join(WORK_DIR,'geoip.dat')),
                             'formats':['plain','base64','clash_yaml','singbox_json'],
@@ -1086,7 +1227,7 @@ Protocol:
                         pass
                     await websocket.send(json.dumps(res))
                 else:
-                    await websocket.send(json.dumps({"status": "Fail", "msg": "Parse Error"}))
+                    await websocket.send(json.dumps({"status": "Unknown", "msg": "CONFIG_UNSUPPORTED", "error_code":"CONFIG_UNSUPPORTED"}))
                     
             elif action == 'fetch_sub':
                 # 🆕 نسخه ۴.۲: فقط لیست کانفیگ‌های داخل یک لینک اشتراک را برگردان.
@@ -1280,8 +1421,9 @@ if __name__ == "__main__":
                             "type": "result",
                             "name": c_name,
                             "link": c_link,
-                            "status": "Fail",
-                            "msg": "Parse Error",
+                            "status": "Unknown",
+                            "msg": "CONFIG_UNSUPPORTED",
+                            "error_code": "CONFIG_UNSUPPORTED",
                             "ping": 0,
                             "jitter": 0,
                             "down": 0,
@@ -1300,7 +1442,7 @@ if __name__ == "__main__":
                     pass
                 print(json.dumps(res), flush=True)
             else:
-                print(json.dumps({"status": "Fail", "msg": "Parse Error"}), flush=True)
+                print(json.dumps({"status": "Unknown", "msg": "CONFIG_UNSUPPORTED", "error_code":"CONFIG_UNSUPPORTED"}), flush=True)
 
     # حالت پیش‌فرض: اجرای سرور روی پورت 8080
     else:

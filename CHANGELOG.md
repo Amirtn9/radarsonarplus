@@ -1,3 +1,11 @@
+# RadarSonarPlus 6.9.5 — Core compatibility and truthful proxy probes (2026-11-08)
+
+- Pin Xray v26.10.31 and an isolated v26.6.27 compatibility core for explicitly plaintext profiles rejected by newer upstream policy; verify both architectures and both offline deployment archives.
+- Preserve TLS/SNI, transport settings and complete Xray JSON routing/DNS/outbound dependencies without injecting direct bypass routes.
+- Report inconclusive target failures as Unknown; accept valid 2xx/3xx reachability, retain per-target diagnostics and identify the measurement scope and installed core versions.
+- Add real local VLESS/WS traffic tests with verified TLS, routing and the compatibility core, plus parsing/failure/deployment regressions.
+- Remote monitoring Agents must also be updated. See [راهنمای ارتقا و محدودیت‌ها](docs/RELEASE_6_9_5_FA.md).
+
 # Agent reliability and database log management (2026-11-08)
 
 - Prevent late WebSocket handshakes from entering a reset pool; preserve unknown measurements on unavailable or invalid Agent stats.

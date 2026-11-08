@@ -49,10 +49,14 @@ def install_xray_via_main(run, host, port, username, password, runtime_lock, pro
     with tempfile.TemporaryDirectory(prefix='sonar-xray-') as tmp:
         source=Path(tmp)/'runtime.zip'
         expected=fetch_pinned_archive(runtime_lock,source,target['arch'])
+        if runtime_lock.get('compatibility'):
+            fetch_pinned_archive(runtime_lock['compatibility'],Path(tmp)/'compat-runtime.zip',target['arch'])
         remote=_sftp_bundle(host,port,username,password,tmp)
         quoted=__import__('shlex').quote(remote+'/runtime.zip')
         cmd=('install -d -m 0750 -o sonar-agent -g sonar-agent /var/lib/sonar-agent && '
-             f'install -m 0640 -o sonar-agent -g sonar-agent {quoted} /var/lib/sonar-agent/.sonar-runtime.zip && '
+             f'install -m 0640 -o sonar-agent -g sonar-agent {quoted} /var/lib/sonar-agent/.sonar-runtime.zip && ' +
+             (f'install -m 0640 -o sonar-agent -g sonar-agent {__import__("shlex").quote(remote+"/compat-runtime.zip")} /var/lib/sonar-agent/.sonar-compat-runtime.zip && '
+              if runtime_lock.get('compatibility') else '') +
              f'rm -rf -- {__import__("shlex").quote(remote)}')
         ok,out=run(cmd,65)
         if not ok:raise RuntimeError('XRAY_TRANSFER_FAILED: '+str(out)[-160:])

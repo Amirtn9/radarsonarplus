@@ -66,6 +66,9 @@ def probe_note(data):
         'HTTP_UNEXPECTED':'مقصد سنجش پاسخ مورد انتظار نداد؛ محدودیت مسیر خروجی را بررسی کنید.',
         'XRAY_ERROR':'پردازش هسته متوقف شد؛ Agent و سازگاری کانفیگ را بررسی کنید.',
         'XRAY_CORE_START_FAILED':'هسته تست اجرا نشد؛ این نتیجه اثبات قطعی کانفیگ نیست.',
+        'XRAY_COMPAT_NOT_READY':'این کانفیگ بدون TLS به هسته سازگار نیاز دارد؛ Agent را از بخش نصب/تعمیر به‌روز کنید.',
+        'CONFIG_UNSUPPORTED':'Agent این قالب کانفیگ را نخواند؛ کانفیگ قطع‌شده تشخیص داده نشده است.',
+        'PROBE_ERROR':'اجرای سنجش کامل نشد؛ نتیجه قطعی درباره سلامت کانفیگ وجود ندارد.',
     }.get(str(code),'سنجش از این نود ناموفق بود؛ نتیجه گوشی را با مسیر و زمان همین نود مقایسه کنید.')
 
 
@@ -264,7 +267,7 @@ class TunnelLogic:
         # At the cap (600), we cannot prove the list wasn't truncated: no deletions.
         if (not isinstance(links, list) or any(not isinstance(item,dict) or
              not isinstance(item.get('link'),str) or not
-             item['link'].startswith(('vmess://','vless://','trojan://','ss://'))
+             item['link'].startswith(('vmess://','vless://','trojan://','ss://','{'))
              for item in links)):
             await self._refresh_state(uid,sub_id,'failed',error='SUB_MALFORMED')
             return ['❌ SUB_MALFORMED: ساختار پاسخ ایجنت معتبر نیست؛ داده قبلی حفظ شد.']
@@ -307,14 +310,14 @@ class TunnelLogic:
             elif status=='Fail':
                 report_lines.append(f"❌ <b>{html.escape(str(c_name)[:180])}</b>\n{probe_note(data)}")
             else:
-                report_lines.append(f"⚪ {html.escape(str(c_name)[:180])}: نتیجه معتبر دریافت نشد؛ ابتدا Agent را بررسی کنید.")
+                report_lines.append(f"⚪ <b>{html.escape(str(c_name)[:180])}</b>\n{probe_note(data)}\nقطعی کانفیگ تأیید نشده است.")
         diff = await run_sync(self._bulk_save_sub_items, uid, sub_id, rows, allow_delete=authoritative)
         if not diff:
             await self._refresh_state(uid,sub_id,'failed',error='SUB_SAVE_FAILED')
             return ['❌ ذخیره کانفیگ‌ها ناموفق بود؛ داده قبلی حفظ شد.']
         await self._refresh_state(uid,sub_id,'ready',extracted=len(unique),healthy=counts['OK'])
         report_lines.insert(0, f"🔄 همگام‌سازی: {diff['added']} جدید | {diff['removed']} حذف‌شده | {diff['kept']} بدون تغییر\n"
-                               f"✅ سالم: {counts['OK']} | ❌ خراب: {counts['Fail']} | ⚪ نامشخص: {counts['Unknown']}")
+                               f"✅ سالم از این نود: {counts['OK']} | ❌ سنجش ناموفق: {counts['Fail']} | ⚪ نامشخص: {counts['Unknown']}")
         if not authoritative:
             report_lines.append('⚠️ حذف خودکار انجام نشد: منبع کامل‌بودن فهرست را تأیید نکرده یا به سقف ۶۰۰ رسیده است.')
         if sub_info:

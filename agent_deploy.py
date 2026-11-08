@@ -326,10 +326,10 @@ env=os.environ.copy()
 for line in pathlib.Path('/etc/sonar-agent.env').read_text().splitlines():
  k,sep,v=line.partition('=')
  if sep and (k.startswith('SONAR_XRAY_') or k=='SONAR_AGENT_WORK_DIR'): env[k]=v
-subprocess.run(['runuser','-u','sonar-agent','--','/opt/sonar-agent-venv/bin/python','/opt/sonar-agent/monitor_agent.py','--install-runtime'],env=env,check=True,timeout=300)
+subprocess.run(['runuser','-u','sonar-agent','--','/opt/sonar-agent-venv/bin/python','/opt/sonar-agent/monitor_agent.py','--install-runtime'],env=env,check=True,timeout=480)
 '''
     _emit(progress, 'xray_direct', 'آماده‌سازی Xray با نسخه و هش پین‌شده')
-    ok, out = run("python3 - <<'SONAR_RUNTIME_PY'\n" + runtime_script + '\nSONAR_RUNTIME_PY', 360)
+    ok, out = run("python3 - <<'SONAR_RUNTIME_PY'\n" + runtime_script + '\nSONAR_RUNTIME_PY', 540)
     if not ok:
         try:
             local_path, checksum = install_xray_via_main(run, ip, port, user, password, runtime_lock, progress)
@@ -337,9 +337,9 @@ subprocess.run(['runuser','-u','sonar-agent','--','/opt/sonar-agent-venv/bin/pyt
             return fail('XRAY_PROVISION_FAILED: '+str(exc)[:240])
         # Keep archive location out of persistent agent env. TLS enrollment stays per-Agent.
         offline_runtime = runtime_script.replace(
-            "subprocess.run(['runuser'", "env['SONAR_XRAY_LOCAL_ARCHIVE']='"+local_path+"'\nsubprocess.run(['runuser'")
-        ok, out = run("python3 - <<'SONAR_RUNTIME_PY'\n" + offline_runtime + '\nSONAR_RUNTIME_PY', 360)
-        run('rm -f /var/lib/sonar-agent/.sonar-runtime.zip', 20)
+            "subprocess.run(['runuser'", "env['SONAR_XRAY_LOCAL_ARCHIVE']='"+local_path+"'\nenv['SONAR_XRAY_COMPAT_LOCAL_ARCHIVE']='/var/lib/sonar-agent/.sonar-compat-runtime.zip'\nsubprocess.run(['runuser'")
+        ok, out = run("python3 - <<'SONAR_RUNTIME_PY'\n" + offline_runtime + '\nSONAR_RUNTIME_PY', 540)
+        run('rm -f /var/lib/sonar-agent/.sonar-runtime.zip /var/lib/sonar-agent/.sonar-compat-runtime.zip', 20)
         if not ok:return fail('XRAY_OFFLINE_PROVISION_FAILED: '+str(out)[-320:])
     quota = os.getenv('SONAR_AGENT_CPU_QUOTA', '60%')
     if not __import__('re').fullmatch(r'[1-9][0-9]{0,3}%', quota):
