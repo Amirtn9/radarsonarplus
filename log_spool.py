@@ -6,6 +6,7 @@ import os
 import sqlite3
 import stat
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -24,17 +25,31 @@ class LogSpool:
             if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:
                 raise ValueError('Unsafe log spool file')
         self.lock=threading.RLock()
-        self.conn=sqlite3.connect(str(self.path),timeout=0.1,check_same_thread=False)
-        self.conn.execute('PRAGMA journal_mode=WAL')
-        self.conn.execute('PRAGMA synchronous=FULL')
-        self.conn.execute('PRAGMA secure_delete=ON')
-        # 128 MiB at SQLite's default 4096-byte pages; never grow indefinitely.
-        page_size=self.conn.execute('PRAGMA page_size').fetchone()[0]
-        self.conn.execute(f'PRAGMA max_page_count={128*1024*1024//page_size}')
-        self.conn.execute('''CREATE TABLE IF NOT EXISTS pending (
-            event_id TEXT PRIMARY KEY,created_at REAL NOT NULL,payload TEXT NOT NULL)''')
-        self.conn.execute('CREATE INDEX IF NOT EXISTS pending_time ON pending(created_at)')
-        self.conn.commit()
+        # WAL activation can return SQLITE_BUSY immediately even with a busy
+        # timeout. Concurrent service starts must retry instead of permanently
+        # falling back to volatile memory. Keep normal emit waits at 100 ms.
+        deadline=time.monotonic()+5
+        while True:
+            self.conn=sqlite3.connect(str(self.path),timeout=0.1,check_same_thread=False)
+            try:
+                self.conn.execute('PRAGMA journal_mode=WAL')
+                self.conn.execute('PRAGMA synchronous=FULL')
+                self.conn.execute('PRAGMA secure_delete=ON')
+                # 128 MiB at SQLite's default 4096-byte pages; never grow indefinitely.
+                page_size=self.conn.execute('PRAGMA page_size').fetchone()[0]
+                self.conn.execute(f'PRAGMA max_page_count={128*1024*1024//page_size}')
+                self.conn.execute('''CREATE TABLE IF NOT EXISTS pending (
+                    event_id TEXT PRIMARY KEY,created_at REAL NOT NULL,payload TEXT NOT NULL)''')
+                self.conn.execute('CREATE INDEX IF NOT EXISTS pending_time ON pending(created_at)')
+                self.conn.commit()
+                break
+            except sqlite3.OperationalError as exc:
+                self.conn.close()
+                if 'locked' not in str(exc).lower() or time.monotonic()>=deadline:raise
+                time.sleep(.02)
+            except Exception:
+                self.conn.close()
+                raise
 
     def add(self, rows):
         values=[(row[6],row[0].timestamp(),json.dumps([row[0].isoformat(),*row[1:]],ensure_ascii=False)) for row in rows]

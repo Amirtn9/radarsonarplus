@@ -55,6 +55,23 @@ def test_disk_spool_rejects_symlink_and_hardlink(tmp_path):
     assert target.read_text()=='do not overwrite'
 
 
+def test_spool_initialization_retries_temporary_database_lock(tmp_path):
+    import sqlite3
+    path=tmp_path/'initializing.sqlite3'
+    blocker=sqlite3.connect(path,check_same_thread=False)
+    blocker.execute('CREATE TABLE blocker (id INTEGER)')
+    blocker.commit()
+    blocker.execute('BEGIN IMMEDIATE')
+    release=threading.Timer(.4,blocker.rollback);release.start()
+    try:
+        spool=LogSpool(path)
+        try:
+            spool.add([row()])
+            assert spool.count()==1
+        finally:spool.close()
+    finally:release.join();blocker.close()
+
+
 def test_independent_processes_share_spool_and_survive_abrupt_exit(tmp_path):
     import sys
     state=tmp_path/'shared-state'
