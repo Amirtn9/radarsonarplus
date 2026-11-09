@@ -18,6 +18,8 @@ case "$action" in
       errors) units=(-u sonar-bot -u sonar-web); priority=(--priority err);;
       *) echo 'DIAGNOSTIC_SERVICE_NOT_ALLOWED' >&2; exit 64;;
     esac
+    # Include both current private-namespace and historical shared-journal logs.
+    /usr/bin/journalctl --namespace=sonar "${units[@]}" --since "$days days ago" --no-pager --output=short-iso-precise "${priority[@]}" || true
     exec /usr/bin/journalctl "${units[@]}" --since "$days days ago" --no-pager --output=short-iso-precise "${priority[@]}"
     ;;
   service)

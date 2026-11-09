@@ -10,6 +10,7 @@ import os
 import queue
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from logging_config import redact
@@ -34,6 +35,19 @@ def install_schema(db):
             id INTEGER PRIMARY KEY CHECK(id=1),
             cleared_at TIMESTAMPTZ NOT NULL DEFAULT '-infinity')''')
         cur.execute('INSERT INTO pro_log_state(id) VALUES(1) ON CONFLICT DO NOTHING')
+        conn.commit()
+
+
+def install_reliability_schema(db):
+    """Migration 14: deduplicate durable replay, including uncertain commits."""
+    with db.get_connection() as (conn,cur):
+        cur.execute('ALTER TABLE pro_application_logs ADD COLUMN IF NOT EXISTS event_id UUID')
+        cur.execute('CREATE UNIQUE INDEX IF NOT EXISTS pro_application_logs_event ON pro_application_logs(event_id)')
+        cur.execute('''CREATE TABLE IF NOT EXISTS pro_log_purge_jobs (
+            id UUID PRIMARY KEY,actor_id BIGINT NOT NULL,include_remote BOOLEAN NOT NULL,
+            state VARCHAR(20) NOT NULL DEFAULT 'pending',result JSONB NOT NULL DEFAULT '{}',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
+        cur.execute('CREATE INDEX IF NOT EXISTS pro_log_purge_pending ON pro_log_purge_jobs(created_at) WHERE state=\'pending\'')
         conn.commit()
 
 
@@ -119,11 +133,22 @@ class LogStore:
             cur.execute('SELECT pg_advisory_xact_lock(%s)', (LOCK_ID,))
             # Block concurrent audit INSERTs, too. Never TRUNCATE CASCADE.
             cur.execute('LOCK TABLE pro_application_logs,pro_audit IN SHARE ROW EXCLUSIVE MODE')
-            cur.execute('UPDATE pro_log_state SET cleared_at=clock_timestamp() WHERE id=1')
+            cur.execute('UPDATE pro_log_state SET cleared_at=clock_timestamp() WHERE id=1 RETURNING cleared_at')
+            cutoff=cur.fetchone()['cleared_at']
             cur.execute('DELETE FROM pro_application_logs')
             cur.execute('DELETE FROM pro_audit')
             conn.commit()
-        return {'ok': True, 'scope': 'database_logs'}
+        # Old queued/retry records are also removed locally. PostgreSQL's
+        # watermark remains authoritative for other processes and late batches.
+        from log_spool import LogSpool
+        try:
+            spool=LogSpool()
+            try:spool.discard_before(cutoff)
+            finally:spool.close()
+            spool_status='cleared'
+        except Exception:
+            spool_status='unavailable'
+        return {'ok': True, 'scope': 'database_logs','retry_spool':spool_status}
 
     def write(self, rows):
         if not rows:
@@ -131,12 +156,14 @@ class LogStore:
         with self.db.get_connection() as (conn, cur):
             cur.execute('SELECT pg_advisory_xact_lock_shared(%s)', (LOCK_ID,))
             for row in rows:
+                row=tuple(row) if len(row)==7 else (*row,str(uuid.uuid4()))
                 # Queued pre-purge records cannot reappear after deletion,
                 # including records queued by another web/bot process.
                 cur.execute('''INSERT INTO pro_application_logs
-                    (created_at,level,category,source,message,status)
-                    SELECT %s,%s,%s,%s,%s,%s FROM pro_log_state
-                    WHERE id=1 AND cleared_at < %s''', (*row, row[0]))
+                    (created_at,level,category,source,message,status,event_id)
+                    SELECT %s,%s,%s,%s,%s,%s,%s FROM pro_log_state
+                    WHERE id=1 AND cleared_at < %s
+                    ON CONFLICT(event_id) DO NOTHING''', (*row, row[0]))
             conn.commit()
 
     def cleanup(self):
@@ -158,6 +185,15 @@ class DatabaseLogHandler(logging.Handler):
         self.pending = queue.Queue(maxsize=2000)
         self.stop = threading.Event()
         self.dropped = 0
+        self.failures = 0
+        self.maintenance_failures = 0
+        from log_spool import LogSpool
+        self.spool = None
+        self.spool_error = None
+        self.durability_failures = 0
+        self.durable = os.getenv('SONAR_LOG_DURABLE','1')!='0'
+        try:self.spool=LogSpool()
+        except Exception as exc:self.spool_error=type(exc).__name__
         self.worker = threading.Thread(target=self._run, name='sonar-log-writer', daemon=True)
         self.worker.start()
 
@@ -168,44 +204,101 @@ class DatabaseLogHandler(logging.Handler):
             message = self.format(record)
             row = (datetime.fromtimestamp(record.created, timezone.utc), record.levelname[:10],
                    category_for(record.name), record.name[:120], redact(message)[:16000],
-                   'failed' if record.levelno >= logging.ERROR else 'recorded')
-            self.pending.put_nowait(row)
+                   'failed' if record.levelno >= logging.ERROR else 'recorded',str(uuid.uuid4()))
+            persisted=False
+            if self.durable:
+                try:
+                    if self.spool is None:raise RuntimeError('Retry storage unavailable')
+                    self.spool.add([row]);persisted=True
+                except Exception as exc:
+                    self.durability_failures+=1
+                    self.spool_error=type(exc).__name__
+            try:self.pending.put_nowait(row)
+            except queue.Full:
+                if not persisted:
+                    if self.spool is None:raise RuntimeError('Retry storage unavailable')
+                    self.spool.add([row])
         except Exception:
             self.dropped += 1
 
     def _run(self):
         maintenance = 0
         failure_notice = 0
+        retry_at = 0
+        retry_delay = 1
+        offline = False
         while not self.stop.is_set() or not self.pending.empty():
             rows = []
             try:
                 rows.append(self.pending.get(timeout=0.25))
             except queue.Empty:
-                continue
+                pass
             while len(rows) < 100:
                 try:
                     rows.append(self.pending.get_nowait())
                 except queue.Empty:
                     break
             try:
-                self.store.write(rows)
-                if time.monotonic() >= maintenance:
-                    self.store.cleanup()
-                    maintenance = time.monotonic()+3600
+                if rows:
+                    if self.stop.is_set() or (offline and time.monotonic()<retry_at):
+                        if self.spool is None:raise RuntimeError('Retry storage unavailable')
+                        self.spool.add(rows)
+                    else:
+                        try:
+                            self.store.write(rows)
+                            if self.spool:self.spool.remove([row[6] for row in rows])
+                        except Exception:
+                            if self.spool:self.spool.add(rows)
+                            raise
+                        offline=False
+                if self.spool and not self.stop.is_set() and time.monotonic()>=retry_at:
+                    retry=self.spool.read()
+                    if retry:
+                        self.store.write(retry)
+                        self.spool.remove([row[6] for row in retry])
+                    retry_delay=1
+                    offline=False
+                    retry_at=time.monotonic()+0.25
             except Exception as exc:
-                self.dropped += len(rows)
+                self.failures += 1
+                offline=True
+                # The failed batch is retained by the spool, not discarded.
+                # If disk persistence also failed, make the loss observable.
+                if rows:
+                    try:
+                        if self.spool is None:raise RuntimeError('Retry storage unavailable')
+                        self.spool.add(rows)
+                    except Exception:self.dropped+=len(rows)
+                retry_at=time.monotonic()+retry_delay
+                retry_delay=min(30,retry_delay*2)
                 if time.monotonic() >= failure_notice:
                     # The worker is excluded from this handler; existing console
                     # and file handlers still report unavailable DB logging.
                     logging.getLogger(__name__).warning(
-                        'Database log batch unavailable: %s; dropped=%s', type(exc).__name__, self.dropped)
+                        'Database logging retry pending: %s; dropped=%s', type(exc).__name__, self.dropped)
                     failure_notice = time.monotonic()+60
             finally:
                 for _ in rows:
                     self.pending.task_done()
+            if not self.stop.is_set() and time.monotonic()>=maintenance:
+                try:self.store.cleanup()
+                except Exception:self.maintenance_failures+=1
+                maintenance=time.monotonic()+3600
+        if self.spool:self.spool.close()
+
+    def health(self):
+        try:durable=self.spool.count() if self.spool else None
+        except Exception:durable=None
+        return {'memory_pending':self.pending.qsize(),'durable_pending':durable,
+                'dropped':self.dropped,'write_failures':self.failures,
+                'maintenance_failures':self.maintenance_failures,'spool_error':self.spool_error,
+                'durable_mode':self.durable,'durability_failures':self.durability_failures,
+                'worker_alive':self.worker.is_alive()}
 
     def close(self):
-        self.stop.set()
+        self.acquire()
+        try:self.stop.set()
+        finally:self.release()
         if threading.current_thread() is not self.worker:
             self.worker.join(timeout=5)
         super().close()

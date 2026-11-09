@@ -31,7 +31,7 @@ from service_monitor import ServiceStore
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
-app=FastAPI(title='RadarSonarPlus 6.9.5',docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='RadarSonarPlus 6.9.6',docs_url=None,redoc_url=None,openapi_url=None)
 
 @app.on_event('startup')
 async def _configure_executor():
@@ -272,7 +272,9 @@ async def bootstrap_additive_schemas():
     )
     app.state.enterprise_stop=asyncio.Event()
     from web_reporting import observation_worker
+    from log_purge import worker as log_purge_worker
     app.state.enterprise_tasks=[
+        asyncio.create_task(log_purge_worker(store.db,SUPER_ADMIN_ID,app.state.enterprise_stop)),
         asyncio.create_task(observation_worker(store.db,app.state.enterprise_stop)),
         asyncio.create_task(operations_worker(store.db,app.state.enterprise_stop)),
         asyncio.create_task(webhook_worker(store.db,app.state.enterprise_stop)),
@@ -385,7 +387,10 @@ async def admin_logs(uid:int=Depends(actor),window:str='24',start:datetime|None=
                      page:int=Query(default=1,ge=1,le=10000),
                      per_page:int=Query(default=50,ge=1,le=100)):
     from log_management import LogStore
-    return await guarded(LogStore(store.db,SUPER_ADMIN_ID).list,uid,window,start,end,level,category,page,per_page)
+    result=await guarded(LogStore(store.db,SUPER_ADMIN_ID).list,uid,window,start,end,level,category,page,per_page)
+    handler=getattr(app.state,'database_logs',None)
+    if handler:result['logging_health']=await asyncio.to_thread(handler.health)
+    return result
 
 
 class ClearLogs(BaseModel):
@@ -396,6 +401,24 @@ class ClearLogs(BaseModel):
 async def clear_admin_logs(body:ClearLogs,uid:int=Depends(actor)):
     from log_management import LogStore
     return await guarded(LogStore(store.db,SUPER_ADMIN_ID).clear,uid,body.confirmation)
+
+
+class PurgeAllLogs(ClearLogs):
+    include_remote:bool=False
+
+
+@app.post('/api/admin/logs/purge',status_code=202)
+async def purge_all_logs(body:PurgeAllLogs,uid:int=Depends(actor)):
+    from log_purge import PurgeJobs,PurgeScopeConflict
+    try:return await guarded(PurgeJobs(store.db,SUPER_ADMIN_ID).create,uid,body.confirmation,body.include_remote)
+    except PurgeScopeConflict:
+        raise HTTPException(status_code=409,detail='پاک‌سازی با محدوده دیگری در حال اجراست؛ پس از پایان آن دوباره اقدام کنید.')
+
+
+@app.get('/api/admin/logs/purge/{job_id}')
+async def purge_log_status(job_id:str,uid:int=Depends(actor)):
+    from log_purge import PurgeJobs
+    return await guarded(PurgeJobs(store.db,SUPER_ADMIN_ID).read,uid,job_id)
 
 @app.get('/api/tags')
 async def tags(uid:int=Depends(actor),owner:int|None=None):return await guarded(store.tags,uid,owner)
@@ -490,7 +513,7 @@ async def diagnostic_bundle(days:int=Query(default=7,ge=1,le=30),
     except Exception as exc:
         log.exception('Diagnostic report failed at stage=%s type=%s',stage,type(exc).__name__)
         raise HTTPException(status_code=503,detail=f'Diagnostic report unavailable at stage {stage}: {type(exc).__name__}')
-    return FileResponse(path,media_type='application/zip',filename=f'radarsonarplus-v6.9.5-full-logs-{days}d.zip',
+    return FileResponse(path,media_type='application/zip',filename=f'radarsonarplus-v6.9.6-full-logs-{days}d.zip',
                         background=BackgroundTask(path.unlink,missing_ok=True))
 
 class TeamUpdate(BaseModel):

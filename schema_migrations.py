@@ -29,6 +29,7 @@ def _registry():
     from web_login import install_schema as web_login_schema
     from config_alerts import install_schema as config_alert_schema
     from log_management import install_schema as log_schema
+    from log_management import install_reliability_schema as log_reliability_schema
 
     return (
         (2, "pro_store", pro_store_schema),
@@ -43,6 +44,7 @@ def _registry():
         (11, "web_agent_jobs", web_agent_jobs_schema),
         (12, "config_alerts", config_alert_schema),
         (13, "log_management", log_schema),
+        (14, "log_reliability", log_reliability_schema),
     )
 
 

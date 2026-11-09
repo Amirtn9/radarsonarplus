@@ -1,3 +1,12 @@
+# RadarSonarPlus 6.9.6 — Durable logs, scoped purge jobs and aligned documentation (2026-11-09)
+
+- Align current README, Persian README, security notes, runtime and Agent declarations; retain protocol 2 and preserve historical release documents.
+- Persist redacted application events to a bounded private SQLite/WAL outbox by default; retry PostgreSQL writes with UUID deduplication and expose delivery/durability failures.
+- Add additive migration 14 and durable admin-only multi-source purge jobs, explicit scope conflicts, per-source/node results and interrupted-job recovery without automatic destructive replay.
+- Preserve service hardening through fixed-scope root maintenance over an owner-only systemd socket; isolate new Sonar journals and reject global journal vacuuming, unsafe file links and arbitrary paths.
+- Historical shared journals, unreachable nodes and custom directories remain explicit partial results. PasarGuard is still absent from this repository.
+- See [گزارش نسخه و راهنمای ارتقا](docs/RELEASE_6_9_6_FA.md) for validation and deployment limits.
+
 # RadarSonarPlus 6.9.5 — Core compatibility and truthful proxy probes (2026-11-08)
 
 - Pin Xray v26.10.31 and an isolated v26.6.27 compatibility core for explicitly plaintext profiles rejected by newer upstream policy; verify both architectures and both offline deployment archives.

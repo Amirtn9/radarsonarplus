@@ -110,7 +110,61 @@ def test_parallel_startup_and_upgrade_preserve_existing_rows(isolated_database):
     from schema_migrations import run_startup_migrations
     assert run_startup_migrations(db) == []
     assert db.execute('SELECT full_name FROM users WHERE user_id=901', fetch='one')['full_name'] == 'preserve me'
-    assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 13
+    assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 14
+
+
+def test_log_retry_deduplication_and_purge_spool(isolated_database):
+    from datetime import datetime,timezone
+    from schema_migrations import run_startup_migrations
+    from log_management import LogStore
+    from log_spool import LogSpool
+    db,_=isolated_database;run_startup_migrations(db)
+    logs=LogStore(db,901)
+    row=(datetime.now(timezone.utc),'INFO','system','fixture','retry fixture','recorded',str(uuid.uuid4()))
+    logs.write([row])
+    # Simulate replay after a commit succeeded but the acknowledgement was lost.
+    logs.write([row])
+    assert logs.list(901,'all')['total']==1
+    spool=LogSpool();spool.add([row])
+    try:
+        assert logs.clear(901,'DELETE ALL LOGS')['retry_spool']=='cleared'
+        assert spool.count()==0
+        logs.write([row])
+        assert logs.list(901,'all')['total']==0
+    finally:spool.close()
+
+
+def test_multi_source_log_purge_job_reports_partial_and_preserves_data(isolated_database,monkeypatch):
+    from datetime import datetime,timezone
+    from schema_migrations import run_startup_migrations
+    from log_management import LogStore
+    import log_purge
+    db,_=isolated_database;run_startup_migrations(db)
+    db.execute("INSERT INTO users(user_id,full_name) VALUES(901,'preserve owner')")
+    server=db.execute("INSERT INTO servers(owner_id,name,ip) VALUES(901,'preserve host','192.0.2.1') RETURNING id",fetch='one')['id']
+    LogStore(db,901).write([(datetime.now(timezone.utc),'INFO','system','fixture','old event','recorded')])
+    jobs=log_purge.PurgeJobs(db,901)
+    with pytest.raises(PermissionError):jobs.create(902,'DELETE ALL LOGS',True)
+    created=jobs.create(901,'DELETE ALL LOGS',True)
+    assert jobs.create(901,'DELETE ALL LOGS',True)['id']==created['id']
+    with pytest.raises(log_purge.PurgeScopeConflict):jobs.create(901,'DELETE ALL LOGS',False)
+    with pytest.raises(PermissionError):jobs.read(902,created['id'])
+    monkeypatch.setattr(log_purge,'request_local',lambda:{'sources':{
+        'application_files':{'status':'cleared'},'installer_file':{'status':'cleared'},
+        'namespace_journal':{'status':'cleared'},'shared_journal':{'status':'blocked_shared'}}})
+    monkeypatch.setattr(log_purge,'request_remote',lambda server:{'ok':True,'sources':{'agent_files':{'status':'cleared'}}})
+    jobs.run(jobs.claim())
+    result=jobs.read(901,created['id'])
+    assert result['state']=='partial'
+    assert result['result']['sources']['shared_journal']['status']=='blocked_shared'
+    assert result['result']['remote'][str(server)]['ok'] is True
+    assert LogStore(db,901).list(901,'all')['total']==0
+    assert db.execute('SELECT name FROM servers WHERE id=%s',(server,),fetch='one')['name']=='preserve host'
+    assert db.execute('SELECT full_name FROM users WHERE user_id=901',fetch='one')['full_name']=='preserve owner'
+    next_job=jobs.create(901,'DELETE ALL LOGS',False)
+    jobs.claim();jobs.recover()
+    assert jobs.read(901,next_job['id'])['state']=='interrupted'
+    assert jobs.claim() is None
 
 
 def test_log_purge_cookie_auth_requires_csrf_and_admin(isolated_database, monkeypatch):

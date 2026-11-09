@@ -165,7 +165,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent
                 rollback_files = ("python3 - " + shlex.quote(backup_path) + " <<'SONAR_ROLLBACK'\n" +
                     "import pathlib,shutil,sys,subprocess\n" +
                     "folder=pathlib.Path(sys.argv[1])\n" +
-                    "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service','/usr/local/sbin/sonar-diagnostic-read','/etc/sudoers.d/sonar-agent-diagnostics']\n" +
+                    "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service','/usr/local/sbin/sonar-diagnostic-read','/etc/sudoers.d/sonar-agent-diagnostics','/etc/systemd/journald@sonar.conf.d/retention.conf']\n" +
                     "for ix,path in enumerate(paths):\n" +
                     " source=folder/str(ix); target=pathlib.Path(path)\n" +
                     " if source.is_file():\n  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)\n" +
@@ -205,7 +205,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent
             "import pathlib,shutil,sys,os\n" +
             "folder=pathlib.Path(sys.argv[1]);folder.mkdir(mode=0o700)\n" +
             "os.chmod(folder,0o700)\n" +
-            "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service','/usr/local/sbin/sonar-diagnostic-read','/etc/sudoers.d/sonar-agent-diagnostics']\n" +
+            "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service','/usr/local/sbin/sonar-diagnostic-read','/etc/sudoers.d/sonar-agent-diagnostics','/etc/systemd/journald@sonar.conf.d/retention.conf']\n" +
             "for i,path in enumerate(paths):\n" +
             " source=pathlib.Path(path)\n" +
             " if source.is_symlink():raise SystemExit('REFUSING_SYMLINKED_IDENTITY')\n" +
@@ -357,6 +357,7 @@ Group=sonar-agent
 WorkingDirectory=/var/lib/sonar-agent
 EnvironmentFile=/etc/sonar-agent.env
 ExecStart=/opt/sonar-agent-venv/bin/python -u /opt/sonar-agent/monitor_agent.py {ws_port}
+LogNamespace=sonar
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
@@ -373,7 +374,10 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 '''
-    command = ("cat > /etc/systemd/system/sonar-agent.service <<'SONAR_UNIT'\n" + unit + 'SONAR_UNIT\n'
+    command = ("install -d -m 0755 /etc/systemd/journald@sonar.conf.d\n"
+               "printf '[Journal]\\nSystemMaxUse=128M\\nRuntimeMaxUse=64M\\nMaxRetentionSec=30day\\n' > /etc/systemd/journald@sonar.conf.d/retention.conf\n"
+               "chmod 0644 /etc/systemd/journald@sonar.conf.d/retention.conf\n"
+               "cat > /etc/systemd/system/sonar-agent.service <<'SONAR_UNIT'\n" + unit + 'SONAR_UNIT\n'
                'chmod 0644 /etc/systemd/system/sonar-agent.service\n'
                'systemd-analyze verify /etc/systemd/system/sonar-agent.service\n'
                'systemctl daemon-reload\nsystemctl enable sonar-agent\nsystemctl restart sonar-agent\n'

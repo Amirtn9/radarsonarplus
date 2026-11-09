@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sonar Radar Pro 6.9.5 | resilient GitHub deployment manager
+# Sonar Radar Pro 6.9.6 | resilient GitHub deployment manager
 # Supported: Ubuntu/Debian with systemd. Never execute remotely piped scripts as root.
 set -Eeuo pipefail
 umask 077
@@ -357,6 +357,9 @@ purge_inventory() {
   purge_list_item "$INSTALL_LOG" 'Installer log'
   purge_list_item '/usr/local/sbin/sonar-diagnostic-read' 'Restricted diagnostics helper'
   purge_list_item '/etc/sudoers.d/sonar-diagnostics' 'Diagnostics sudoers rule'
+  purge_list_item '/usr/local/libexec/sonar-log-maintenance.py' 'Fixed-scope log maintenance helper'
+  purge_list_item '/etc/systemd/system/sonar-log-maintenance.socket' 'Private log maintenance socket'
+  purge_list_item '/etc/systemd/system/sonar-log-maintenance@.service' 'Log maintenance unit'
   if [[ "$SOURCE_DIR" == /root/* && "${SOURCE_DIR##*/}" =~ ^(radarsonarplus|radar-sonar|radarsonarplus-[A-Za-z0-9._-]+)$ ]]; then
     purge_list_item "$SOURCE_DIR" 'Current Git/source checkout (optional)'
   fi
@@ -417,6 +420,8 @@ $source_candidate" 12 76 && remove_source=1 || true
   # Stop the project before terminating its database sessions. If PostgreSQL
   # cannot be inspected, the app code is still present for a safe retry.
   systemctl stop "$SERVICE" "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1 || true
+  systemctl disable --now sonar-log-maintenance.socket >> "$INSTALL_LOG" 2>&1 || true
+  systemctl stop 'sonar-log-maintenance@*.service' >> "$INSTALL_LOG" 2>&1 || true
   purge_database
   systemctl disable "$SERVICE" "$WEB_SERVICE" >> "$INSTALL_LOG" 2>&1 || true
 
@@ -432,6 +437,9 @@ $source_candidate" 12 76 && remove_source=1 || true
   purge_remove_file "$WEB_UNIT" '/etc/systemd/system/sonar-web.service'
   purge_remove_file '/usr/local/sbin/sonar-diagnostic-read' '/usr/local/sbin/sonar-diagnostic-read'
   purge_remove_file '/etc/sudoers.d/sonar-diagnostics' '/etc/sudoers.d/sonar-diagnostics'
+  purge_remove_file '/usr/local/libexec/sonar-log-maintenance.py' '/usr/local/libexec/sonar-log-maintenance.py'
+  purge_remove_file '/etc/systemd/system/sonar-log-maintenance.socket' '/etc/systemd/system/sonar-log-maintenance.socket'
+  purge_remove_file '/etc/systemd/system/sonar-log-maintenance@.service' '/etc/systemd/system/sonar-log-maintenance@.service'
   if [[ -L "$NGINX_LINK" ]]; then
     if [[ "$(readlink -f -- "$NGINX_LINK" 2>/dev/null || true)" == "$NGINX_SITE" ]]; then rm -f -- "$NGINX_LINK"; else warn 'Sonar nginx link points elsewhere; it was preserved.'; fi
   elif [[ -e "$NGINX_LINK" ]]; then warn 'Sonar nginx enabled path is not a symlink; it was preserved for manual review.'; fi
@@ -890,6 +898,7 @@ ExecStartPre=/usr/bin/test -r $APP_DIR/bot.py
 ExecStart=$APP_DIR/venv/bin/python -u $APP_DIR/bot.py
 StandardOutput=journal
 StandardError=journal
+LogNamespace=sonar
 SyslogIdentifier=sonar-bot
 Restart=on-failure
 RestartSec=5
@@ -1001,6 +1010,55 @@ install_diagnostic_helper() {
   say 'Installed restricted diagnostic reader; service account can read only allowlisted Sonar logs/journals.'
 }
 
+install_log_maintenance() {
+  # IPC preserves NoNewPrivileges/ProtectSystem on Bot/Web; no sudo escape.
+  install -d -m 0755 /usr/local/libexec /etc/systemd/journald@sonar.conf.d
+  install -o root -g root -m 0755 "$APP_DIR/scripts/sonar_log_maintenance.py" /usr/local/libexec/sonar-log-maintenance.py
+  cat > /etc/systemd/journald@sonar.conf.d/retention.conf <<'SONAR_JOURNAL'
+[Journal]
+SystemMaxUse=128M
+RuntimeMaxUse=64M
+MaxRetentionSec=30day
+SONAR_JOURNAL
+  cat > /etc/systemd/system/sonar-log-maintenance.socket <<EOF
+[Unit]
+Description=Sonar private log maintenance socket
+[Socket]
+ListenStream=/run/sonar-log-maintenance.sock
+SocketUser=$APP_USER
+SocketGroup=$APP_USER
+SocketMode=0600
+Accept=yes
+MaxConnections=4
+RemoveOnStop=yes
+[Install]
+WantedBy=sockets.target
+EOF
+  cat > /etc/systemd/system/sonar-log-maintenance@.service <<'SONAR_MAINTENANCE'
+[Unit]
+Description=Sonar fixed-scope log maintenance
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/sonar-log-maintenance.py
+User=root
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/log/sonar /var/log/sonar-install.log -/var/log/journal -/run/log/journal
+RuntimeMaxSec=90
+MemoryMax=64M
+TasksMax=8
+SONAR_MAINTENANCE
+  chmod 0644 /etc/systemd/system/sonar-log-maintenance.socket /etc/systemd/system/sonar-log-maintenance@.service
+  systemd-analyze verify /etc/systemd/system/sonar-log-maintenance.socket /etc/systemd/system/sonar-log-maintenance@.service
+  systemctl daemon-reload
+  systemctl enable --now sonar-log-maintenance.socket
+}
+
 install_app() {
   local mode="$1"
   STATE_INSTALL_ATTEMPT=1
@@ -1084,6 +1142,7 @@ install_app() {
   install_web
   STATE_SWITCH=0;STATE_OK=1
   install_diagnostic_helper "$APP_DIR/scripts/sonar-diagnostic-read.sh" || warn 'Full diagnostics may report journal permission errors until the restricted helper is repaired.'
+  install_log_maintenance || warn 'Log maintenance socket unavailable; the panel will report incomplete purge instead of deleting shared system logs.'
   ok "Full stack installed: Bot, PostgreSQL and private Mini App API ($APP_DIR)"
   say 'Run --doctor and test Telegram /start before migrating production traffic.'
   [[ -z "$STATE_OLD" ]] || say "Previous source archived at: $STATE_OLD"
@@ -1121,6 +1180,7 @@ EnvironmentFile=$ENV_FILE
 ExecStart=$APP_DIR/venv/bin/python -m uvicorn pro_portal:app --host 127.0.0.1 --port $port --workers 1 --access-log
 StandardOutput=journal
 StandardError=journal
+LogNamespace=sonar
 SyslogIdentifier=sonar-web
 NoNewPrivileges=true
 PrivateTmp=true
@@ -1621,7 +1681,7 @@ ui_input() {
 menu_whiptail() {
   local choice domain email action service path source
   while true; do
-    choice="$(whiptail --title 'SONAR RADAR PRO 6.9.5' --backtitle 'Deployment  |  Operations  |  Recovery' \
+    choice="$(whiptail --title 'SONAR RADAR PRO 6.9.6' --backtitle 'Deployment  |  Operations  |  Recovery' \
       --menu 'Select an operation. Destructive actions are clearly marked.' 24 88 16 \
       '01' 'Install / Resume full stack (preserve existing data)' \
       '02' 'Safe update (backup + rollback)' \
@@ -1675,7 +1735,7 @@ menu_text() {
   while true; do
     clear 2>/dev/null || true
     printf '\n%b  ╭──────────────────────────────────────────────────────────────────────╮%b\n' "$C_BLUE" "$C_RESET"
-    printf '%b  │%b  SONAR RADAR PRO 6.9.5  ·  DEPLOYMENT & OPERATIONS CONSOLE             %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
+    printf '%b  │%b  SONAR RADAR PRO 6.9.6  ·  DEPLOYMENT & OPERATIONS CONSOLE             %b│%b\n' "$C_BLUE" "$C_WHITE" "$C_BLUE" "$C_RESET"
     printf '%b  ╰──────────────────────────────────────────────────────────────────────╯%b\n' "$C_BLUE" "$C_RESET"
     printf '  %-37s %-37s\n' 'INSTALL & UPDATE' 'OPERATIONS'
     printf '  01  Install / Resume full stack     06  Service control\n'
@@ -1746,7 +1806,7 @@ case "${1:-}" in
   --uninstall) uninstall_app;;
   --purge) purge_project;;
   --help|-h) cat <<'USAGE'
-Sonar Radar Pro 6.9.5 | Deployment Manager
+Sonar Radar Pro 6.9.6 | Deployment Manager
   sudo bash install.sh                 Interactive whiptail/ANSI deployment console
   sudo bash install.sh --check         Offline source and OS checks
   sudo bash install.sh --install       Fresh FULL installation: Bot + DB + Mini App

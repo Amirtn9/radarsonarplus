@@ -320,7 +320,7 @@ async def guide_menu(update, context):
     parsed=urlsplit(os.getenv('SONAR_WEBAPP_URL','').strip())
     buttons=[]
     if parsed.scheme=='https' and parsed.hostname and not parsed.username and not parsed.password:
-        guide_url=urlunsplit((parsed.scheme,parsed.netloc,'/guide','v=6.9.5',''))
+        guide_url=urlunsplit((parsed.scheme,parsed.netloc,'/guide','v=6.9.6',''))
         buttons.append([B('📚 آکادمی تعاملی؛ آموزش کامل و فرهنگ دکمه‌ها',web_app=WebAppInfo(url=guide_url))])
     for item in chapters:
         buttons.append([B(item['title'],callback_data=f"v6_lesson_{item['id']}_0")])

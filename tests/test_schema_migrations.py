@@ -71,6 +71,8 @@ def install_modules(monkeypatch, events):
         ("log_management", "install_schema"),
     ):
         module(name, **{fn: lambda db, name=name: events.append(name)})
+    module("log_management",install_schema=lambda db:events.append("log_management"),
+           install_reliability_schema=lambda db:events.append("log_reliability"))
     module("monitor_fleet", install_schema=lambda db: events.append("monitor_fleet"),
            install_job_schema=lambda db: events.append("monitor_fleet_jobs"))
     module("web_agent_jobs", install_schema=lambda db: events.append("web_agent_jobs"),
@@ -88,13 +90,13 @@ def test_bot_and_web_share_one_versioned_migration_ledger(monkeypatch):
     assert first == [
         "pro_store", "enterprise_services", "enterprise_runtime",
         "subscription_health", "web_login", "monitor_fleet",
-        "monitor_fleet_jobs", "agent_traffic", "service_monitor", "web_agent_jobs", "config_alerts", "log_management",
+        "monitor_fleet_jobs", "agent_traffic", "service_monitor", "web_agent_jobs", "config_alerts", "log_management", "log_reliability",
     ]
     assert second == []
     assert events.count("recover_jobs") == 2
-    assert len([event for event in events if event != "recover_jobs"]) == 12
+    assert len([event for event in events if event != "recover_jobs"]) == 13
     assert db.applied[1] == "core_schema"
-    assert len(db.applied) == 13
+    assert len(db.applied) == 14
     assert db.locked is False
     assert any("pg_advisory_lock" in sql for sql, _ in db.sql)
     assert any("pg_advisory_unlock" in sql for sql, _ in db.sql)
