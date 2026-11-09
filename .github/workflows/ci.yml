@@ -69,6 +69,21 @@ jobs:
         run: python -m pip check
       - name: Regression tests with real PostgreSQL and Xray
         run: python -m pytest -q --disable-warnings --junitxml="$RUNNER_TEMP/pytest.xml"
+      - name: Publish regression failure diagnostics
+        if: failure()
+        run: |
+          python - <<'PYTEST_DIAGNOSTICS'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          report = Path(os.environ['RUNNER_TEMP']) / 'pytest.xml'
+          if report.exists():
+              for case in ET.parse(report).iter('testcase'):
+                  for failure in list(case.findall('failure')) + list(case.findall('error')):
+                      detail = (case.get('name', '') + '\n' + ''.join(failure.itertext()))[:16000]
+                      escaped = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                      print('::error::' + escaped)
+          PYTEST_DIAGNOSTICS
       - name: Shell syntax
         run: bash -n install.sh install_web_panel.sh scripts/*.sh
       - name: JavaScript syntax
