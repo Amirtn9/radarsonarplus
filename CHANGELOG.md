@@ -1,3 +1,12 @@
+# RadarSonarPlus 6.9.7 — Verified CI and logging reliability (2026-11-09)
+
+- Fix the Python 3.10/3.11 TLS fallback test using a real validating SSL context.
+- Retain pending log batches during simultaneous PostgreSQL outages and temporary SQLite locks; move awaited API log persistence off the event loop.
+- Add multi-process abrupt-exit replay and transactional upgrade/rollback credential-preservation tests.
+- Run real PostgreSQL/Xray regression tests and all four disposable HTTPS browser scenarios in CI; preserve JUnit and browser evidence.
+- Hash-lock Python transitive test dependencies, lock Playwright, and use Node 24 Actions.
+- Local verification: 482 tests passed on each of Python 3.10, 3.11 and 3.12. See [verification scope and remaining limits](docs/RELEASE_6_9_7_FA.md).
+
 # RadarSonarPlus 6.9.6 — Durable logs, scoped purge jobs and aligned documentation (2026-11-09)
 
 - Align current README, Persian README, security notes, runtime and Agent declarations; retain protocol 2 and preserve historical release documents.

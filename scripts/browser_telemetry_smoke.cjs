@@ -7,7 +7,7 @@ if(!token||!['127.0.0.1','localhost'].includes(new URL(base).hostname))throw Err
 const output=process.env.SONAR_BROWSER_TEST_OUTPUT||'/tmp/sonar-telemetry-artifacts';fs.mkdirSync(output,{recursive:true});
 function launch(id){const data={auth_date:String(Math.floor(Date.now()/1000)),user:JSON.stringify({id})};const secret=crypto.createHmac('sha256','WebAppData').update(token).digest();data.hash=crypto.createHmac('sha256',secret).update(Object.keys(data).sort().map(k=>k+'='+data[k]).join('\n')).digest('hex');return new URLSearchParams({tgWebAppData:new URLSearchParams(data).toString()});}
 (async()=>{
- const browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
+ const browser=await chromium.launch({executablePath:process.env.SONAR_CHROMIUM_PATH||undefined,headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
  try{
   const context=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:1440,height:1000},deviceScaleFactor:2,timezoneId:'Asia/Tehran'});
   await context.route('https://telegram.org/**',r=>r.abort());

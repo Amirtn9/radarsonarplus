@@ -113,6 +113,51 @@ def test_parallel_startup_and_upgrade_preserve_existing_rows(isolated_database):
     assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 14
 
 
+def test_upgrade_from_695_schema_and_failed_migration_preserve_credentials(isolated_database,monkeypatch,tmp_path):
+    from contextlib import contextmanager
+    import schema_migrations,log_management
+    from secret_crypto import Security
+    db,_=isolated_database
+    registry=schema_migrations._registry()
+    # 6.9.5 ends at migration 13; create that real predecessor schema first.
+    with monkeypatch.context() as previous:
+        previous.setattr(schema_migrations,'_registry',lambda:tuple(item for item in registry if item[0]<=13))
+        schema_migrations.run_startup_migrations(db)
+    security=Security(tmp_path/'upgrade-key.key')
+    credential=security.encrypt('synthetic-preserved-password')
+    db.execute("INSERT INTO users(user_id,full_name) VALUES(901,'upgrade owner')")
+    server=db.execute("INSERT INTO servers(owner_id,name,ip,password) VALUES(901,'upgrade server','192.0.2.1',%s) RETURNING id",(credential,),fetch='one')['id']
+    db.execute("INSERT INTO settings(owner_id,key,value) VALUES(901,'upgrade_fixture','preserve setting')")
+    db.execute("INSERT INTO tunnel_configs(owner_id,type,name,link) VALUES(901,'single','upgrade config','vless://synthetic-upgrade-fixture')")
+    db.execute("INSERT INTO pro_application_logs(created_at,level,category,source,message) VALUES(NOW(),'INFO','system','fixture','legacy record')")
+    installer=log_management.install_reliability_schema
+    class FailingCursor:
+        def __init__(self,cur):self.cur=cur
+        def execute(self,sql,*args,**kwargs):
+            if sql.startswith('CREATE UNIQUE INDEX IF NOT EXISTS pro_application_logs_event'):
+                # A real PostgreSQL error after ALTER must roll back that ALTER.
+                return self.cur.execute('SELECT 1/0')
+            return self.cur.execute(sql,*args,**kwargs)
+        def __getattr__(self,name):return getattr(self.cur,name)
+    class FailingDatabase:
+        @contextmanager
+        def get_connection(self):
+            with db.get_connection() as (conn,cur):yield conn,FailingCursor(cur)
+    with monkeypatch.context() as failure:
+        failure.setattr(log_management,'install_reliability_schema',lambda unused:installer(FailingDatabase()))
+        import psycopg2
+        with pytest.raises(psycopg2.errors.DivisionByZero):schema_migrations.run_startup_migrations(db)
+    assert db.execute("SELECT COUNT(*) n FROM information_schema.columns WHERE table_name='pro_application_logs' AND column_name='event_id'",fetch='one')['n']==0
+    assert db.execute('SELECT COUNT(*) n FROM sonar_schema_migrations WHERE version=14',fetch='one')['n']==0
+    assert schema_migrations.run_startup_migrations(db)==['log_reliability']
+    assert db.execute('SELECT full_name FROM users WHERE user_id=901',fetch='one')['full_name']=='upgrade owner'
+    saved=db.execute('SELECT password FROM servers WHERE id=%s',(server,),fetch='one')['password']
+    assert saved==credential and security.decrypt(saved)=='synthetic-preserved-password'
+    assert db.execute("SELECT value FROM settings WHERE owner_id=901 AND key='upgrade_fixture'",fetch='one')['value']=='preserve setting'
+    assert db.execute("SELECT COUNT(*) n FROM tunnel_configs WHERE owner_id=901 AND name='upgrade config'",fetch='one')['n']==1
+    assert db.execute("SELECT message FROM pro_application_logs WHERE source='fixture'",fetch='one')['message']=='legacy record'
+
+
 def test_log_retry_deduplication_and_purge_spool(isolated_database):
     from datetime import datetime,timezone
     from schema_migrations import run_startup_migrations

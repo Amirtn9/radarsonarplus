@@ -181,7 +181,6 @@ def test_agent_fetch_retries_public_ipv4_after_ipv6_timeout(monkeypatch):
     import monitor_agent as m
     import socket, ssl, http.client
     calls=[]
-    original_getaddrinfo=socket.getaddrinfo
     monkeypatch.setattr(socket,'getaddrinfo',lambda host,port,**kw:[
         (socket.AF_INET6,socket.SOCK_STREAM,0,'',('2606:4700::1111',port,0,0)),
         (socket.AF_INET,socket.SOCK_STREAM,0,'',('1.1.1.1',port))])
@@ -192,9 +191,15 @@ def test_agent_fetch_retries_public_ipv4_after_ipv6_timeout(monkeypatch):
         if ':' in addr[0]:raise TimeoutError('IPv6 unavailable')
         return Socket()
     monkeypatch.setattr(socket,'create_connection',connect)
-    class TLS:
-        def wrap_socket(self,sock,server_hostname=None):return sock
-    monkeypatch.setattr(ssl,'create_default_context',lambda:TLS())
+    # Python 3.10/3.11 HTTPSConnection also inspects verify_mode and
+    # check_hostname. Keep a real, validating context and mock only the wire.
+    context=ssl.create_default_context()
+    names=[]
+    def wrap_socket(sock,server_hostname=None):
+        names.append(server_hostname)
+        return sock
+    monkeypatch.setattr(context,'wrap_socket',wrap_socket)
+    monkeypatch.setattr(ssl,'create_default_context',lambda:context)
     def request(self,*args,**kwargs): self.connect()
     class Response:
         status=200
@@ -203,6 +208,8 @@ def test_agent_fetch_retries_public_ipv4_after_ipv6_timeout(monkeypatch):
     monkeypatch.setattr(http.client.HTTPSConnection,'getresponse',lambda self:Response())
     assert m.fetch_url('https://example.org:8443/sub',raise_errors=True).startswith(b'vless://')
     assert calls==['2606:4700::1111','1.1.1.1']
+    assert names==['example.org']
+    assert context.verify_mode==ssl.CERT_REQUIRED and context.check_hostname
 
 
 def test_fetch_rejects_nonpublic_mixed_dns_without_connecting(monkeypatch):

@@ -31,7 +31,7 @@ from service_monitor import ServiceStore
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
-app=FastAPI(title='RadarSonarPlus 6.9.6',docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='RadarSonarPlus 6.9.7',docs_url=None,redoc_url=None,openapi_url=None)
 
 @app.on_event('startup')
 async def _configure_executor():
@@ -136,7 +136,9 @@ async def headers(request:Request,call_next):
     if request.url.path.startswith('/api/') and route!='/api/admin/logs' and (
             request.method not in ('GET','HEAD','OPTIONS') or response.status_code>=400):
         event_log=logging.getLogger('sonar.authentication' if '/web/' in route else 'sonar.api')
-        event_log.log(logging.WARNING if response.status_code>=400 else logging.INFO,
+        # Keep the durability acknowledgement without running disk fsync on
+        # the event loop: other requests remain schedulable while emit waits.
+        await asyncio.to_thread(event_log.log,logging.WARNING if response.status_code>=400 else logging.INFO,
                       '%s %s status=%s duration_ms=%.1f',request.method,route,
                       response.status_code,(time.monotonic()-started)*1000)
     response.headers['Cache-Control']='no-store'
@@ -513,7 +515,7 @@ async def diagnostic_bundle(days:int=Query(default=7,ge=1,le=30),
     except Exception as exc:
         log.exception('Diagnostic report failed at stage=%s type=%s',stage,type(exc).__name__)
         raise HTTPException(status_code=503,detail=f'Diagnostic report unavailable at stage {stage}: {type(exc).__name__}')
-    return FileResponse(path,media_type='application/zip',filename=f'radarsonarplus-v6.9.6-full-logs-{days}d.zip',
+    return FileResponse(path,media_type='application/zip',filename=f'radarsonarplus-v6.9.7-full-logs-{days}d.zip',
                         background=BackgroundTask(path.unlink,missing_ok=True))
 
 class TeamUpdate(BaseModel):

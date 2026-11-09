@@ -3,7 +3,7 @@ const {chromium}=require('playwright');const crypto=require('node:crypto');const
 const base=process.env.SONAR_BROWSER_TEST_URL||'https://127.0.0.1:8443',token=process.env.SONAR_BROWSER_TEST_TOKEN;
 if(!token||!['localhost','127.0.0.1'].includes(new URL(base).hostname))throw Error('A local synthetic fixture and SONAR_BROWSER_TEST_TOKEN are required');
 function launch(id){const d={auth_date:String(Math.floor(Date.now()/1000)),user:JSON.stringify({id})};const k=crypto.createHmac('sha256','WebAppData').update(token).digest();d.hash=crypto.createHmac('sha256',k).update(Object.keys(d).sort().map(k=>k+'='+d[k]).join('\n')).digest('hex');return new URLSearchParams({tgWebAppData:new URLSearchParams(d).toString()}).toString();}
-(async()=>{const browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});try{
+(async()=>{const browser=await chromium.launch({executablePath:process.env.SONAR_CHROMIUM_PATH||undefined,headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});try{
  const ctx=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:390,height:844},timezoneId:'Asia/Tehran'});await ctx.route('https://telegram.org/**',r=>r.abort());
  const page=await ctx.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(base+'/#'+launch(901));await page.waitForFunction(()=>document.getElementById('topbar-status').textContent==='متصل');

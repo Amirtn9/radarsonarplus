@@ -191,6 +191,7 @@ class DatabaseLogHandler(logging.Handler):
         self.spool = None
         self.spool_error = None
         self.durability_failures = 0
+        self.retry_pending = 0
         self.durable = os.getenv('SONAR_LOG_DURABLE','1')!='0'
         try:self.spool=LogSpool()
         except Exception as exc:self.spool_error=type(exc).__name__
@@ -227,17 +228,18 @@ class DatabaseLogHandler(logging.Handler):
         retry_at = 0
         retry_delay = 1
         offline = False
-        while not self.stop.is_set() or not self.pending.empty():
-            rows = []
-            try:
-                rows.append(self.pending.get(timeout=0.25))
-            except queue.Empty:
-                pass
-            while len(rows) < 100:
+        retry_rows = []
+        while not self.stop.is_set() or not self.pending.empty() or retry_rows:
+            rows=retry_rows
+            retry_rows=[]
+            if not rows:
                 try:
-                    rows.append(self.pending.get_nowait())
+                    rows.append(self.pending.get(timeout=0.25))
                 except queue.Empty:
-                    break
+                    pass
+                while len(rows) < 100:
+                    try:rows.append(self.pending.get_nowait())
+                    except queue.Empty:break
             try:
                 if rows:
                     if self.stop.is_set() or (offline and time.monotonic()<retry_at):
@@ -268,7 +270,12 @@ class DatabaseLogHandler(logging.Handler):
                     try:
                         if self.spool is None:raise RuntimeError('Retry storage unavailable')
                         self.spool.add(rows)
-                    except Exception:self.dropped+=len(rows)
+                    except Exception:
+                        # A temporary SQLite writer lock must not discard a
+                        # batch while PostgreSQL is also unavailable. Retain
+                        # this bounded batch and leave queue tasks outstanding.
+                        retry_rows=rows
+                        self.retry_pending=len(rows)
                 retry_at=time.monotonic()+retry_delay
                 retry_delay=min(30,retry_delay*2)
                 if time.monotonic() >= failure_notice:
@@ -278,8 +285,10 @@ class DatabaseLogHandler(logging.Handler):
                         'Database logging retry pending: %s; dropped=%s', type(exc).__name__, self.dropped)
                     failure_notice = time.monotonic()+60
             finally:
-                for _ in rows:
-                    self.pending.task_done()
+                if not retry_rows:
+                    for _ in rows:self.pending.task_done()
+                    self.retry_pending=0
+            if retry_rows:time.sleep(.1)
             if not self.stop.is_set() and time.monotonic()>=maintenance:
                 try:self.store.cleanup()
                 except Exception:self.maintenance_failures+=1
@@ -289,7 +298,7 @@ class DatabaseLogHandler(logging.Handler):
     def health(self):
         try:durable=self.spool.count() if self.spool else None
         except Exception:durable=None
-        return {'memory_pending':self.pending.qsize(),'durable_pending':durable,
+        return {'memory_pending':self.pending.qsize()+self.retry_pending,'durable_pending':durable,
                 'dropped':self.dropped,'write_failures':self.failures,
                 'maintenance_failures':self.maintenance_failures,'spool_error':self.spool_error,
                 'durable_mode':self.durable,'durability_failures':self.durability_failures,

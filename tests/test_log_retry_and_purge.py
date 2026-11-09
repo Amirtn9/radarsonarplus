@@ -55,6 +55,36 @@ def test_disk_spool_rejects_symlink_and_hardlink(tmp_path):
     assert target.read_text()=='do not overwrite'
 
 
+def test_independent_processes_share_spool_and_survive_abrupt_exit(tmp_path):
+    import sys
+    state=tmp_path/'shared-state'
+    code='''
+import logging,os,time
+from log_management import DatabaseLogHandler
+class OfflineStore:
+ def write(self,rows):raise RuntimeError('synthetic offline database')
+ def cleanup(self):pass
+handler=DatabaseLogHandler(OfflineStore())
+for number in range(50):
+ handler.emit(logging.LogRecord('fixture',logging.INFO,__file__ if '__file__' in globals() else 'fixture',1,'process-'+os.environ['FIXTURE_PROCESS']+'-'+str(number),(),None))
+# Deliberately bypass all shutdown hooks; successful disk commits must survive.
+os._exit(0)
+'''
+    children=[subprocess.Popen([sys.executable,'-c',code],cwd=ROOT,
+              env={**os.environ,'SONAR_STATE_DIR':str(state),'FIXTURE_PROCESS':str(number)},
+              stdout=subprocess.PIPE,stderr=subprocess.PIPE) for number in range(2)]
+    for child in children:
+        out,err=child.communicate(timeout=15)
+        assert child.returncode==0,(out+err).decode()
+    spool=LogSpool(state/'log-spool'/'pending.sqlite3')
+    try:
+        rows=spool.read(limit=200)
+        assert len(rows)==100
+        assert len({value[6] for value in rows})==100
+        assert {value[4] for value in rows}=={f'process-{process}-{number}' for process in range(2) for number in range(50)}
+    finally:spool.close()
+
+
 def test_database_outage_is_spooled_and_replayed_without_new_messages(tmp_path,monkeypatch):
     monkeypatch.setenv('SONAR_STATE_DIR',str(tmp_path))
     class Store:
@@ -105,6 +135,29 @@ def test_cleanup_failure_does_not_requeue_or_count_delivered_logs_as_lost(tmp_pa
         eventually(lambda:len(store.saved)==1 and handler.maintenance_failures>0)
         assert handler.spool.count()==0 and handler.dropped==0 and handler.failures==0
     finally:handler.close()
+
+
+def test_temporary_sqlite_lock_and_database_outage_retain_pending_batch(tmp_path,monkeypatch):
+    monkeypatch.setenv('SONAR_STATE_DIR',str(tmp_path))
+    class Store:
+        available=False
+        saved=[]
+        def write(self,rows):
+            if not self.available:raise RuntimeError('synthetic database outage')
+            self.saved.extend(rows)
+        def cleanup(self):pass
+    store=Store();handler=DatabaseLogHandler(store)
+    external=LogSpool(handler.spool.path)
+    external.conn.execute('BEGIN IMMEDIATE')
+    release=threading.Timer(1,external.conn.rollback);release.start()
+    try:
+        handler.emit(logging.LogRecord('fixture',logging.INFO,__file__,1,'locked spool fixture',(),None))
+        eventually(lambda:handler.spool.count()==1,timeout=4)
+        store.available=True
+        eventually(lambda:len(store.saved)==1)
+        assert handler.dropped==0
+    finally:
+        release.join();external.close();handler.close()
 
 
 def test_file_purge_preserves_open_writer_and_all_non_log_files(tmp_path):

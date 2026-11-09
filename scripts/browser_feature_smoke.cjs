@@ -18,7 +18,7 @@ function launch(uid,ageSeconds=0){
  return new URLSearchParams({tgWebAppData:new URLSearchParams(fields).toString(),tgWebAppVersion:'8.0',tgWebAppPlatform:'android'}).toString();
 }
 (async()=>{
- const browser=await chromium.launch({executablePath:process.env.SONAR_CHROMIUM_PATH||'/usr/bin/chromium',headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
+ const browser=await chromium.launch({executablePath:process.env.SONAR_CHROMIUM_PATH||undefined,headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
  try{
   // Local fixture uses a self-signed certificate; public TLS checks remain enabled.
   const context=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:390,height:844}});
