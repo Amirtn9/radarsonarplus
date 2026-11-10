@@ -7,7 +7,7 @@ matplotlib==3.10.8
 requests==2.34.2
 psycopg2-binary==2.9.11
 # websockets 16 changes the pool compatibility surface; keep the tested 15.x line.
-websockets==15.0.1
+websockets==17.4
 psutil==7.2.2
 # PDF reporting with Persian/RTL support (WeasyPrint/Pango).
 weasyprint==70.0
