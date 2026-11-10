@@ -110,7 +110,7 @@ def test_parallel_startup_and_upgrade_preserve_existing_rows(isolated_database):
     from schema_migrations import run_startup_migrations
     assert run_startup_migrations(db) == []
     assert db.execute('SELECT full_name FROM users WHERE user_id=901', fetch='one')['full_name'] == 'preserve me'
-    assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 14
+    assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 15
 
 
 def test_upgrade_from_695_schema_and_failed_migration_preserve_credentials(isolated_database,monkeypatch,tmp_path):
@@ -149,7 +149,7 @@ def test_upgrade_from_695_schema_and_failed_migration_preserve_credentials(isola
         with pytest.raises(psycopg2.errors.DivisionByZero):schema_migrations.run_startup_migrations(db)
     assert db.execute("SELECT COUNT(*) n FROM information_schema.columns WHERE table_name='pro_application_logs' AND column_name='event_id'",fetch='one')['n']==0
     assert db.execute('SELECT COUNT(*) n FROM sonar_schema_migrations WHERE version=14',fetch='one')['n']==0
-    assert schema_migrations.run_startup_migrations(db)==['log_reliability']
+    assert schema_migrations.run_startup_migrations(db)==['log_reliability','web_login_security']
     assert db.execute('SELECT full_name FROM users WHERE user_id=901',fetch='one')['full_name']=='upgrade owner'
     saved=db.execute('SELECT password FROM servers WHERE id=%s',(server,),fetch='one')['password']
     assert saved==credential and security.decrypt(saved)=='synthetic-preserved-password'
@@ -526,3 +526,38 @@ def test_reporting_windows_exports_and_owner_boundary(isolated_database):
     assert result['latest']['ram']==42.6 and result['latest']['disk']==13.6
     with pytest.raises(PermissionError):server_history(pro,902,sid,48)
     with pytest.raises(ValueError):server_history(pro,901,sid,2)
+
+
+def test_web_login_retention_codes_and_success_reservations(isolated_database):
+    from schema_migrations import run_startup_migrations
+    from web_login import issue_code,redeem,allow_login_attempt,release_login_attempt
+    db,_=isolated_database;run_startup_migrations(db)
+    first,second=issue_code(db,901),issue_code(db,901)
+    assert redeem(db,first)[0]==901 and redeem(db,second)[0]==901
+    client='a'*64
+    db.execute("INSERT INTO sonar_web_login_attempts(client_hash,attempts,window_started) VALUES(%s,4,NOW()-INTERVAL '2 days')",('b'*64,))
+    for _ in range(15):
+        assert allow_login_attempt(db,client)
+        release_login_attempt(db,client)
+    assert db.execute('SELECT attempts FROM sonar_web_login_attempts WHERE client_hash=%s',(client,),fetch='one')['attempts']==0
+    assert not db.execute('SELECT client_hash FROM sonar_web_login_attempts WHERE client_hash=%s',('b'*64,),fetch='one')
+    for _ in range(10):assert allow_login_attempt(db,client)
+    assert not allow_login_attempt(db,client)
+    # A timestamp near the old fixed-window boundary cannot reset the budget.
+    db.execute("UPDATE sonar_web_login_attempts SET window_started=NOW()-INTERVAL '14 minutes' WHERE client_hash=%s",(client,))
+    assert not allow_login_attempt(db,client)
+    codes=[issue_code(db,902) for _ in range(5)]
+    assert redeem(db,codes[0]) is None
+    assert all(redeem(db,code)[0]==902 for code in codes[-3:])
+    indexes={row['indexname'] for row in db.execute("SELECT indexname FROM pg_indexes WHERE tablename LIKE 'sonar_web_%'",fetch='all')}
+    assert 'sonar_web_sessions_expiry_idx' in indexes and 'sonar_web_attempts_window_idx' in indexes
+
+
+def test_bot_instance_lease_excludes_duplicate_token_and_releases(isolated_database):
+    from runtime import bot_instance_lock
+    db,_=isolated_database
+    with bot_instance_lock(db,'synthetic-poller-token'):
+        with pytest.raises(RuntimeError,match='BOT_INSTANCE_ALREADY_RUNNING'):
+            with bot_instance_lock(db,'synthetic-poller-token'):pass
+        with bot_instance_lock(db,'synthetic-other-token'):pass
+    with bot_instance_lock(db,'synthetic-poller-token'):pass

@@ -1,4 +1,4 @@
-> نسخه جاری **۶.۹.۷** (`6.9.8`): [اعتبارسنجی CI، سازگاری Python و اصلاح ثبت لاگ](docs/RELEASE_6_9_8_FA.md).
+> نسخه جاری **۶.۹.۷** (`6.9.9`): [اعتبارسنجی CI، سازگاری Python و اصلاح ثبت لاگ](docs/RELEASE_6_9_9_FA.md).
 
 <div align="center">
   <img src="assets/sonar-radar-logo.png" alt="SONAR RADAR logo" width="240" />
@@ -13,7 +13,7 @@
 
 **SONAR RADAR PRO** یک سامانه مدیریت زیرساخت است که مدیریت سرورها، Agentهای راه دور، منابع اتصال، مانیتورهای سرویس و رخدادهای عملیاتی را از طریق ربات تلگرام و پنل وب فراهم می‌کند. پنل و ربات از منطق برنامه و پایگاه داده مشترک استفاده می‌کنند.
 
-نسخه فعلی `6.9.8` در `VERSION` ثبت شده است. وضعیت پروژه همچنان Release Candidate است؛ بنابراین پیش از استفاده عملیاتی، نصب، مهاجرت دیتابیس، بازیابی بکاپ و مسیرهای واقعی SSH/WSS/TLS را در محیط آزمایشی بررسی کنید.
+نسخه فعلی `6.9.9` در `VERSION` ثبت شده است. وضعیت پروژه همچنان Release Candidate است؛ بنابراین پیش از استفاده عملیاتی، نصب، مهاجرت دیتابیس، بازیابی بکاپ و مسیرهای واقعی SSH/WSS/TLS را در محیط آزمایشی بررسی کنید.
 
 **مخزن رسمی:** [github.com/Amirtn9/radarsonarplus](https://github.com/Amirtn9/radarsonarplus)
 
@@ -26,7 +26,7 @@
 - **مانیتورینگ:** پایش HTTP(S)/TCP، تاریخچه رخدادها و اعلان‌های مرتبط.
 - **کانفیگ و اشتراک:** مدیریت منابع پشتیبانی‌شده و نمایش نتیجه آزمون بر اساس داده ثبت‌شده.
 - **پنل وب و Mini App:** داشبورد، جزئیات سرور، عملیات مدیریتی، ترمینال SSH، استخر Agent و بالانسر مسیرها.
-- **رابط یکپارچه 6.9.8:** پوسته مشترک وب و Telegram Mini App با طراحی Apple-inspired، پوسته روشن/تاریک، ناوبری موبایل، Safe Area، فیلترهای واقعی علاقه‌مندی و رخدادها و نمایش وضعیت صف اعلان‌ها.
+- **رابط یکپارچه 6.9.9:** پوسته مشترک وب و Telegram Mini App با طراحی Apple-inspired، پوسته روشن/تاریک، ناوبری موبایل، Safe Area، فیلترهای واقعی علاقه‌مندی و رخدادها و نمایش وضعیت صف اعلان‌ها.
 - **عملیات سازمانی:** صف عملیات، سلامت، گزارش‌ها، Backup، Webhook و انتشار تدریجی Agent؛ جزئیات به پیکربندی و کلیدهای سمت سرور وابسته است.
 - **عیب‌یابی:** بررسی نصب، لاگ‌ها، بسته پشتیبانی و ابزارهای Backup/Restore.
 
@@ -52,7 +52,7 @@ Central Controller ── first SSH attempt ──> Destination
 
 - `requirements.txt` و `requirements-web.txt` نسخه دقیق وابستگی‌های مستقیم Runtime را pin می‌کنند.
 - وابستگی S3 اختیاری است؛ فقط در صورت استفاده از مقصد S3، در virtualenv برنامه `pip install -r requirements-s3.txt` اجرا کنید.
-- آزمون‌ها و CI از `requirements-dev.txt` استفاده می‌کنند. وابستگی‌های transitive هنوز lock کاملِ hash-based ندارند؛ برای نصب production از فایل‌های pin شده و CI استفاده کنید و lock کامل را در فرایند release شبکه‌دار تولید/بازبینی کنید.
+- آزمون‌ها و CI از `requirements-dev.txt` استفاده می‌کنند. وابستگی‌های مستقیم و transitive محیط CI لینوکس برای Python 3.10 تا 3.12 در `requirements/ci-py*.lock` همراه hash قفل شده‌اند؛ این lockها پوشش همه سیستم‌عامل‌ها و افزونه اختیاری S3 را ادعا نمی‌کنند.
 - Bootstrap تک‌فایلی فقط با `SONAR_RELEASE_COMMIT` چهل‌رقمی تأییدشده سورس را دریافت می‌کند؛ دریافت پیش‌فرض از `main` غیرفعال است.
 
 ## پیش‌نیازها
@@ -243,7 +243,7 @@ python3 -m pytest -q
 - [گزارش وضعیت اصلاح ممیزی](docs/SECURITY_REMEDIATION_6_9_2_FA.md)
 - [مهاجرت نسخه‌دار دیتابیس](docs/SCHEMA_MIGRATIONS_FA.md)
 - [احراز هویت SSH با کلید خصوصی](docs/SSH_KEY_AUTH_FA.md)
-- [راهنمای Enterprise 6.9.8](docs/ENTERPRISE_6_9_RUNBOOK_FA.md)
+- [راهنمای Enterprise 6.9.9](docs/ENTERPRISE_6_9_RUNBOOK_FA.md)
 - [بازیابی نصب](docs/INSTALL_RECOVERY_FA.md)
 - [بازیابی خطای Startup](docs/STARTUP_RECOVERY_6_9_FA.md)
 - [نکات ارتقا](docs/operations/UPGRADE_NOTES_FA.md)

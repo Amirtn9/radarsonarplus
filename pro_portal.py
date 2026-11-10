@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import secrets
 import time
-from web_login import digest as session_digest, redeem, create_session, identify, logout, logout_all, allow_login_attempt
+from web_login import digest as session_digest, redeem, create_session, identify, logout, logout_all, allow_login_attempt, release_login_attempt
 from subscription_health import summaries as subscription_summaries
 from pro_auth import verify_init_data
 from pro_store import ProStore
@@ -31,7 +31,7 @@ from service_monitor import ServiceStore
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
-app=FastAPI(title='RadarSonarPlus 6.9.8',docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='RadarSonarPlus 6.9.9',docs_url=None,redoc_url=None,openapi_url=None)
 
 @app.on_event('startup')
 async def _configure_executor():
@@ -193,6 +193,7 @@ async def web_login_endpoint(body:WebCode,request:Request,response:Response):
     if not allowed:
         await asyncio.to_thread(logout,store.db,session)
         raise HTTPException(status_code=403,detail='Inactive account')
+    await asyncio.to_thread(release_login_attempt,store.db,client_hash)
     response.set_cookie('sonar_web_session',session,max_age=8*3600,secure=True,
                          httponly=True,samesite='strict',path='/')
     return {'ok':True,'csrf':csrf}
@@ -516,7 +517,7 @@ async def diagnostic_bundle(days:float=Query(default=7,ge=0.125,le=30),
     except Exception as exc:
         log.exception('Diagnostic report failed at stage=%s type=%s',stage,type(exc).__name__)
         raise HTTPException(status_code=503,detail=f'Diagnostic report unavailable at stage {stage}: {type(exc).__name__}')
-    return FileResponse(path,media_type='application/zip',filename=f'radarsonarplus-v6.9.8-full-logs-{int(days*24)}h.zip',
+    return FileResponse(path,media_type='application/zip',filename=f'radarsonarplus-v6.9.9-full-logs-{int(days*24)}h.zip',
                         background=BackgroundTask(path.unlink,missing_ok=True))
 
 class TeamUpdate(BaseModel):

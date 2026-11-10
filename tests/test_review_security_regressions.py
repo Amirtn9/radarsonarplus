@@ -10,7 +10,12 @@ from cryptography.fernet import Fernet
 from secret_crypto import Security
 
 
-def test_concurrent_key_initialization_never_publishes_partial_material(tmp_path, monkeypatch):
+@pytest.mark.parametrize("hardlinks", [True, False])
+def test_concurrent_key_initialization_never_publishes_partial_material(tmp_path, monkeypatch, hardlinks):
+    if not hardlinks:
+        import errno
+        def unsupported(*args,**kwargs):raise OSError(errno.EOPNOTSUPP,"fixture unsupported")
+        monkeypatch.setattr(os,"link",unsupported)
     original = Fernet.generate_key
     writing, release = Event(), Event()
     calls = []
@@ -28,10 +33,12 @@ def test_concurrent_key_initialization_never_publishes_partial_material(tmp_path
         first = pool.submit(Security, path)
         assert writing.wait(5)
         try:
-            second = Security(path)
+            second = pool.submit(Security,path)
+            assert not second.done()
         finally:
             release.set()
         first = first.result(timeout=5)
+        second = second.result(timeout=5)
     assert first.decrypt(second.encrypt('preserved credential')) == 'preserved credential'
     assert not list(path.parent.glob('.sonar-key-*'))
 

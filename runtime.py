@@ -161,3 +161,27 @@ async def stop_service_workers(application):
         if not task.done():task.cancel()
     if tasks:
         await asyncio.gather(*tasks,return_exceptions=True)
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def bot_instance_lock(db,token):
+    """One poller per bot token within the same PostgreSQL database."""
+    import hashlib
+    key=int.from_bytes(hashlib.sha256(('sonar-poller:'+token).encode()).digest()[:8],
+                       'big',signed=True)
+    with db.get_connection() as (conn,cur):
+        cur.execute('SELECT pg_try_advisory_lock(%s) AS acquired',(key,))
+        acquired=bool(cur.fetchone()['acquired'])
+        conn.commit()
+        if not acquired:raise RuntimeError('BOT_INSTANCE_ALREADY_RUNNING')
+        try:yield
+        finally:
+            try:
+                cur.execute('SELECT pg_advisory_unlock(%s)',(key,));conn.commit()
+            except Exception:
+                # Never return a possibly locked database session to the pool.
+                conn.close()
+                logger.warning('Bot instance database lease connection was lost')

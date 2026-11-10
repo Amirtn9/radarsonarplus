@@ -26,7 +26,7 @@ def _registry():
     from service_monitor import install_schema as service_monitor_schema
     from subscription_health import install_schema as subscription_health_schema
     from web_agent_jobs import install_schema as web_agent_jobs_schema
-    from web_login import install_schema as web_login_schema
+    from web_login import install_schema as web_login_schema, install_security_schema as web_security_schema
     from config_alerts import install_schema as config_alert_schema
     from log_management import install_schema as log_schema
     from log_management import install_reliability_schema as log_reliability_schema
@@ -45,6 +45,7 @@ def _registry():
         (12, "config_alerts", config_alert_schema),
         (13, "log_management", log_schema),
         (14, "log_reliability", log_reliability_schema),
+        (15, "web_login_security", web_security_schema),
     )
 
 

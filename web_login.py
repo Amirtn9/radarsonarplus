@@ -34,10 +34,29 @@ def install_schema(db):
         conn.commit()
 
 
+def install_security_schema(db):
+    """Add indexes without changing already-deployed migration six."""
+    with db.get_connection() as (conn,cur):
+        for statement in (
+            'CREATE INDEX IF NOT EXISTS sonar_web_sessions_expiry_idx ON sonar_web_sessions(expires_at)',
+            'CREATE INDEX IF NOT EXISTS sonar_web_codes_expiry_idx ON sonar_web_codes(expires_at)',
+            'CREATE INDEX IF NOT EXISTS sonar_web_codes_user_idx ON sonar_web_codes(user_id,created_at)',
+            'CREATE INDEX IF NOT EXISTS sonar_web_attempts_window_idx ON sonar_web_login_attempts(window_started)',
+        ):cur.execute(statement)
+        conn.commit()
+
+
 def issue_code(db,uid):
     code=secrets.token_urlsafe(24)
     with db.get_connection() as (conn,cur):
-        cur.execute('DELETE FROM sonar_web_codes WHERE user_id=%s OR expires_at<NOW() OR used_at IS NOT NULL',(int(uid),))
+        # Serialize issuance per user; keep the three newest live codes so
+        # accidental double clicks do not silently invalidate the first link.
+        cur.execute('SELECT pg_advisory_xact_lock(535301,hashtext(%s))',(str(int(uid)),))
+        cur.execute('DELETE FROM sonar_web_codes WHERE expires_at<NOW()')
+        cur.execute('DELETE FROM sonar_web_codes WHERE user_id=%s AND used_at IS NOT NULL',(int(uid),))
+        cur.execute('''DELETE FROM sonar_web_codes WHERE code_hash IN (
+            SELECT code_hash FROM sonar_web_codes WHERE user_id=%s
+            ORDER BY created_at DESC,code_hash DESC OFFSET 2)''',(int(uid),))
         cur.execute("INSERT INTO sonar_web_codes(code_hash,user_id,expires_at) VALUES (%s,%s,NOW()+INTERVAL '8 minutes')",(digest(code),int(uid)))
         conn.commit()
     return code
@@ -86,7 +105,7 @@ def logout(db,session):
 
 
 def allow_login_attempt(db,client_hash,limit=10):
-    """One attempt counts against a 15-minute window, including invalid codes.
+    """Reserve a login attempt; successful authentication releases its reservation.
 
     Key is HMAC(client IP, private bot secret) produced by the API, not the IP.
     One SQL statement is atomic under concurrent ASGI workers.
@@ -94,16 +113,22 @@ def allow_login_attempt(db,client_hash,limit=10):
     if not isinstance(client_hash,str) or len(client_hash)!=64:
         return False
     with db.get_connection() as (conn,cur):
+        cur.execute("DELETE FROM sonar_web_login_attempts WHERE window_started<NOW()-INTERVAL '1 day'")
         cur.execute("""INSERT INTO sonar_web_login_attempts(client_hash,attempts,window_started)
           VALUES (%s,1,NOW()) ON CONFLICT(client_hash) DO UPDATE SET
             attempts=CASE WHEN sonar_web_login_attempts.window_started<NOW()-INTERVAL '15 minutes'
               THEN 1 ELSE sonar_web_login_attempts.attempts+1 END,
-            window_started=CASE WHEN sonar_web_login_attempts.window_started<NOW()-INTERVAL '15 minutes'
-              THEN NOW() ELSE sonar_web_login_attempts.window_started END
+            window_started=NOW()
           RETURNING attempts""",(client_hash,))
         attempts=int(cur.fetchone()['attempts'])
         conn.commit()
         return attempts<=int(limit)
+
+
+def release_login_attempt(db,client_hash):
+    # Release just this successful reservation, never erase earlier failures.
+    db.execute('''UPDATE sonar_web_login_attempts SET attempts=GREATEST(attempts-1,0)
+                  WHERE client_hash=%s''',(client_hash,))
 
 
 def logout_all(db,uid):

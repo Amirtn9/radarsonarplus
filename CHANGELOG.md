@@ -1,3 +1,11 @@
+# RadarSonarPlus 6.9.9 — Verified credential and login audit fixes (2026-11-10)
+
+- Preserve UTF-8 byte credentials; use descriptor-based key paths, reject symlinks/hardlinks, and serialize no-hardlink key creation.
+- Add migration 15 indexes and expired login-attempt cleanup; release successful login reservations and retain three recent one-time codes.
+- Guard polling with a token-specific PostgreSQL advisory lock; pace alert messages per chat and honor Telegram RetryAfter.
+- Review all reachable Git history with Gitleaks, narrowly document historical vendor false positives, add Dependabot configuration, and correct stale hash-lock documentation.
+- See [item-by-item audit results and remaining design work](docs/RELEASE_6_9_9_FA.md).
+
 # RadarSonarPlus 6.9.8 — Shared hourly diagnostics and verified log fixes (2026-11-10)
 
 - Select 3/6/12/24/48/72 hours or 7 days before building one Bot/Web/Agent diagnostics ZIP; expose the same periods in the web panel.

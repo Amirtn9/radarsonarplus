@@ -240,11 +240,14 @@ def main():
         raise RuntimeError("PTB_JOB_QUEUE_UNAVAILABLE")
 
     try:
-        app.run_polling(
-            drop_pending_updates=os.getenv("SONAR_DROP_PENDING_UPDATES", "1") == "1",
-            close_loop=False,
-            allowed_updates=None,
-        )
+        from runtime import bot_instance_lock
+        from database import Database
+        with bot_instance_lock(Database(),TOKEN):
+            app.run_polling(
+                drop_pending_updates=os.getenv("SONAR_DROP_PENDING_UPDATES", "1") == "1",
+                close_loop=False,
+                allowed_updates=None,
+            )
     except Exception:
         logger.exception("BOT_PROCESS_EXITED_WITH_EXCEPTION")
         raise

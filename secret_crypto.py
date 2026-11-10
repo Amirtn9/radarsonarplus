@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import os
 import stat
-import tempfile
+import errno
+import fcntl
+import secrets
 from cryptography.fernet import Fernet, InvalidToken
 
 
@@ -14,49 +16,54 @@ class SecretDecryptionError(RuntimeError):
 class Security:
     def __init__(self, key_file: str, secure_parent: bool = True):
         self.key_file = os.fspath(key_file)
-        parent = os.path.dirname(self.key_file) or "."
-        os.makedirs(parent, mode=0o700, exist_ok=True)
-        if os.path.islink(parent):
-            raise PermissionError("Refusing symlinked encryption-key directory")
-        # A legacy install may keep secret.key in the source directory. Never
-        # chmod the whole application tree; the key file itself remains 0600.
-        if secure_parent:
-            os.chmod(parent, 0o700)
-
-        if not os.path.exists(self.key_file):
-            # Publish only fully written key material. Opening the final path
-            # with O_EXCL exposes an empty file to concurrent Bot/Web startup.
-            fd, temporary = tempfile.mkstemp(prefix=".sonar-key-", dir=parent)
-            try:
-                with os.fdopen(fd, "wb") as stream:
-                    stream.write(Fernet.generate_key() + b"\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                try:
-                    os.link(temporary, self.key_file)
-                except FileExistsError:
-                    # Another process published first; read its complete key.
-                    pass
-            finally:
-                os.unlink(temporary)
-
-        flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                 | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0))
-        fd = os.open(self.key_file, flags)
+        parent=os.path.dirname(os.path.abspath(self.key_file))
+        name=os.path.basename(self.key_file)
+        # Walk using directory descriptors: never traverse a symlink ancestor
+        # and never chmod or create files through a substituted pathname.
+        directory=os.open('/',os.O_RDONLY|os.O_DIRECTORY)
         try:
-            metadata = os.fstat(fd)
-            if not stat.S_ISREG(metadata.st_mode):
-                raise PermissionError("Encryption key must be a regular file")
-            os.fchmod(fd, 0o600)
-            chunks = []
-            while True:
-                chunk = os.read(fd, 4096)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            key = b"".join(chunks).strip()
-        finally:
-            os.close(fd)
+            for part in parent.split('/'):
+                if not part:continue
+                try:os.mkdir(part,0o700,dir_fd=directory)
+                except FileExistsError:pass
+                child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=directory)
+                os.close(directory);directory=child
+            if secure_parent:os.fchmod(directory,0o700)
+            flags=os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK
+            lock=os.open('.'+name+'.lock',os.O_CREAT|os.O_RDWR|flags,0o600,dir_fd=directory)
+            try:
+                info=os.fstat(lock)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:
+                    raise PermissionError('Unsafe encryption-key lock')
+                fcntl.flock(lock,fcntl.LOCK_EX)
+                try:os.stat(name,dir_fd=directory,follow_symlinks=False)
+                except FileNotFoundError:
+                    material=Fernet.generate_key()+b'\n'
+                    temporary='.sonar-key-'+secrets.token_hex(16)
+                    fd=os.open(temporary,os.O_CREAT|os.O_EXCL|os.O_WRONLY|flags,0o600,dir_fd=directory)
+                    try:
+                        with os.fdopen(fd,'wb') as stream:
+                            stream.write(material);stream.flush();os.fsync(stream.fileno())
+                        try:os.link(temporary,name,src_dir_fd=directory,dst_dir_fd=directory,follow_symlinks=False)
+                        except FileExistsError:pass
+                        except OSError as exc:
+                            if exc.errno not in (errno.EPERM,errno.EOPNOTSUPP,errno.EXDEV,errno.ENOSYS):raise
+                            # All cooperating readers hold this lock, including
+                            # readers of an existing key, so no partial key leaks.
+                            fd=os.open(name,os.O_CREAT|os.O_EXCL|os.O_WRONLY|flags,0o600,dir_fd=directory)
+                            with os.fdopen(fd,'wb') as stream:
+                                stream.write(material);stream.flush();os.fsync(stream.fileno())
+                    finally:os.unlink(temporary,dir_fd=directory)
+                fd=os.open(name,os.O_RDONLY|flags,dir_fd=directory)
+                try:
+                    metadata=os.fstat(fd)
+                    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink!=1:
+                        raise PermissionError('Encryption key must be a private regular file')
+                    os.fchmod(fd,0o600)
+                    with os.fdopen(fd,'rb',closefd=False) as stream:key=stream.read(4097).strip()
+                finally:os.close(fd)
+            finally:os.close(lock)
+        finally:os.close(directory)
 
         # Invalid/missing key material is a startup error, never a blank credential.
         self.cipher = Fernet(key)
@@ -64,7 +71,13 @@ class Security:
     def encrypt(self, value):
         if value is None:
             return ""
-        return self.cipher.encrypt(str(value).encode("utf-8")).decode("ascii")
+        if isinstance(value,bytes):
+            # SSH credentials are text; reject invalid UTF-8 before persisting.
+            value.decode('utf-8')
+            raw=value
+        elif isinstance(value,str):raw=value.encode('utf-8')
+        else:raise TypeError('Credential must be str, UTF-8 bytes or None')
+        return self.cipher.encrypt(raw).decode('ascii')
 
     def decrypt(self, value):
         if value is None or value == "":
