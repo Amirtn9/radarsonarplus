@@ -46,7 +46,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/${{ matrix.lock }}
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
       - name: Install native test dependencies
@@ -135,7 +135,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/ci-py312.lock
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
