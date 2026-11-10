@@ -24,7 +24,7 @@ import ssl
 from datetime import datetime, timedelta
 import logging
 
-AGENT_VERSION = '6.9.7'
+AGENT_VERSION = '6.9.8'
 AGENT_PROTOCOL = 2
 
 logger = logging.getLogger('sonar.agent')  # ✅ خودکار به سیستم متصل می‌شه
@@ -1091,6 +1091,7 @@ async def _serve_ssh_relay(websocket, request):
                     return
                 await websocket.send(chunk)
 
+        incoming = None
         task = asyncio.create_task(upstream(), name='sonar-ssh-relay-upstream')
         try:
             while True:
@@ -1118,6 +1119,9 @@ async def _serve_ssh_relay(websocket, request):
         except (OSError, asyncio.TimeoutError):
             pass
         finally:
+            if incoming is not None:
+                if not incoming.done():incoming.cancel()
+                await asyncio.gather(incoming, return_exceptions=True)
             if not task.done():
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)

@@ -127,11 +127,11 @@ def main():
         stop = asyncio.Event()
         application.bot_data["enterprise_stop"] = stop
         application.bot_data["enterprise_tasks"] = [
-            application.create_task(operations_worker(db, stop), name="enterprise-operations"),
-            application.create_task(webhook_worker(db, stop), name="enterprise-webhooks"),
-            application.create_task(recovery_worker(db, stop), name="enterprise-recovery"),
-            application.create_task(rollout_worker(db, stop), name="enterprise-agent-rollouts"),
-            application.create_task(
+            asyncio.create_task(operations_worker(db, stop), name="enterprise-operations"),
+            asyncio.create_task(webhook_worker(db, stop), name="enterprise-webhooks"),
+            asyncio.create_task(recovery_worker(db, stop), name="enterprise-recovery"),
+            asyncio.create_task(rollout_worker(db, stop), name="enterprise-agent-rollouts"),
+            asyncio.create_task(
                 asyncio.to_thread(scheduled_backup_worker, db, stop),
                 name="enterprise-backups"
             ),
@@ -148,19 +148,17 @@ def main():
         logger.info("All startup migrations completed; enterprise workers started.")
         logger.info("BOT_STARTUP_READY marker=%s", ready_file)
 
+    async def _post_stop(application):
+        # PTB invokes this before closing its HTTP clients. Infinite workers
+        # must not be PTB-owned tasks: Application.stop waits for those tasks.
+        from runtime import stop_service_workers
+        await stop_service_workers(application)
+
     async def _post_shutdown(application):
         handler=application.bot_data.pop('database_logs',None)
         if handler:
             from log_management import detach_logging
             await asyncio.to_thread(detach_logging,handler)
-        stop = application.bot_data.get("enterprise_stop")
-        if stop:
-            stop.set()
-            for task in application.bot_data.get("enterprise_tasks", []):
-                try:
-                    await asyncio.wait_for(task, timeout=15)
-                except Exception:
-                    logger.exception("Enterprise worker shutdown did not finish cleanly")
         try:
             from ws_client import GLOBAL_WS_POOL
             await GLOBAL_WS_POOL.close_all()
@@ -183,6 +181,7 @@ def main():
         .connection_pool_size(256)
         .concurrent_updates(False)  # ConversationHandler needs ordered updates
         .post_init(_post_init)
+        .post_stop(_post_stop)
         .post_shutdown(_post_shutdown)
         .build()
     )

@@ -50,6 +50,22 @@ TIMESTAMP = re.compile(r'(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[
 SECRET_QUERY_KEYS = {'token', 'key', 'password', 'passwd', 'secret', 'auth', 'authorization', 'signature', 'sig', 'user', 'username', 'api_key', 'apikey', 'access_token', 'client_secret'}
 
 
+def window_days(days):
+    value=float(days)
+    if not 0.125 <= value <= 30 or not (value*24).is_integer():
+        raise ValueError('Log window must be whole hours between 3 hours and 30 days')
+    return value
+
+
+def window_argument(days):
+    days=window_days(days)
+    return str(int(days)) if days.is_integer() else f'{int(days*24)}h'
+
+
+def window_since(days):
+    return f'{int(window_days(days)*24)} hours ago'
+
+
 def _redact_ipv6(match):
     import ipaddress
     candidate = match.group().rstrip(':,.;]')
@@ -118,13 +134,20 @@ def sanitize(text: str, *, hide_ips: bool = True, hide_identifiers: bool = True)
 
 def _command(args: list[str], timeout: int = 8, *, privileged: bool = False, limit: int | None = None) -> str:
     command = list(args)
-    if privileged and os.geteuid() != 0:
-        command = ['sudo', '-n', '--', *command]
     try:
         completed = subprocess.run(command, capture_output=True, text=True, errors='replace',
                                    timeout=timeout,
                                    env={'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'},
                                    check=False)
+        if privileged and os.geteuid()!=0 and completed.returncode!=0:
+            try:
+                no_new_privs=any(line.startswith('NoNewPrivs:') and line.split()[-1]=='1'
+                                 for line in Path('/proc/self/status').read_text().splitlines())
+            except OSError:no_new_privs=True
+            if not no_new_privs:
+                completed=subprocess.run(['sudo','-n','--',*command],capture_output=True,
+                    text=True,errors='replace',timeout=timeout,check=False,
+                    env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'})
         value = f'exit={completed.returncode}\n' + completed.stdout
         if completed.stderr:
             value += ('\n' if not value.endswith('\n') else '') + completed.stderr
@@ -268,13 +291,15 @@ def _journal(unit_args: list[str], days: int, *, timeout: int = 120, priority: s
         elif unit_args == ['-u','sonar-web']: service = 'web'
         elif unit_args == ['-u','sonar-agent']: service = 'agent'
         else: service = 'both'
-        result = _command([str(helper),'journal',service,str(days)], timeout, privileged=True)
+        result = _command([str(helper),'journal',service,window_argument(days)], timeout, privileged=True)
         if result.startswith('exit=0\n'):
             return result
-    args = ['journalctl', *unit_args, '--since', f'{days} days ago', '--no-pager', '--output=short-iso-precise']
+    args = ['journalctl', *unit_args, '--since', window_since(days), '--no-pager', '--output=short-iso-precise']
     if priority:
         args += ['--priority', priority]
-    return _command(args, timeout, privileged=True)
+    private = _command([args[0], '--namespace=sonar', *args[1:]], timeout, privileged=True)
+    shared = _command(args, timeout, privileged=True)
+    return private + '\n===== SHARED JOURNAL =====\n' + shared
 
 def _application_log_paths():
     log_dir = Path(os.getenv('SONAR_LOG_DIR', '/var/log/sonar'))
@@ -307,7 +332,7 @@ def _read_window_file(path: Path, cutoff: datetime) -> str | None:
 
 
 def log_source(name: str, days: int = DEFAULT_WINDOW_DAYS) -> str:
-    days = max(1, min(30, int(days)))
+    days = window_days(days)
     if name == 'bot':
         return _journal(['-u', 'sonar-bot'], days, timeout=120)
     if name == 'web':
@@ -357,7 +382,7 @@ def safe_agent_rows(rows):
 
 def collect_operational_state(db, days: int = DEFAULT_WINDOW_DAYS) -> dict:
     """Export allowlisted operational metadata only; never export credentials/config links."""
-    days = max(1, min(30, int(days)))
+    days = window_days(days)
     state = {'generated_at_utc': datetime.now(timezone.utc).isoformat(), 'window_days': days}
     queries = {
         'servers': """SELECT id,name,ip,port,ws_port,location_type,is_active,last_status,last_error,
@@ -396,7 +421,7 @@ def remote_agent_logs(server_row, days: int = DEFAULT_WINDOW_DAYS):
     a diagnostic status is recorded instead of failing the whole archive.
     """
     row = dict(server_row)
-    days = max(1, min(30, int(days)))
+    days = window_days(days)
     connection = None
     try:
         from core import ServerMonitor, sec
@@ -417,14 +442,17 @@ def remote_agent_logs(server_row, days: int = DEFAULT_WINDOW_DAYS):
             row['ip'], int(row.get('port') or row.get('ssh_port') or 22),
             row['username'], sec.decrypt(row['password']), relay_nodes=relays)
         sudo_prefix = '' if row.get('username') == 'root' else 'sudo -n '
+        since=repr(window_since(days))
+        fallback=(sudo_prefix+'journalctl --namespace=sonar -u sonar-agent --since '+since+
+                  ' --no-pager --output=short-iso-precise; '+sudo_prefix+
+                  'journalctl -u sonar-agent --since '+since+' --no-pager --output=short-iso-precise')
         command = ('if [ -x /usr/local/sbin/sonar-diagnostic-read ]; then '
                    + sudo_prefix + '/usr/local/sbin/sonar-diagnostic-read service agent; '
-                   'printf "\n===== SONAR AGENT JOURNAL =====\n"; '
-                   + sudo_prefix + '/usr/local/sbin/sonar-diagnostic-read journal agent ' + str(days) +
-                   '; else printf "DIAGNOSTIC_HELPER_NOT_INSTALLED\n"; '
+                   'printf "\\n===== SONAR AGENT JOURNAL =====\\n"; '
+                   + sudo_prefix + '/usr/local/sbin/sonar-diagnostic-read journal agent ' + window_argument(days) +
+                   ' || { '+fallback+'; }; else printf "DIAGNOSTIC_HELPER_NOT_INSTALLED\\n"; '
                    + sudo_prefix + 'systemctl show sonar-agent.service --no-pager --property=LoadState,ActiveState,SubState,Result,NRestarts,ExecMainStatus; '
-                   + sudo_prefix + 'journalctl -u sonar-agent --since ' + repr(f'{days} days ago') +
-                   ' --no-pager --output=short-iso-precise; fi')
+                   + fallback + '; fi')
         _stdin, stdout, stderr = connection.exec_command(command, timeout=90)
         stdout.channel.settimeout(100)
         data = stdout.read().decode('utf-8', 'replace')
@@ -486,10 +514,23 @@ def collect_agent_journals(server_rows, limit=None, days: int = DEFAULT_WINDOW_D
         pool.shutdown(wait=False, cancel_futures=True)
     return dict(sorted(result.items(), key=lambda item: int(item[0]) if item[0].isdigit() else 0))
 
+def diagnostic_json(value):
+    """Redact structured values without corrupting JSON booleans or syntax."""
+    def clean(item):
+        if isinstance(item,dict):
+            return {key: (val if isinstance(val,bool) else '[REDACTED]')
+                    if SENSITIVE_KEY.fullmatch(str(key)) else clean(val)
+                    for key,val in item.items()}
+        if isinstance(item,(list,tuple)):return [clean(val) for val in item]
+        if isinstance(item,str):return sanitize(item,hide_ips=False,hide_identifiers=False)
+        return item
+    return json.dumps(clean(value),ensure_ascii=False,indent=2,default=str)
+
+
 def build_bundle(output: str | Path | None = None, *, include_logs: bool = True,
                  agent_rows=None, remote_logs=None, operational_state=None,
                  days: int = DEFAULT_WINDOW_DAYS) -> Path:
-    days = max(1, min(30, int(days)))
+    days = window_days(days)
     if output is None:
         fd, name = tempfile.mkstemp(prefix='sonar-support-', suffix='.zip')
         os.close(fd); output = Path(name)
@@ -499,24 +540,26 @@ def build_bundle(output: str | Path | None = None, *, include_logs: bool = True,
     output.parent.mkdir(parents=True, exist_ok=True)
     manifest = snapshot()
     manifest['log_window_days'] = days
+    manifest['log_window_hours'] = int(days*24)
+    window_label = f'{int(days*24)}h'
     manifest['log_collection'] = 'complete-window-no-line-count-or-per-file-truncation'
     with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as z:
         z.writestr('README.txt',
-            f'SONAR V6 FULL DIAGNOSTICS\nWindow: last {days} days (UTC-aware systemd journal filtering).\n'
+            f'SONAR V6 FULL DIAGNOSTICS\nWindow: last {int(days*24)} hours (UTC-aware systemd journal filtering).\n'
             'Application and systemd logs are included without per-file tail/line truncation.\n'
             'Secret values are redacted in place; surrounding lines and stack traces are retained.\n'
             'Source logs are read-only and are never deleted or modified by this exporter.\n'
             'Remote Agent logs use SSH host-key verification, central-first connectivity, then approved healthy relay Agents.\n'
             'Some remote logs may state that sudo -n access is unavailable; no privilege escalation is bypassed.\n')
-        z.writestr('health.json', sanitize(json.dumps(manifest, ensure_ascii=False, indent=2)))
+        z.writestr('health.json', diagnostic_json(manifest))
         if agent_rows is not None:
             z.writestr('agents/status.json', json.dumps(safe_agent_rows(agent_rows), ensure_ascii=False, indent=2, default=str))
         if operational_state is not None:
-            z.writestr('state/operational-state.json', sanitize(json.dumps(operational_state, ensure_ascii=False, indent=2, default=str), hide_ips=False, hide_identifiers=False))
+            z.writestr('state/operational-state.json', diagnostic_json(operational_state))
         if remote_logs:
             for identifier, contents in sorted(remote_logs.items(), key=lambda item: str(item[0])):
                 if str(identifier).isdigit():
-                    z.writestr('agents/server-' + str(identifier) + f'-{days}d.log', sanitize(str(contents), hide_ips=False, hide_identifiers=False))
+                    z.writestr('agents/server-' + str(identifier) + f'-{window_label}.log', sanitize(str(contents), hide_ips=False, hide_identifiers=False))
         if include_logs:
             for source in ('bot', 'web', 'errors', 'install', 'structured'):
                 try:

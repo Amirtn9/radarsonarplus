@@ -31,7 +31,7 @@ from service_monitor import ServiceStore
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
-app=FastAPI(title='RadarSonarPlus 6.9.7',docs_url=None,redoc_url=None,openapi_url=None)
+app=FastAPI(title='RadarSonarPlus 6.9.8',docs_url=None,redoc_url=None,openapi_url=None)
 
 @app.on_event('startup')
 async def _configure_executor():
@@ -486,10 +486,11 @@ async def diagnostic_health(uid:int=Depends(actor)):
     return await run_sync(snapshot)
 
 @app.get('/api/diagnostics/bundle')
-async def diagnostic_bundle(days:int=Query(default=7,ge=1,le=30),
+async def diagnostic_bundle(days:float=Query(default=7,ge=0.125,le=30),
                             include_remote:bool=Query(default=True),uid:int=Depends(actor)):
     if not SUPER_ADMIN_ID or uid != SUPER_ADMIN_ID:
         raise HTTPException(status_code=403,detail='Admin only')
+    if not (days*24).is_integer():raise HTTPException(status_code=422,detail='Whole hours required')
     stage='database_connect'
     path=None
     try:
@@ -515,7 +516,7 @@ async def diagnostic_bundle(days:int=Query(default=7,ge=1,le=30),
     except Exception as exc:
         log.exception('Diagnostic report failed at stage=%s type=%s',stage,type(exc).__name__)
         raise HTTPException(status_code=503,detail=f'Diagnostic report unavailable at stage {stage}: {type(exc).__name__}')
-    return FileResponse(path,media_type='application/zip',filename=f'radarsonarplus-v6.9.7-full-logs-{days}d.zip',
+    return FileResponse(path,media_type='application/zip',filename=f'radarsonarplus-v6.9.8-full-logs-{int(days*24)}h.zip',
                         background=BackgroundTask(path.unlink,missing_ok=True))
 
 class TeamUpdate(BaseModel):

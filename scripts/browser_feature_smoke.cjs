@@ -43,6 +43,21 @@ function launch(uid,ageSeconds=0){
   await page.screenshot({path:output+'/settings-dark-mobile.png',fullPage:true});
   await page.evaluate(()=>window.SonarTheme.set('light'));
   await page.screenshot({path:output+'/settings-mobile.png',fullPage:true});
+  await page.goto(base+'/?view=support');
+  await page.waitForFunction(()=>document.getElementById('web-auth').hidden);
+  assert.deepEqual(await page.locator('#diagnostic-days option').evaluateAll(items=>items.map(item=>Number(item.value)*24)),[3,6,12,24,48,72,168]);
+  await page.route('**/api/diagnostics/bundle?**',route=>route.fulfill({status:200,contentType:'application/zip',body:Buffer.from('PK synthetic download fixture')}));
+  for(const hours of [3,6,12,24,48,72,168]){
+   await page.locator('#diagnostic-days').selectOption(String(hours/24));
+   const request=page.waitForRequest(req=>req.url().includes('/api/diagnostics/bundle?'));
+   const download=page.waitForEvent('download');
+   await page.locator('#download-btn').click();
+   const sent=new URL((await request).url());
+   assert.equal(Number(sent.searchParams.get('days'))*24,hours);
+   assert.equal(sent.searchParams.get('include_remote'),'true');
+   assert.ok((await download).suggestedFilename().endsWith(`-${hours}h.zip`));
+  }
+  await page.unroute('**/api/diagnostics/bundle?**');
   await page.goto(base+'/guide#'+launch(901));
   await page.waitForFunction(()=>document.getElementById('audience').textContent.includes('کاربر و مدیر'));
   assert.ok(await page.locator('#admin-fleet').count());

@@ -4,6 +4,7 @@ Section: tunnels
 """
 
 from bot_logic_mod.base import *  # noqa
+from runtime import spawn_background
 from monitor_fleet import select_monitor_in_cursor
 from access_policy import valid_subscription_url, monitoring_setting
 
@@ -450,7 +451,7 @@ async def handle_single_config_auto(update: Update, context: ContextTypes.DEFAUL
              if USER_ACTIVE_TASKS.get(uid) is asyncio.current_task(): USER_ACTIVE_TASKS.pop(uid,None)
 
     # ثبت تسک و پایان
-    task = asyncio.create_task(heavy_config_check_task())
+    task = spawn_background(context, heavy_config_check_task())
     USER_ACTIVE_TASKS[uid] = task
     return ConversationHandler.END
 async def process_add_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -597,7 +598,7 @@ async def handle_config_type_selection(update: Update, context: ContextTypes.DEF
                     USER_ACTIVE_TASKS.pop(uid,None)
 
         # ✅ ایجاد و ثبت تسک
-        task = asyncio.create_task(heavy_config_check())
+        task = spawn_background(context, heavy_config_check())
         USER_ACTIVE_TASKS[uid] = task
         
         # پایان استیت برای کاربر (تا بتواند کارهای دیگر انجام دهد)
@@ -1117,7 +1118,7 @@ async def mass_update_test_start(update: Update, context: ContextTypes.DEFAULT_T
 
         # اجرای عملیات سنگین در پس‌زمینه
         # نکته: مطمئن شوید tunnel_manager در بالای فایل ایمپورت شده باشد
-        asyncio.create_task(tunnel_manager.run_mass_update_process(context, uid, subs, singles, monitor, status_msg))
+        spawn_background(context, tunnel_manager.run_mass_update_process(context, uid, subs, singles, monitor, status_msg))
     
     except Exception as e:
         logger.error(f"Error in mass_update_test_start: {e}")
@@ -1256,7 +1257,7 @@ async def refresh_conf_dash_action(update: Update, context: ContextTypes.DEFAULT
 
     # 2. ایجاد تسک در پس‌زمینه (این خط جادویی است!)
     # ربات اینجا منتظر نمی‌ماند و بلافاصله به سراغ کاربر بعدی می‌رود
-    task = asyncio.create_task(background_task())
+    task = spawn_background(context, background_task())
     
     # ذخیره تسک برای مدیریت قفل کاربر
     USER_ACTIVE_TASKS[uid] = task

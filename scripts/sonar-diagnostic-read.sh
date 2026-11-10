@@ -8,7 +8,11 @@ case "$action" in
   journal)
     service="${2:-}"
     days="${3:-7}"
-    [[ "$days" =~ ^([1-9]|[12][0-9]|30)$ ]] || { echo 'INVALID_LOG_WINDOW' >&2; exit 64; }
+    if [[ "$days" =~ ^([1-9]|[12][0-9]|30)$ ]]; then
+      since="$days days ago"
+    elif [[ "$days" =~ ^(3|6|12|24|48|72|168)h$ ]]; then
+      since="${days%h} hours ago"
+    else echo 'INVALID_LOG_WINDOW' >&2; exit 64; fi
     priority=()
     case "$service" in
       bot) units=(-u sonar-bot);;
@@ -19,8 +23,8 @@ case "$action" in
       *) echo 'DIAGNOSTIC_SERVICE_NOT_ALLOWED' >&2; exit 64;;
     esac
     # Include both current private-namespace and historical shared-journal logs.
-    /usr/bin/journalctl --namespace=sonar "${units[@]}" --since "$days days ago" --no-pager --output=short-iso-precise "${priority[@]}" || true
-    exec /usr/bin/journalctl "${units[@]}" --since "$days days ago" --no-pager --output=short-iso-precise "${priority[@]}"
+    /usr/bin/journalctl --namespace=sonar "${units[@]}" --since "$since" --no-pager --output=short-iso-precise "${priority[@]}" || true
+    exec /usr/bin/journalctl "${units[@]}" --since "$since" --no-pager --output=short-iso-precise "${priority[@]}"
     ;;
   service)
     case "${2:-}" in

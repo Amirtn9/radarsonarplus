@@ -130,7 +130,7 @@ async def diag_menu(update, context):
                'گزارش سلامت بدون رمزها و توکن‌ها تولید می‌شود. '\
                'بسته ZIP شامل آخرین لاگ‌های ربات، وب، نصب و خطاهاست. '\
                'قبل از ارسال برای پشتیبانی، محتوای بسته را شخصاً بررسی کنید.',
-               rows(('🔍 گزارش سریع سلامت','v6_diag_health'),('📤 ساخت و ارسال ZIP لاگ‌ها','v6_diag_zip'),('🛰 ZIP به‌همراه لاگ ۵ ایجنت','v6_diag_zip_agents'),
+               rows(('🔍 گزارش سریع سلامت','v6_diag_health'),('📤 ساخت و ارسال ZIP لاگ‌ها','v6_diag_zip'),
                     ('🛰 مشاهده لاگ ایجنت‌ها','admin_agent_logs'),('📋 منوی مدیریت','v6_admin')))
 
 
@@ -165,6 +165,17 @@ async def diag_zip_entry(update, context):
             except Exception:
                 pass
         return
+    data=getattr(getattr(update,'callback_query',None),'data','') or ''
+    if data in ('v6_diag_zip','v6_diag_zip_agents'):
+        await _safe_answer(update.callback_query)
+        await show(update,'بازه زمانی لاگ‌ها را انتخاب کنید. یک ZIP شامل لاگ سرور اصلی و همه ایجنت‌های ثبت‌شده ساخته می‌شود.',
+            rows(*[(label, f'v6_diag_zip_h{hours}') for hours,label in
+                   ((3,'۳ ساعت اخیر'),(6,'۶ ساعت اخیر'),(12,'۱۲ ساعت اخیر'),
+                    (24,'۲۴ ساعت اخیر'),(48,'۴۸ ساعت اخیر'),(72,'۷۲ ساعت اخیر'),(168,'۷ روز اخیر'))],
+                 ('⬅️ مرکز عیب‌یابی','v6_diag')))
+        return
+    if data not in {f'v6_diag_zip_h{h}' for h in (3,6,12,24,48,72,168)}:
+        return
     if update.callback_query:
         # This is deliberately before create_task: callbacks can expire while the
         # event loop is busy, and an acknowledgement error must not abort ZIP export.
@@ -190,6 +201,11 @@ async def diag_zip(update, context):
         return
     _DIAG_JOB_ACTIVE = True
 
+    from settings import PROJECT_VERSION
+    data=getattr(getattr(update,'callback_query',None),'data','') or ''
+    hours=int(data.rsplit('_h',1)[1]) if '_h' in data else 168
+    if hours not in (3,6,12,24,48,72,168):return
+    days=hours/24
     path = None
     stage = 'database_connect'
     chat_id = update.effective_user.id
@@ -229,7 +245,7 @@ async def diag_zip(update, context):
 
             stage = 'operational_state'
             try:
-                state = await asyncio.wait_for(_diag_sync(collect_operational_state, db, 7), timeout=90)
+                state = await asyncio.wait_for(_diag_sync(collect_operational_state, db, days), timeout=90)
                 if not isinstance(state, dict):
                     state = {'result': 'invalid_operational_state_shape'}
             except Exception as exc:
@@ -238,11 +254,11 @@ async def diag_zip(update, context):
                 logger.warning('Diagnostics operational state unavailable: %s', type(exc).__name__)
 
             stage = 'remote_agent_logs'
-            await progress(f'⏳ جمع‌آوری لاگ‌های هفت‌روزه؛ {len(agents)} سرور ثبت‌شده بررسی می‌شود.')
+            await progress(f'⏳ جمع‌آوری لاگ‌های {hours} ساعت اخیر؛ {len(agents)} سرور ثبت‌شده بررسی می‌شود.')
             try:
                 # The collector has a per-host/global deadline and emits a status line
                 # for each offline or timed-out Agent. Do not wrap it in a short timeout.
-                remote = await _diag_sync(collect_agent_journals, agents, None, 7,
+                remote = await _diag_sync(collect_agent_journals, agents, None, days,
                                           timeout_seconds=420, max_workers=16)
             except Exception as exc:
                 collection_errors['remote_agent_logs'] = type(exc).__name__
@@ -257,12 +273,12 @@ async def diag_zip(update, context):
         stage = 'build_zip'
         await progress('⏳ بسته‌بندی لاگ‌های ربات، پنل، نصب، وضعیت دیتابیس و Agentها...')
         path = await _diag_sync(build_bundle, agent_rows=agents, remote_logs=remote,
-                                operational_state=state, days=7)
+                                operational_state=state, days=days)
         size = path.stat().st_size
         if size > 45 * 1024 * 1024:
             await context.bot.send_message(chat_id=chat_id,
                 text=('گزارش کامل ساخته شد اما از سقف ارسال فایل تلگرام بزرگ‌تر است. '
-                      'از پنل وب ← عیب‌یابی مدیر، بسته هفت‌روزه را دانلود کنید. '
+                      'از پنل وب ← عیب‌یابی مدیر، بسته با همین بازه را دانلود کنید. '
                       'جزئیات خطاهای جمع‌آوری در state/operational-state.json قرار دارد.'))
             return
 
@@ -276,8 +292,8 @@ async def diag_zip(update, context):
                 with path.open('rb') as handle:
                     await context.bot.send_document(
                         chat_id=chat_id, document=handle,
-                        filename='radarsonarplus-v6.9.2-full-logs-7d.zip',
-                        caption=('گزارش هفت‌روزه ربات، پنل، نصب، وضعیت عملیاتی و Agentها. '
+                        filename=f'radarsonarplus-v{PROJECT_VERSION}-full-logs-{hours}h.zip',
+                        caption=(f'گزارش {hours} ساعت اخیر ربات، پنل، نصب، وضعیت عملیاتی و همه Agentها. '
                                  'مقادیر محرمانه پوشانده شده‌اند؛ لاگ‌های اصلی دست‌نخورده مانده‌اند.'),
                         read_timeout=600, write_timeout=600, connect_timeout=30, pool_timeout=60)
                 uploaded = True
@@ -320,7 +336,7 @@ async def guide_menu(update, context):
     parsed=urlsplit(os.getenv('SONAR_WEBAPP_URL','').strip())
     buttons=[]
     if parsed.scheme=='https' and parsed.hostname and not parsed.username and not parsed.password:
-        guide_url=urlunsplit((parsed.scheme,parsed.netloc,'/guide','v=6.9.7',''))
+        guide_url=urlunsplit((parsed.scheme,parsed.netloc,'/guide','v=6.9.8',''))
         buttons.append([B('📚 آکادمی تعاملی؛ آموزش کامل و فرهنگ دکمه‌ها',web_app=WebAppInfo(url=guide_url))])
     for item in chapters:
         buttons.append([B(item['title'],callback_data=f"v6_lesson_{item['id']}_0")])
@@ -368,4 +384,4 @@ def register(app):
     app.add_handler(SecureCallbackQueryHandler(section,pattern=r'^v6_(servers|configs|monitor|tools|settings|account|admin)$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(diag_menu,pattern=r'^v6_diag$'),group=0)
     app.add_handler(SecureCallbackQueryHandler(diag_health,pattern=r'^v6_diag_health$'),group=0)
-    app.add_handler(SecureCallbackQueryHandler(diag_zip_entry,pattern=r'^v6_diag_zip(?:_agents)?$'),group=0)
+    app.add_handler(SecureCallbackQueryHandler(diag_zip_entry,pattern=r'^v6_diag_zip(?:_agents|_h(?:3|6|12|24|48|72|168))?$'),group=0)

@@ -1,3 +1,11 @@
+# RadarSonarPlus 6.9.8 — Shared hourly diagnostics and verified log fixes (2026-11-10)
+
+- Select 3/6/12/24/48/72 hours or 7 days before building one Bot/Web/Agent diagnostics ZIP; expose the same periods in the web panel.
+- Preserve hourly windows through local files, journals, remote SSH, operational history, metadata and versioned filenames, with legacy helper fallback.
+- Read diagnostics using existing service permissions before sudo; preserve hardening and provision read-only journal group access.
+- Keep diagnostic JSON valid during redaction; stop permanent workers before Telegram HTTP shutdown and track long-running user jobs.
+- Await pending Agent relay receive tasks on cancellation. See [review of the supplied archive and deployment requirements](docs/RELEASE_6_9_8_FA.md).
+
 # RadarSonarPlus 6.9.7 — Verified CI and logging reliability (2026-11-09)
 
 - Fix the Python 3.10/3.11 TLS fallback test using a real validating SSL context.

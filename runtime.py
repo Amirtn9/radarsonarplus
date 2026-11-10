@@ -150,3 +150,14 @@ def background_callback(callback):
         spawn_background(context,callback(update,context),name=callback.__name__)
         return None
     return handler
+
+
+async def stop_service_workers(application):
+    """Stop infinite service workers before Telegram request clients close."""
+    stop=application.bot_data.get('enterprise_stop')
+    if stop is not None:stop.set()
+    tasks=list(application.bot_data.pop('enterprise_tasks',[]))
+    for task in tasks:
+        if not task.done():task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks,return_exceptions=True)

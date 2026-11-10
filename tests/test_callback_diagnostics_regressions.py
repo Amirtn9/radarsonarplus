@@ -1,6 +1,8 @@
 """Static regressions for stale callback acknowledgement and diagnostics timeout handling."""
 from pathlib import Path
 
+import pytest
+
 ROOT=Path(__file__).resolve().parents[1]
 
 def test_diagnostics_acknowledged_before_background_work():
@@ -51,7 +53,8 @@ def test_relay_socket_exposes_socket_compatibility_methods():
     assert relay.closed
 
 
-def test_diagnostic_report_survives_database_and_agent_timeouts(monkeypatch, tmp_path):
+@pytest.mark.parametrize("hours", [3,6,12,24,48,72,168])
+def test_diagnostic_report_survives_database_and_agent_timeouts(monkeypatch, tmp_path, hours):
     import ast
     import asyncio
     import html
@@ -109,9 +112,11 @@ def test_diagnostic_report_survives_database_and_agent_timeouts(monkeypatch, tmp
         raise AssertionError(f'unexpected diagnostic stage: {name}')
     namespace['_diag_sync'] = diag_sync
     exec(compile(ast.Module(body=[fn], type_ignores=[]), 'v6_ui.py', 'exec'), namespace)
-    update = types.SimpleNamespace(effective_user=types.SimpleNamespace(id=777))
+    update = types.SimpleNamespace(effective_user=types.SimpleNamespace(id=777),
+                                   callback_query=types.SimpleNamespace(data=f"v6_diag_zip_h{hours}"))
     context = types.SimpleNamespace(bot=types.SimpleNamespace(send_message=send_message, send_document=send_document))
     asyncio.run(namespace['diag_zip'](update, context))
+    assert captured['days'] == hours/24
     assert sent['documents'] == 1
     assert captured['operational_state']['diagnostic_collection_errors'] == {
         'server_inventory': 'TimeoutError', 'operational_state': 'TimeoutError', 'remote_agent_logs': 'TimeoutError'}

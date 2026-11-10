@@ -504,7 +504,7 @@ async def show_server_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception: pass
 
     # 3. اجرا در پس‌زمینه
-    asyncio.create_task(background_stats_worker())
+    spawn_background(context, background_stats_worker())
 
 async def server_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, custom_sid=None):
     """نمایش جزئیات سرور (نسخه کاملاً غیرهمگام - Non-Blocking)"""
@@ -611,7 +611,7 @@ async def server_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, cust
                 except Exception: pass
 
     # 4. اجرا در پس‌زمینه (Non-Blocking)
-    asyncio.create_task(heavy_process_task())
+    spawn_background(context, heavy_process_task())
 
 async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = update.callback_query.data
@@ -667,7 +667,7 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Reboot Error: {e}")
 
-        asyncio.create_task(do_reboot())
+        spawn_background(context, do_reboot())
     elif act == 'editexpiry':
         await edit_expiry_start(update, context)
 
@@ -758,7 +758,7 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ok, out = await ServerMonitor.run_speedtest(srv['ip'], srv['port'], srv['username'], real_pass)
             await context.bot.send_message(update.effective_chat.id, f"🚀 نتیجه تست سرعت:\n\n{out}")
         
-        asyncio.create_task(do_speedtest())
+        spawn_background(context, do_speedtest())
 
     elif act == 'installspeed':
         await update.callback_query.message.reply_text("📥 **نصب ابزار Speedtest در پس‌زمینه آغاز شد...**")
@@ -768,7 +768,7 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await ServerMonitor.install_speedtest(srv['ip'], srv['port'], srv['username'], real_pass)
             await context.bot.send_message(update.effective_chat.id, "✅ نصب Speedtest انجام شد.")
             
-        asyncio.create_task(do_install_speed())
+        spawn_background(context, do_install_speed())
 
     elif act == 'repoupdate':
         await update.callback_query.message.reply_text(
@@ -780,7 +780,7 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status = "✅" if ok else "❌"
             await context.bot.send_message(update.effective_chat.id, f"{status} نتیجه آپدیت مخازن:\n{out}")
             
-        asyncio.create_task(do_repo_update())
+        spawn_background(context, do_repo_update())
 
     elif act == 'fullupdate':
         await update.callback_query.message.reply_text(
@@ -792,7 +792,7 @@ async def server_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status = "✅" if ok else "❌"
             await context.bot.send_message(update.effective_chat.id, f"{status} نتیجه آپدیت کامل:\n{out}")
             
-        asyncio.create_task(do_full_update())
+        spawn_background(context, do_full_update())
 
     elif act == 'clearcache':
         try:
