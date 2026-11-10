@@ -1,6 +1,6 @@
 # Sonar Radar Pro Security Notes
 
-**Release:** `6.9.9` (see the repository `VERSION` file). The repository is a release candidate; these notes are not a completed security audit or production safety certification.
+**Release:** `6.9.10` (see the repository `VERSION` file). The repository is a release candidate; these notes are not a completed security audit or production safety certification.
 
 - **SSH:** host keys must be verified out of band. Never replace `RejectPolicy` with an automatically trusting policy. An operational account with minimum required sudo privilege is recommended.
 - **WSS:** require a TLS certificate pinned to the target and an independent Agent authentication token. Avoid storing secrets in HTTP-accessible files.

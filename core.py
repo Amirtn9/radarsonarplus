@@ -398,6 +398,9 @@ class ServerMonitor:
         payload = {"action": "test_config", "link": link, "size": float(size)}
         res = await ServerMonitor.ws_send_command(ip, ws_port, token, payload, timeout=timeout)
 
+        if isinstance(res,dict):
+            res={**res,'measurement_node':{'ip':str(ip),'port':int(ws_port)}}
+
         if isinstance(res, dict) and "error" in res:
             return False, res
 

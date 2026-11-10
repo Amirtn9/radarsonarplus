@@ -316,7 +316,9 @@ class TunnelLogic:
             await self._refresh_state(uid,sub_id,'failed',error='SUB_SAVE_FAILED')
             return ['❌ ذخیره کانفیگ‌ها ناموفق بود؛ داده قبلی حفظ شد.']
         await self._refresh_state(uid,sub_id,'ready',extracted=len(unique),healthy=counts['OK'])
-        report_lines.insert(0, f"🔄 همگام‌سازی: {diff['added']} جدید | {diff['removed']} حذف‌شده | {diff['kept']} بدون تغییر\n"
+        node_label=html.escape(str(monitor.get('name') or monitor.get('ip') or 'نامشخص')[:120])
+        report_lines.insert(0, f"📍 نود سنجش: {node_label}\n"
+                               f"🔄 همگام‌سازی: {diff['added']} جدید | {diff['removed']} حذف‌شده | {diff['kept']} بدون تغییر\n"
                                f"✅ سالم از این نود: {counts['OK']} | ❌ سنجش ناموفق: {counts['Fail']} | ⚪ نامشخص: {counts['Unknown']}")
         if not authoritative:
             report_lines.append('⚠️ حذف خودکار انجام نشد: منبع کامل‌بودن فهرست را تأیید نکرده یا به سقف ۶۰۰ رسیده است.')

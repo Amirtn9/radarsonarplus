@@ -24,7 +24,7 @@ import ssl
 from datetime import datetime, timedelta
 import logging
 
-AGENT_VERSION = '6.9.9'
+AGENT_VERSION = '6.9.10'
 AGENT_PROTOCOL = 2
 
 logger = logging.getLogger('sonar.agent')  # ✅ خودکار به سیستم متصل می‌شه
@@ -879,7 +879,7 @@ def test_config_logic(outbound, dl_size_mb=0.5):
         # then reuse the successful destination for comparable latency samples.
         targets = list(_health_urls())
         successful_target = None
-        deadline = time.monotonic() + 24
+        deadline = time.monotonic() + 36
         for attempt in range(6):
             remaining = deadline - time.monotonic()
             if remaining < 1 or len(pings) >= 3:
@@ -887,11 +887,11 @@ def test_config_logic(outbound, dl_size_mb=0.5):
             target_url = successful_target or (targets.pop(0) if targets else None)
             if target_url is None:
                 break
-            maximum = max(1, min(8, int(remaining)))
+            maximum = max(1, min(15, int(remaining)))
             try:
                 cmd = _lowprio_prefix() + ["curl", "--proxy", prox, "--noproxy", "",
                     "--silent", "--show-error", "--output", "/dev/null",
-                    "--write-out", "%{http_code} %{time_total}", "--connect-timeout", "6",
+                    "--write-out", "%{http_code} %{time_total}", "--connect-timeout", str(min(12,maximum)),
                     "--max-time", str(maximum), target_url]
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=maximum+2, check=False)
                 parts = res.stdout.split()
@@ -926,6 +926,7 @@ def test_config_logic(outbound, dl_size_mb=0.5):
                                               and int(p['http_status'])>0 for p in probes),
                     'core_mode':'compatibility' if compat else 'latest',
                     'measurement_scope':'profile_route' if outbound.get('outbounds') else 'proxy',
+                    'probe_mode':'socks5h','mtu_override':None,
                     "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
 
         avg_ping = max(1, int(sum(pings) / len(pings)))
@@ -965,7 +966,8 @@ def test_config_logic(outbound, dl_size_mb=0.5):
         return {"status": "OK", "ping": avg_ping, "jitter": jitter, "down": dl_spd, "up": None, "speed_unit": "Mbps", "score": score,
                 'probes':probes,'core_mode':'compatibility' if compat else 'latest',
                 'core_version':versions.get('xray_compat_version' if compat else 'xray_version'),
-                'measurement_scope':'profile_route' if outbound.get('outbounds') else 'proxy'}
+                'measurement_scope':'profile_route' if outbound.get('outbounds') else 'proxy',
+                'probe_mode':'socks5h','mtu_override':None}
 
     except Exception as e:
         return {"status": "Unknown", "msg": 'PROBE_ERROR', "error_code":'PROBE_ERROR',

@@ -116,10 +116,17 @@ def test_successful_http_response_does_not_require_exactly_204(tmp_path,monkeypa
         def kill(self):pass
         def wait(self,**kwargs):pass
     monkeypatch.setattr(agent.subprocess,'Popen',lambda *a,**k:Process())
-    monkeypatch.setattr(agent.subprocess,'run',lambda cmd,**kw:subprocess.CompletedProcess(cmd,0,stdout=status+' 0.1',stderr=''))
+    commands=[]
+    def run(cmd,**kwargs):
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd,0,stdout=status+' 11.0',stderr='')
+    monkeypatch.setattr(agent.subprocess,'run',run)
     result=agent.test_config_logic(agent.parse_xray_config(vless(type='ws',security='tls')),0)
     assert result['status']=='OK'
-    assert result['ping']==100
+    assert result['ping']==11000
+    assert result['probe_mode']=='socks5h' and result['mtu_override'] is None
+    assert all(cmd[cmd.index('--max-time')+1]=='15' for cmd in commands)
+    assert all(cmd[cmd.index('--connect-timeout')+1]=='12' for cmd in commands)
 
 
 def test_offline_transfer_includes_both_verified_archives(monkeypatch):
@@ -139,3 +146,40 @@ def test_offline_transfer_includes_both_verified_archives(monkeypatch):
     assert result[0]=='/var/lib/sonar-agent/.sonar-runtime.zip'
     assert calls==[('v26.10.31','runtime.zip'),('v26.6.27','compat-runtime.zip')]
     assert '.sonar-compat-runtime.zip' in commands[0]
+
+
+@pytest.mark.parametrize('port',[2083,2096])
+def test_distinct_ports_and_ws_early_data_path_are_preserved(port):
+    outbound=agent.parse_xray_config('vless://'+UUID+f'@192.0.2.1:{port}?'+urlencode({
+        'type':'ws','security':'tls','host':'cdn.fixture.test','sni':'tls.fixture.test',
+        'path':'/bzr?ed=2048','insecure':'0','allowInsecure':'0'}))
+    assert outbound['settings']['vnext'][0]['port']==port
+    assert outbound['settings']['vnext'][0]['address']=='192.0.2.1'
+    stream=outbound['streamSettings']
+    assert stream['wsSettings']['path']=='/bzr?ed=2048'
+    assert stream['wsSettings']['headers']['Host']=='cdn.fixture.test'
+    assert stream['tlsSettings']['serverName']=='tls.fixture.test'
+    assert stream['tlsSettings']['allowInsecure'] is False
+
+
+def test_vmess_xhttp_distinct_address_host_and_sni():
+    values={'add':'dial.fixture.test','port':'443','id':UUID,'aid':'0','net':'xhttp',
+            'tls':'tls','host':'host.fixture.test','sni':'sni.fixture.test','path':'/fixture',
+            'allowInsecure':'0'}
+    link='vmess://'+base64.b64encode(json.dumps(values).encode()).decode().rstrip('=')
+    outbound=agent.parse_xray_config(link)
+    assert outbound['settings']['vnext'][0]['address']=='dial.fixture.test'
+    assert outbound['streamSettings']['xhttpSettings']['host']=='host.fixture.test'
+    assert outbound['streamSettings']['tlsSettings']['serverName']=='sni.fixture.test'
+    assert outbound['streamSettings']['tlsSettings']['allowInsecure'] is False
+
+
+@pytest.mark.asyncio
+async def test_probe_result_identifies_selected_agent_without_endpoint_matching(monkeypatch):
+    from core import ServerMonitor
+    async def send(*args,**kwargs):return {'status':'Unknown','error_code':'TIMEOUT'}
+    monkeypatch.setattr(ServerMonitor,'ws_send_command',send)
+    ok,result=await ServerMonitor.ws_test_config('192.0.2.9',8080,None,'synthetic-link')
+    assert ok
+    assert result['measurement_node']=={'ip':'192.0.2.9','port':8080}
+    assert result['status']=='Unknown'

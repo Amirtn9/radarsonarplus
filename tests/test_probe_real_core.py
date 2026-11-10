@@ -21,7 +21,8 @@ UUID='00000000-0000-4000-8000-000000000001'
 
 @pytest.mark.parametrize('tls,routed,compat',[(False,False,False),(True,False,False),
     (False,True,False),(True,True,False),(False,False,True)])
-def test_real_proxy_traffic_with_tls_plaintext_and_profile_routing(tmp_path,monkeypatch,tls,routed,compat):
+@pytest.mark.parametrize("transport", ["ws", "xhttp"])
+def test_real_proxy_traffic_with_tls_plaintext_and_profile_routing(tmp_path,monkeypatch,tls,routed,compat,transport):
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes,serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
@@ -36,7 +37,9 @@ def test_real_proxy_traffic_with_tls_plaintext_and_profile_routing(tmp_path,monk
     worker=threading.Thread(target=health.serve_forever,daemon=True);worker.start()
     with socket.socket() as sock:
         sock.bind(('127.0.0.1',0));server_port=sock.getsockname()[1]
-    stream={'network':'ws','security':'tls' if tls else 'none','wsSettings':{'path':'/fixture'}}
+    protocol='vmess' if transport=='xhttp' else 'vless'
+    stream={'network':transport,'security':'tls' if tls else 'none',
+            'wsSettings' if transport=='ws' else 'xhttpSettings':{'path':'/fixture'}}
     if tls:
         key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
         subject=x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,'cdn.fixture.test')])
@@ -51,7 +54,7 @@ def test_real_proxy_traffic_with_tls_plaintext_and_profile_routing(tmp_path,monk
         stream['tlsSettings']={'certificates':[{'certificateFile':str(tmp_path/'cert.pem'),'keyFile':str(tmp_path/'key.pem')}]}
     access=tmp_path/'server-access.log'
     server_config={'log':{'loglevel':'debug','access':str(access),'error':str(tmp_path/'server-error.log')},'inbounds':[{
-        'port':server_port,'listen':'127.0.0.1','protocol':'vless',
+        'port':server_port,'listen':'127.0.0.1','protocol':protocol,
         'settings':{'clients':[{'id':UUID}],'decryption':'none'},'streamSettings':stream}],
         # Current core blocks private destinations by default. Permit only
         # this fixture's exact loopback HTTP endpoint on its ephemeral port.
@@ -70,8 +73,14 @@ def test_real_proxy_traffic_with_tls_plaintext_and_profile_routing(tmp_path,monk
         return config
     monkeypatch.setattr(agent,'build_probe_config',diagnostic_builder)
     if compat:monkeypatch.setattr(agent,'needs_compatibility_core',lambda profile:True)
-    values={'type':'ws','security':'tls' if tls else 'none','host':'cdn.fixture.test','path':'/fixture'}
-    outbound=agent.parse_xray_config(f'vless://{UUID}@127.0.0.1:{server_port}?'+urlencode(values))
+    values={'type':transport,'security':'tls' if tls else 'none','host':'cdn.fixture.test','path':'/fixture'}
+    if transport=='xhttp':
+        import base64
+        values.update(add='127.0.0.1',port=str(server_port),id=UUID,aid='0',net='xhttp',tls='tls' if tls else '')
+        outbound=agent.parse_xray_config('vmess://'+base64.b64encode(json.dumps(values).encode()).decode().rstrip('='))
+    else:
+        values['path']='/fixture?ed=2048'
+        outbound=agent.parse_xray_config(f'vless://{UUID}@127.0.0.1:{server_port}?'+urlencode(values))
     if tls:
         assert outbound['streamSettings']['tlsSettings']['serverName']=='cdn.fixture.test'
         assert outbound['streamSettings']['tlsSettings']['allowInsecure'] is False

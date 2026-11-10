@@ -1,3 +1,10 @@
+# RadarSonarPlus 6.9.10 — Longer routed probe handshake budget (2026-11-10)
+
+- Allow up to 15 seconds per health target and 12 seconds to connect within a 36-second probe budget.
+- Identify the selected measurement Agent and record SOCKS mode without overriding interface MTU.
+- Verify real VMess/xHTTP and WS early-data paths with TLS, plaintext, routing and compatibility cores; add address/Host/SNI and distinct-port regressions.
+- See [network-path findings and MTU limits](docs/RELEASE_6_9_10_FA.md); customer endpoints were not exercised.
+
 # RadarSonarPlus 6.9.9 — Verified credential and login audit fixes (2026-11-10)
 
 - Preserve UTF-8 byte credentials; use descriptor-based key paths, reject symlinks/hardlinks, and serialize no-hardlink key creation.
