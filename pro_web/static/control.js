@@ -49,8 +49,10 @@
  }
  async function regions(service){
   const host=document.getElementById('service-history'),box=panel(host,'service-regions','مقایسه ایران و خارج');
+  try{
   const report=await request(`/api/services/${service.id}/regions?days=7`);for(const summary of report.summary){const region=summary.region==='ir'?'ایران':summary.region==='ext'?'خارج':'مرکزی';box.append(el('h3',region));box.append(el('p',`اندازه‌گیری معتبر: ${summary.measured} · نامشخص: ${summary.unknown} · دسترس‌پذیری نمونه‌ها: ${summary.sample_availability==null?'نامشخص':Number(summary.sample_availability).toFixed(2)+'٪'} · میانگین ${summary.average_ms==null?'—':Number(summary.average_ms).toFixed(1)+' ms'}`));}
   for(const r of report.history.slice(0,18)){const diag=r.diagnostics||{};box.append(el('p',`${r.region==='ir'?'ایران':r.region==='ext'?'خارج':'مرکزی'} · ${r.ok===null?'اندازه‌گیری موجود نیست':r.ok?'سالم':'ناموفق'} · ${r.detail} · ${new Date(r.checked_at).toLocaleString('fa-IR')}${diag.http_status?' · HTTP '+diag.http_status:''}${diag.dns_ms!=null?' · DNS '+diag.dns_ms+' ms':''}${diag.tls_expires_at?' · انقضای TLS '+new Date(diag.tls_expires_at*1000).toLocaleDateString('fa-IR'):''}`));}
+  }catch(error){const message=el('p','دریافت مقایسه مناطق ناموفق بود؛ تاریخچه اصلی در دسترس است. '+error.message);message.className='bad';box.append(message);}
  }
  async function agents(){
   const p=panel(document.getElementById('fleet'),'hosting-agents','Agent سبک هاست PHP');

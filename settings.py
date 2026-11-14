@@ -15,6 +15,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_NAME = "sonar_ultra_pro.db"
 CONFIG_FILE = os.path.join(BASE_DIR, "sonar_config.json")
 STATE_DIR = os.environ.get("SONAR_STATE_DIR", os.path.join(BASE_DIR, "runtime"))
+# Keep chart caches in writable runtime state under hardened systemd services.
+os.environ.setdefault("MPLCONFIGDIR", os.path.join(STATE_DIR, "cache", "matplotlib"))
 KEY_FILE = os.path.join(STATE_DIR, "secret.key")
 # Manual upgrades keep the legacy key until the installer migrates runtime state.
 _legacy_key = os.path.join(BASE_DIR, "secret.key")

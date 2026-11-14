@@ -2,6 +2,7 @@ import logging
 import io
 import asyncio
 import requests
+from settings import AGENT_PORT
 import matplotlib
 # تنظیم بک‌اند نمودار برای اجرا در سرور بدون محیط گرافیکی
 matplotlib.use('Agg')
@@ -11,7 +12,6 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 # اتصال به هسته اصلی
 from core import ServerMonitor
 from scoring import ScoreEngine
-from settings import AGENT_PORT # دریافت پورت ایجنت
 from runtime import SHARED_EXECUTOR  # 🔧 v4.2
 
 logger = logging.getLogger(__name__)

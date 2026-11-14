@@ -429,11 +429,15 @@ async function loadServices(){
   }
  }catch(err){host.replaceChildren(elem('p',err.message,'bad'));}
 }
+let serviceHistoryRequest=0;
 async function loadServiceHistory(item){
+ const requestId=++serviceHistoryRequest;
  const host=$('service-history');$('service-history-title').textContent='آخرین تست‌های '+item.name;
  host.replaceChildren(elem('p','در حال دریافت...','muted'));
  try{
-   const data=await request('/api/services/'+item.id+'/history?days=7');host.replaceChildren();
+   const data=await request('/api/services/'+item.id+'/history?days=7');
+   if(requestId!==serviceHistoryRequest)return;
+   host.replaceChildren();
    const latest=data.slice(-120).reverse();
    if(!latest.length)host.append(elem('p','هنوز داده‌ای ثبت نشده است.','muted'));
    // Uptime visualization in the style of a compact heartbeat strip.
@@ -444,8 +448,8 @@ async function loadServiceHistory(item){
    if(data.length)host.append(elem('p','نمونه‌های ۷ روز اخیر (تا ۱۵۰۰ نتیجه): '+up+' موفق از '+data.length+' تست · '+(100*up/data.length).toFixed(1)+'٪','muted'));
    latest.slice(0,25).forEach(sample=>host.append(simpleEntry((sample.ok?'🟢 ':'🔴 ')+sample.detail,
          serviceDate(sample.checked_at)+' · '+(sample.latency_ms==null?'—':sample.latency_ms+'ms'))));
-   await window.SonarControl?.regions(x);
- }catch(err){host.replaceChildren(elem('p',err.message,'bad'));}
+   await window.SonarControl?.regions(item);
+ }catch(err){if(requestId===serviceHistoryRequest)host.replaceChildren(elem('p',err.message,'bad'));}
 }
 $('services-refresh')?.addEventListener?.('click',loadServices);
 function resetServiceForm(){editingServiceId=null;$('service-form').reset();$('service-save').textContent='+ ایجاد مانیتور';$('service-cancel').hidden=true;}

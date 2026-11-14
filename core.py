@@ -13,9 +13,9 @@ from datetime import datetime, timedelta, timezone
 import requests
 import paramiko
 import jdatetime
+from settings import BASE_DIR, KEY_FILE, AGENT_FILE_PATH, AGENT_PORT
 import matplotlib
 
-from settings import BASE_DIR, KEY_FILE, AGENT_FILE_PATH, AGENT_PORT
 from secret_crypto import Security, SecretDecryptionError
 from ssh_support import connect_ssh, describe_ssh_error
 from access_policy import valid_agent_port

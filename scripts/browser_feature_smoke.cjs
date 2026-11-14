@@ -43,6 +43,32 @@ function launch(uid,ageSeconds=0){
   await page.screenshot({path:output+'/settings-dark-mobile.png',fullPage:true});
   await page.evaluate(()=>window.SonarTheme.set('light'));
   await page.screenshot({path:output+'/settings-mobile.png',fullPage:true});
+  // Regressions: history must survive region errors and rapid monitor changes.
+  const service=(id,name)=>({id,name,kind:'http',target:'https://example.com',enabled:true,status:'up',interval:60});
+  await page.route('**/api/services',route=>route.fulfill({json:[service(7001,'History Alpha'),service(7002,'History Beta')]}));
+  await page.route('**/api/services/*/history?days=7',async route=>{
+   const first=route.request().url().includes('/7001/');
+   if(first)await new Promise(resolve=>setTimeout(resolve,400));
+   await route.fulfill({json:[{ok:true,detail:first?'HTTP Alpha 200':'HTTP Beta 200',latency_ms:12,checked_at:new Date().toISOString()}]});
+  });
+  await page.route('**/api/services/*/regions?days=7',route=>route.fulfill({status:503,json:{detail:'Synthetic regional outage'}}));
+  await page.goto(base+'/?view=services');
+  const alpha=page.locator('#service-grid').locator('article').filter({hasText:'History Alpha'});
+  const beta=page.locator('#service-grid').locator('article').filter({hasText:'History Beta'});
+  await alpha.getByRole('button',{name:'تاریخچه',exact:true}).click();
+  await page.locator('#service-history').getByText('HTTP Alpha 200',{exact:false}).waitFor();
+  await page.locator('#service-regions .bad').waitFor();
+  assert.ok((await page.locator('#service-history').innerText()).includes('HTTP Alpha 200'));
+  const pending=page.waitForRequest(request=>request.url().includes('/7001/history'));
+  await alpha.getByRole('button',{name:'تاریخچه',exact:true}).click();await pending;
+  await beta.getByRole('button',{name:'تاریخچه',exact:true}).click();
+  await page.locator('#service-history').getByText('HTTP Beta 200',{exact:false}).waitFor();
+  await page.waitForTimeout(600);
+  assert.ok((await page.locator('#service-history-title').innerText()).includes('History Beta'));
+  assert.ok(!(await page.locator('#service-history').innerText()).includes('HTTP Alpha 200'));
+  await page.unroute('**/api/services');
+  await page.unroute('**/api/services/*/history?days=7');
+  await page.unroute('**/api/services/*/regions?days=7');
   await page.goto(base+'/?view=support');
   await page.waitForFunction(()=>document.getElementById('web-auth').hidden);
   assert.deepEqual(await page.locator('#diagnostic-days option').evaluateAll(items=>items.map(item=>Number(item.value)*24)),[3,6,12,24,48,72,168]);
