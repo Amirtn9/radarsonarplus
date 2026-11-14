@@ -1223,6 +1223,7 @@ async def get_custom_ws_port(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def _complete_server_add(update, context):
+    from ssh_support import describe_ssh_error
     uid=update.effective_user.id
     data=dict(context.user_data.get('srv') or {})
     if not all(data.get(k) for k in ('name','ip','port','username','password')):

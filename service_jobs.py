@@ -72,7 +72,7 @@ async def flush_notifications(context, pro=None):
             if not await asyncio.to_thread(pro.should_notify,uid,rule_event):
                 await asyncio.to_thread(mark_notification,pro.db,ident,'skipped');continue
             delivered=await send_notification(context,uid,f'{row["message"]}\nرویداد #{ident}',
-                                              'report' if row['event_type']=='config_report' else 'down',db=pro.db)
+                                              'configs' if row['event_type'].startswith('config_') else 'monitoring' if row['event_type'].startswith('service_') else 'servers',db=pro.db,event_key='outbox:'+str(ident))
             if not delivered:
                 raise RuntimeError('NO_TELEGRAM_DESTINATION_DELIVERED')
         except Exception:
@@ -82,13 +82,13 @@ async def flush_notifications(context, pro=None):
             await asyncio.to_thread(mark_notification,pro.db,ident,'sent')
 
 
-async def service_check_job(context):
+async def service_check_job(context,db=None):
     global _running
     if _running:return
     _running=True
     try:
-        store=ServiceStore(ProStore())
-        due=await asyncio.to_thread(store.claim,20)
+        store=ServiceStore(ProStore(db))
+        due=await asyncio.to_thread(store.claim,5)
         semaphore=asyncio.Semaphore(5)
         async def process(item):
             async with semaphore:
@@ -102,11 +102,31 @@ async def service_check_job(context):
                             timeout=item['timeout_seconds']+8)
                     except asyncio.TimeoutError:
                         result=ProbeResult(False,None,'Probe timeout')
+                    from regional_monitor import check_regions
+                    result=await check_regions(store.db,item,result)
                     await asyncio.to_thread(store.record,item,result)
                 except Exception:
                     log.exception('Uptime job failed id=%s',item.get('id'))
         await asyncio.gather(*(process(row) for row in due),return_exceptions=True)
+        from retention import sweep
+        await asyncio.to_thread(sweep,store.db)
         # Flush independently of transitions; due may be empty after quiet hours.
-        await flush_notifications(context,store.pro)
+        if context is not None:await flush_notifications(context,store.pro)
     except Exception:log.exception('Service monitor cycle failed')
     finally:_running=False
+
+
+async def web_worker(db,stop,get_token):
+    from types import SimpleNamespace
+    from telegram import Bot
+    while not stop.is_set():
+        try:
+            await service_check_job(None,db)
+            token=get_token()
+            pending=await asyncio.to_thread(db.execute,"SELECT 1 FROM pro_notification_outbox WHERE sent_at IS NULL AND skipped_at IS NULL AND dead_at IS NULL AND next_attempt_at<=NOW() LIMIT 1",None,'one')
+            if token and pending:
+                async with Bot(token) as bot:await flush_notifications(SimpleNamespace(bot=bot),ProStore(db))
+        except asyncio.CancelledError:raise
+        except Exception:log.warning('Web service monitoring or delivery unavailable')
+        try:await asyncio.wait_for(stop.wait(),timeout=15)
+        except asyncio.TimeoutError:pass

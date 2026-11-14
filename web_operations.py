@@ -56,6 +56,11 @@ class NewConfig(BaseModel):
     link:str=Field(min_length=10,max_length=8192)
     kind:Literal['single','sub_source']='single'
 
+class ConfigEdit(BaseModel):
+    name:str=Field(min_length=1,max_length=120)
+    link:str|None=Field(default=None,max_length=65536)
+    kind:Literal['single','json']|None=None
+
 class ConfigDeleteConfirmation(BaseModel):
     confirm_id:int=Field(gt=0)
     confirm_name:str=Field(min_length=1,max_length=128)
@@ -86,6 +91,9 @@ def make_router(store,actor,guarded,admin_id):
 
     @r.post('/server/probe')
     async def probe_server(body:ServerProbe,uid:int=Depends(actor)):
+        from control_store import Control
+        await guarded(Control(store).rate_limit,uid,'ssh_probe',5)
+        await guarded(store.audit,uid,uid,'ssh.probe',body.ip,'public destination fingerprint probe')
         try:ip, port = public_destination(body.ip,body.port)
         except ValueError as exc:raise HTTPException(status_code=400,detail=str(exc))
         def probe():
@@ -186,6 +194,15 @@ def make_router(store,actor,guarded,admin_id):
             return queue_install(store.db,uid,server_id,int(saved['ws_port']),admin_id)
         job_id=await guarded(enqueue_reenrollment)
         return {'job_id':job_id,'state':'pending','mode':'tls_reenrollment'}
+
+    @r.post('/server/{server_id}/agent/rotate-token')
+    async def rotate_agent_token(server_id:int,body:InstallRequest,uid:int=Depends(actor)):
+        if not body.confirmed:raise HTTPException(status_code=400,detail='تأیید بازنصب و چرخش توکن لازم است')
+        server=await guarded(store.db.get_server_for_user,server_id,uid,admin_id)
+        if not server:raise HTTPException(status_code=404,detail='سرور یافت نشد')
+        ident=await guarded(queue_install,store.db,uid,server_id,server['ws_port'],admin_id,True)
+        await guarded(store.audit,int(server['owner_id']),uid,'agent.token_rotation.queued',str(server_id))
+        return {'job_id':ident,'state':'pending','message':'Rotation is committed only after verified WSS readiness'}
 
     @r.post('/server/{server_id}/ssh-host/probe')
     async def probe_existing_host(server_id:int,uid:int=Depends(actor)):
@@ -319,6 +336,24 @@ def make_router(store,actor,guarded,admin_id):
             return int(row['id'])
         config_id=await guarded(save)
         return {'id':config_id,'status':'pending','message':'Registered. No connectivity test has been performed.'}
+
+    @r.put('/config/{config_id}')
+    async def edit_config(config_id:int,body:ConfigEdit,uid:int=Depends(actor)):
+        if not valid_label(body.name):raise HTTPException(status_code=400,detail='نام کانفیگ معتبر نیست')
+        if (body.link is None)!=(body.kind is None):raise HTTPException(status_code=400,detail='برای تغییر لینک، نوع پروتکل را هم تعیین کنید')
+        link=None
+        if body.link is not None:
+            try:link=safe_config(body.link,body.kind)
+            except ValueError:raise HTTPException(status_code=400,detail='قالب کانفیگ معتبر نیست') from None
+        def write():
+            owner=store.workspace(uid);store.require(uid,owner,True)
+            row=store.db.execute('''UPDATE tunnel_configs SET name=%s,
+                link=COALESCE(%s,link),type=COALESCE(%s,type),config_revision=config_revision+1,
+                last_status=CASE WHEN %s IS NULL THEN last_status ELSE 'Unknown' END
+                WHERE id=%s AND owner_id=%s RETURNING id''',(body.name,link,body.kind,link,config_id,owner),fetch='one')
+            if not row:raise HTTPException(status_code=404,detail='کانفیگ یافت نشد')
+            store.audit(owner,uid,'config.edit',str(config_id),'Configuration updated; link omitted')
+        await guarded(write);return {'ok':True}
 
     @r.post('/config/{config_id}/delete')
     async def delete_config(config_id:int,body:ConfigDeleteConfirmation,uid:int=Depends(actor)):

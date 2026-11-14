@@ -95,6 +95,7 @@ def test_all_relays_failed_must_not_register_server(monkeypatch):
 def test_web_jobs_tenant_scope_and_pending_guard():
     from web_agent_jobs import queue,list_for_server
     class DB:
+        def check_access(self,uid):return True,'active fixture'
         def workspace_owner(self,uid):return uid
         def get_server_for_user(self,sid,uid,admin):return {'owner_id':54} if (sid,uid)==(2,54) else None
         def execute(self,query,params=None,fetch=None):

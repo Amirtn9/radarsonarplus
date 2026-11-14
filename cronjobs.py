@@ -79,6 +79,8 @@ async def check_single_server_resources(context, srv):
     try:
         allowed,_=await run_sync(db.check_access,owner,SUPER_ADMIN_ID)
         if not allowed:return
+        from notification_api import claim_sample
+        if not await run_sync(claim_sample,db,sid):return
         async with _RESOURCE_LIMIT:
             stats=await StatsManager.check_full_stats(srv['ip'],srv['port'],srv['username'],sec.decrypt(srv.get('password') or ''),ws_port=srv.get('ws_port'))
         await run_sync(db.persist_server_observation,srv,stats)
@@ -89,7 +91,9 @@ async def check_single_server_resources(context, srv):
         # Store transition and notification together; reboots cannot reset counters.
         online=stats.get('status')=='Online'
         await run_sync(store.record_server_observation,owner,sid,online,DOWN_RETRY_LIMIT,
-                       srv['name'],stats.get('error','Connection failed'),down_enabled)
+                       srv['name'],stats.get('error','Connection failed'),down_enabled and not (srv.get('maintenance_until') and srv['maintenance_until']>datetime.now(srv['maintenance_until'].tzinfo)))
+        maintenance=srv.get('maintenance_until')
+        if maintenance and maintenance>datetime.now(maintenance.tzinfo):return
         if not online:
             return
         exceeded=[]
@@ -101,7 +105,7 @@ async def check_single_server_resources(context, srv):
                 exceeded.append(f'{name.upper()}: {float(value):.1f}% | حد: {limit:g}%')
         if exceeded:
             now=time.monotonic()
-            if now-CPU_ALERT_TRACKER.get(sid,-1000)>=600:
+            if now-CPU_ALERT_TRACKER.get(sid,-1000)>=max(60,min(86400,int(settings.get('resource_cooldown_seconds',600)))):
                 sent=await send_notification(context,owner,'⚠️ مصرف منابع '+srv['name']+'\n'+'\n'.join(exceeded),'resource',db=db)
                 if sent:CPU_ALERT_TRACKER[sid]=now
         else:
@@ -188,7 +192,7 @@ async def monitor_tunnels_job(context: ContextTypes.DEFAULT_TYPE):
 
 def _scheduled_items_snapshot():
     with db.get_connection() as (conn, cur):
-        cur.execute("SELECT * FROM tunnel_configs WHERE type IN ('single','json') ORDER BY owner_id,id")
+        cur.execute("SELECT * FROM tunnel_configs WHERE monitoring_enabled=TRUE AND sonar_monitor_allowed(owner_id,'configs',id) AND type IN ('single','json') ORDER BY owner_id,id")
         rows = cur.fetchall()
     by_owner = {}
     for row in rows:

@@ -286,7 +286,7 @@ async def scheduled_config_probe_job(context):
             if not monitor:
                 continue
             configs = await asyncio.to_thread(pro.db.execute, '''SELECT id,link FROM tunnel_configs
-                WHERE owner_id=%s AND type IN ('single','sub_item','json') ORDER BY (id>%s) DESC,id LIMIT 8''',
+                WHERE owner_id=%s AND monitoring_enabled=TRUE AND sonar_monitor_allowed(owner_id,'configs',id) AND type IN ('single','sub_item','json') ORDER BY (id>%s) DESC,id LIMIT 8''',
                 (owner, owner_row['last_config_id']), fetch='all')
             if configs:
                 await asyncio.to_thread(pro.db.execute, 'UPDATE config_alert_settings SET last_config_id=%s WHERE owner_id=%s', (configs[-1]['id'], owner))

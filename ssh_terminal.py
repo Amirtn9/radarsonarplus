@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -81,6 +82,13 @@ def make_router(store, admin_id, *, verify_tma=None, get_bot_token=None):
         channel = None
         receive_task = None
         password = ""
+        lease_id=None
+        incoming=outgoing=0
+        started=time.monotonic()
+        last_input=started
+        next_heartbeat=started+20
+        from control_store import Control
+        control=Control(store)
         try:
             if server_id < 1:
                 await websocket.send_json({"type": "error", "message": "Invalid server ID."})
@@ -100,7 +108,7 @@ def make_router(store, admin_id, *, verify_tma=None, get_bot_token=None):
                 await websocket.close(code=4401, reason="Authentication required")
                 return
 
-            from web_login import identify, digest, valid_token
+            from web_login import identify, digest, valid_token, csrf_proof
             session = websocket.cookies.get("sonar_web_session", "")
             session_data = None
             if session:
@@ -117,9 +125,8 @@ def make_router(store, admin_id, *, verify_tma=None, get_bot_token=None):
                 session_data
                 and isinstance(csrf, str)
                 and valid_token(csrf)
-                and hmac.compare_digest(
-                    digest(csrf), str(session_data.get("csrf_hash") or "")
-                )
+                and (hmac.compare_digest(digest(csrf), str(session_data.get("csrf_hash") or ""))
+                     or hmac.compare_digest(csrf,csrf_proof(session)))
             )
 
             # Telegram Mini Apps can use their signed initData directly when
@@ -161,6 +168,17 @@ def make_router(store, admin_id, *, verify_tma=None, get_bot_token=None):
                 await websocket.close(code=4403, reason="Account inactive")
                 return
 
+            from control_api import require_elevated
+            recent=await asyncio.to_thread(require_elevated,store.db,session) if csrf_valid else False
+            if not recent and tma_uid is not None:
+                try:
+                    verify_tma(init_data,get_bot_token(),max_age=60)
+                    recent=True
+                except (PermissionError,ValueError,KeyError):pass
+            if not recent:
+                await websocket.send_json({'type':'error','message':'Recent verification required. Enter a fresh bot code in the panel.'})
+                await websocket.close(code=4403,reason='Step-up required')
+                return
             server = await asyncio.to_thread(
                 store.db.get_server_for_user, server_id, uid, admin_id
             )
@@ -172,6 +190,9 @@ def make_router(store, admin_id, *, verify_tma=None, get_bot_token=None):
                 await websocket.close(code=4404, reason="Server unavailable")
                 return
 
+            await asyncio.to_thread(store.require,uid,int(server['owner_id']),True)
+            lease_id=str(uuid.uuid4())
+            await asyncio.to_thread(control.lease,uid,server_id,lease_id)
             from core import ServerMonitor, sec
             from ssh_relay import eligible_relay_nodes
 
@@ -196,6 +217,8 @@ def make_router(store, admin_id, *, verify_tma=None, get_bot_token=None):
                 client = await asyncio.to_thread(
                     ServerMonitor.get_ssh_client, ip, port, username, password, relays
                 )
+                transport=client.get_transport()
+                if transport:transport.set_keepalive(30)
                 channel = await asyncio.to_thread(
                     client.invoke_shell,
                     term="xterm-256color",
@@ -234,7 +257,7 @@ def make_router(store, admin_id, *, verify_tma=None, get_bot_token=None):
             receive_task = asyncio.create_task(websocket.receive_text())
             next_auth_check = time.monotonic() + 60
             while True:
-                done, _ = await asyncio.wait({receive_task}, timeout=0.025)
+                done, _ = await asyncio.wait({receive_task}, timeout=0.1)
                 if receive_task in done:
                     try:
                         raw = receive_task.result()
@@ -252,7 +275,10 @@ def make_router(store, admin_id, *, verify_tma=None, get_bot_token=None):
                     if kind == "input":
                         data = message.get("data", "")
                         if isinstance(data, str) and len(data) <= 32768 and not channel.closed:
-                            await asyncio.to_thread(channel.sendall, data.encode("utf-8"))
+                            encoded=data.encode("utf-8")
+                            await asyncio.to_thread(channel.sendall, encoded)
+                            incoming+=len(encoded)
+                            last_input=time.monotonic()
                     elif kind == "resize":
                         try:
                             cols = max(2, min(400, int(message.get("cols", 100))))
@@ -273,6 +299,7 @@ def make_router(store, admin_id, *, verify_tma=None, get_bot_token=None):
                     if channel.recv_ready():
                         output = await asyncio.to_thread(channel.recv, 65536)
                         if output:
+                            outgoing+=len(output)
                             await websocket.send_json({
                                 "type": "output",
                                 "data": output.decode("utf-8", "replace")
@@ -284,6 +311,13 @@ def make_router(store, admin_id, *, verify_tma=None, get_bot_token=None):
                 except OSError:
                     break
 
+                if time.monotonic()-last_input>900:
+                    await websocket.send_json({'type':'error','message':'Terminal idle timeout. Reconnect to continue.'})
+                    break
+                if time.monotonic()>=next_heartbeat:
+                    await asyncio.to_thread(control.terminal_touch,lease_id,incoming,outgoing)
+                    await websocket.send_json({'type':'pong'})
+                    next_heartbeat=time.monotonic()+20
                 if time.monotonic() >= next_auth_check:
                     if session:
                         current = await asyncio.to_thread(identify, store.db, session)
@@ -297,6 +331,7 @@ def make_router(store, admin_id, *, verify_tma=None, get_bot_token=None):
                     if not still_allowed:
                         await websocket.send_json({"type": "error", "message": "Account access is inactive."})
                         break
+                    await asyncio.to_thread(store.require,uid,int(server['owner_id']),True)
                     next_auth_check = time.monotonic() + 60
 
             try:
@@ -315,6 +350,9 @@ def make_router(store, admin_id, *, verify_tma=None, get_bot_token=None):
             except Exception:
                 pass
         finally:
+            if lease_id:
+                try:await asyncio.to_thread(control.terminal_touch,lease_id,incoming,outgoing,True)
+                except Exception:log.exception('Terminal closing audit failed')
             if receive_task and not receive_task.done():
                 receive_task.cancel()
             if channel is not None:

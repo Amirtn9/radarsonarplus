@@ -38,16 +38,20 @@ def recover_interrupted_jobs(db):
         WHERE state='running' AND updated_at < NOW()-INTERVAL '30 minutes' ''')
 
 
-def queue(db, uid, server_id, ws_port, admin_id):
+def queue(db, uid, server_id, ws_port, admin_id,rotate_token=False):
     from access_policy import valid_agent_port
     port = valid_agent_port(ws_port)
     saved = db.get_server_for_user(int(server_id), uid, admin_id)
     if not saved:
         raise PermissionError('Server is not in your workspace')
     owner = int(saved['owner_id'])
-    row = db.execute('''INSERT INTO web_agent_install_jobs(server_id,owner_id,requested_by,port)
-        VALUES(%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING id''',
-        (int(server_id),owner,int(uid),port),fetch='one')
+    from pro_store import ProStore
+    if int(uid)!=int(admin_id):
+        role=ProStore(db).require(uid,owner,True)
+        if role not in ('owner','manager','technical'):raise PermissionError('Technical administrator required')
+    row = db.execute('''INSERT INTO web_agent_install_jobs(server_id,owner_id,requested_by,port,rotate_token)
+        VALUES(%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING id''',
+        (int(server_id),owner,int(uid),port,bool(rotate_token)),fetch='one')
     if not row:raise ValueError('An Agent installation is already queued or running')
     return int(row['id'])
 
@@ -73,7 +77,7 @@ def claim(db):
             conn.commit();return None
         cur.execute('''UPDATE web_agent_install_jobs SET state='running',
             stage='connecting',updated_at=NOW() WHERE id=%s''',(row['id'],))
-        cur.execute('''SELECT j.id,j.port,j.server_id,j.owner_id,s.ip,s.port AS ssh_port,
+        cur.execute('''SELECT j.id,j.port,j.server_id,j.owner_id,j.requested_by,j.rotate_token,s.ip,s.port AS ssh_port,
             s.username,s.password FROM web_agent_install_jobs j
             JOIN servers s ON s.id=j.server_id
             WHERE j.id=%s AND s.owner_id=j.owner_id AND s.is_active=1''',(row['id'],))
@@ -96,12 +100,18 @@ def process_one(db, job):
         mark(db,job['id'],'server_missing','failed','SERVER_NOT_FOUND');return
     from core import ServerMonitor,sec
     try:
+        from settings import SUPER_ADMIN_ID
+        from pro_store import ProStore
+        requested=int(job.get('requested_by') or job['owner_id'])
+        if requested!=SUPER_ADMIN_ID:
+            role=ProStore(db).require(requested,job['owner_id'],True)
+            if role not in ('owner','manager','technical'):raise PermissionError('Technical administrator required')
         def progress(stage, detail):
             try:mark(db,job['id'],stage)
             except Exception:log.exception('Agent install stage database error')
         ok, detail=ServerMonitor.install_agent_service(
             job['ip'],int(job['ssh_port']),job['username'],sec.decrypt(job['password']),
-            int(job['port']),progress=progress)
+            int(job['port']),progress=progress,**({'rotate_token':True} if job.get('rotate_token') else {}))
         mark(db,job['id'],'verified' if ok else 'failed',
              'success' if ok else 'failed',None if ok else str(detail).split(':',1)[0])
         if ok: db.update_status(int(job['server_id']),'Online')

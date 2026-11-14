@@ -30,10 +30,9 @@ def test_resource_server_selector_uses_large_pages_without_silent_60_item_cap():
     portal = (ROOT / "pro_portal.py").read_text(encoding="utf-8")
     app = (ROOT / "pro_web" / "static" / "app.js").read_text(encoding="utf-8")
     assert "per_page:int=Query(default=12,ge=1,le=50)" in portal
-    assert "per_page=50" in app
-    assert "page<=100" in app
-    assert "page=101&per_page=50" in app
-    assert "if(!complete)throw Error" in app
+    assert "request('/api/server-options')" in app
+    assert "page<=100" not in app
+    assert "SELECT id,name FROM servers WHERE owner_id=%s" in portal
 
 
 def test_proxy_example_includes_websocket_and_diagnostics_routes():

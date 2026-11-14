@@ -4,6 +4,7 @@ from psycopg2.extras import RealDictCursor
 import threading
 import os
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 
@@ -159,7 +160,7 @@ class Database:
                 cur.execute("SELECT set_config('sonar.actor',%s,true)",(str(int(actor)),))
             yield conn, cur
         except psycopg2.Error as e:
-            logger.error(f"⚠️ Database Error: {e}")
+            logger.error("Database error type=%s sqlstate=%s",type(e).__name__,getattr(e,'pgcode',None))
             if conn:  conn.rollback()
             raise e
         except Exception as e:
@@ -369,7 +370,11 @@ class Database:
             conn.commit()
 
     def workspace_owner(self, user_id):
-        from workspace_service import WorkspaceService
+        from workspace_service import WorkspaceService,ACTIVE_WORKSPACE,ACTOR_ID
+        selected=ACTIVE_WORKSPACE.get()
+        if selected and int(user_id)==ACTOR_ID.get():
+            if int(selected)==int(user_id) or self.execute('SELECT 1 FROM pro_team WHERE owner_id=%s AND member_id=%s',(selected,user_id),fetch='one'):
+                return int(selected)
         return WorkspaceService(self).owner(user_id)
 
     def workspace_members(self, user_id):
@@ -401,6 +406,19 @@ class Database:
             return False, "کاربر یافت نشد"
         if user['is_banned']:
             return False, "حساب شما مسدود شده است ⛔️"
+        # New subscriptions use typed UTC timestamps; legacy accounts retain
+        # their current compatibility path until explicitly migrated by admin.
+        exists=self.execute("SELECT to_regclass('public.sonar_subscriptions') AS relation",fetch='one')
+        if exists and exists['relation']:
+            from billing import Billing
+            sub=Billing(self).subscription(user_id)
+            if sub:
+                return (sub['effective_status']=='active', 'اشتراک '+sub['effective_status'])
+        if 'subscription_date_invalid' in user:
+            if user['subscription_date_invalid']:return False,'تاریخ اشتراک نامعتبر است؛ مدیر باید آن را اصلاح کند'
+            if user['subscription_unlimited']:return True,'Unlimited'
+            expires=user['subscription_expires_at']
+            return (bool(expires and expires>datetime.now(timezone.utc)),'اعتبار اشتراک')
         try:
             if not user['expiry_date']:
                 return True, "Unlimited"
@@ -415,17 +433,23 @@ class Database:
             logger.error(f"Date check error for {user_id}: {e}")
             return False, "خطا در بررسی تاریخ"
 
+    def check_read_access(self, user_id):
+        user=self.get_user(user_id)
+        if not user:return self.check_access(user_id)
+        if user['is_banned']:return False,'حساب مسدود است'
+        return True,'دسترسی مشاهده و تمدید؛ عملیات فنی به اشتراک فعال نیاز دارد'
+
     def get_active_servers(self):
         """Get all active servers for monitoring"""
         with self.get_connection() as (conn, cur):
-            cur.execute("SELECT * FROM servers WHERE is_active = 1")
+            cur.execute("SELECT * FROM servers WHERE is_active = 1 AND next_observation_at<=NOW() AND sonar_monitor_allowed(owner_id,'servers',id)")
             return cur.fetchall()
 
     def get_near_expiry_services(self):
         """Get services expiring in 3 days"""
         target = (self.get_tehran_datetime().replace(tzinfo=None) + timedelta(days=3)).strftime('%Y-%m-%d')
         with self.get_connection() as (conn, cur):
-            cur.execute("SELECT * FROM servers WHERE expiry_date LIKE %s AND is_active = 1", (f"{target}%",))
+            cur.execute("SELECT * FROM servers WHERE (expiry_at AT TIME ZONE 'Asia/Tehran')::date=%s::date AND is_active=1 AND NOT expiry_date_invalid",(target,))
             return cur.fetchall()
 
     def add_server_stats_batch(self, stats_list):
@@ -486,6 +510,11 @@ class Database:
                     VALUES (%s, %s, %s, %s, 2, %s, 0, 0)
                 ''', (user_id, full_name, now_str, expiry, invited_by))
             conn.commit()
+        if not exist:
+            table=self.execute("SELECT to_regclass('public.sonar_subscriptions') AS relation",fetch='one')
+            if table and table['relation']:
+                from billing import Billing
+                Billing(self).enroll(user_id)
 
     def get_all_users(self):
         with self.get_connection() as (conn, cur):
@@ -698,12 +727,17 @@ class Database:
     def get_agent_token(self, ip, ws_port=None):
         return self.get_agent_transport(ip,ws_port or AGENT_PORT)[0]
 
-    def store_agent_certificate(self, ip, ssh_port, certificate, ws_port=None):
+    def store_agent_certificate(self, ip, ssh_port, certificate, ws_port=None, token=None):
         from cryptography import x509
         x509.load_pem_x509_certificate(certificate.encode())
         if len(certificate)>12000:
             raise ValueError('Invalid TLS certificate')
         with self.get_connection() as (conn,cur):
+            if token is not None:
+                from web_login import valid_token
+                from core import sec
+                if not valid_token(token):raise ValueError('Invalid Agent token')
+                cur.execute('UPDATE agent_nodes SET agent_token=%s,token_rotated_at=NOW() WHERE ip=%s AND ssh_port=%s',(sec.encrypt(token),str(ip),int(ssh_port)))
             cur.execute("""UPDATE agent_nodes SET agent_cert_pem=%s,ws_port=COALESCE(%s,ws_port)
                 WHERE ip=%s AND ssh_port=%s RETURNING id,ws_port""", (certificate,ws_port,str(ip),int(ssh_port)))
             row=cur.fetchone()
@@ -780,7 +814,15 @@ class Database:
                 ('Online' if online else 'Offline' if stats.get('status')=='Offline' else 'Unknown',str(stats.get('error') or stats.get('agent_error') or '')[:1000],
                  stats.get('cpu') if online else None,stats.get('ram') if online else None,
                  stats.get('disk') if online else None,stats.get('agent_status','Offline'),server['id'],server['owner_id']))
-            if cur.fetchone() and online:
+            changed=cur.fetchone()
+            if changed and online:
+                from psycopg2.extras import Json
+                metadata={key:str(stats[key])[:100] for key in ('os_name','os_release','agent_version') if stats.get(key) is not None}
+                for key in ('memory_total_bytes','memory_used_bytes','disk_total_bytes','disk_used_bytes','disk_free_bytes','bytes_sent','bytes_recv','uptime_sec'):
+                    value=stats.get(key)
+                    if type(value) in (int,float) and math.isfinite(value) and 0<=value<2**63:metadata[key]=int(value)
+                cur.execute('UPDATE servers SET telemetry=%s,telemetry_at=NOW() WHERE id=%s AND owner_id=%s',(Json(metadata),server['id'],server['owner_id']))
+            if changed and online:
                 cur.execute('''INSERT INTO server_stats(server_id,cpu,ram,disk,traffic_gb,bytes_sent,bytes_recv,uptime_sec)
                     VALUES(%s,%s,%s,%s,%s,%s,%s,%s)''',
                     (server['id'],stats.get('cpu'),stats.get('ram'),stats.get('disk'),
@@ -843,9 +885,12 @@ class Database:
 
     def add_channel(self, owner_id, chat_id, name, usage_type='all', topic_id=0):
         owner_id = self.workspace_owner(owner_id)
+        chat_id=str(chat_id)
         with self.get_connection() as (conn, cur):
-            cur.execute('DELETE FROM channels WHERE owner_id=%s AND usage_type=%s', (owner_id, usage_type))
-            cur.execute('INSERT INTO channels (owner_id, chat_id, name, usage_type, topic_id) VALUES (%s,%s,%s,%s,%s)', (owner_id, chat_id, name, usage_type, topic_id))
+            cur.execute('SELECT pg_advisory_xact_lock(535320,hashtext(%s))',(str(owner_id),))
+            cur.execute('SELECT id FROM channels WHERE owner_id=%s AND chat_id=%s AND usage_type=%s AND topic_id=%s',(owner_id,chat_id,usage_type,topic_id))
+            if cur.fetchone():return
+            cur.execute('INSERT INTO channels (owner_id, chat_id, name, usage_type, topic_id, categories) VALUES (%s,%s,%s,%s,%s,ARRAY[%s])', (owner_id, chat_id, name, usage_type, topic_id, usage_type))
             conn.commit()
 
     def delete_channel(self, c_id, owner_id):
@@ -883,16 +928,16 @@ class Database:
 
     def approve_payment(self, payment_id):
         with self. get_connection() as (conn, cur):
-            cur.execute('SELECT * FROM payments WHERE id = %s', (payment_id,))
+            cur.execute('SELECT * FROM payments WHERE id = %s FOR UPDATE', (payment_id,))
             pay = cur.fetchone()
             if not pay or pay['status'] == 'approved':
                 return False
 
-            cur.execute("UPDATE payments SET status = 'approved' WHERE id = %s", (payment_id,))
-
             plan = SUBSCRIPTION_PLANS.get(pay['plan_type'])
+            if not plan:return False
+            cur.execute("UPDATE payments SET status = 'approved' WHERE id = %s", (payment_id,))
             if plan:
-                cur.execute('SELECT * FROM users WHERE user_id = %s', (pay['user_id'],))
+                cur.execute('SELECT * FROM users WHERE user_id = %s FOR UPDATE', (pay['user_id'],))
                 user = cur.fetchone()
                 try:
                     current_exp_str = user['expiry_date']

@@ -186,6 +186,7 @@ class WorkspaceService:
 # This is used only to identify the author of shared resource modifications.
 import contextvars
 ACTOR_ID = contextvars.ContextVar('sonar_authenticated_actor', default=0)
+ACTIVE_WORKSPACE = contextvars.ContextVar('sonar_active_workspace', default=0)
 
 AUDIT_SCHEMA = '''
 CREATE TABLE IF NOT EXISTS sonar_workspace_events (

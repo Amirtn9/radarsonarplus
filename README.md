@@ -271,3 +271,5 @@ python3 -m pytest -q
   <img src="assets/sonar-radar-mark.png" alt="SONAR RADAR mark" width="88" />
   <p><strong>SONAR RADAR PRO</strong></p>
 </div>
+
+راهنمای توسعه یکپارچه و پیش‌نیازهای استقرار: [گزارش فارسی](docs/INTEGRATED_PLATFORM_FA.md).

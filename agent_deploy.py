@@ -123,13 +123,14 @@ def select_available_agent_port(run, requested_port, *, reserved=None):
     return None, f'AGENT_PORT_CONFLICT: requested port and all safe fallback ports are occupied; last_check={str(last_status)[:160]}'
 
 
-def deploy_agent(monitor, db, ip, port, user, password, ws_port, progress=None, agent_script=None):
+def deploy_agent(monitor, db, ip, port, user, password, ws_port, progress=None, agent_script=None, rotate_token=False):
     ip, port, ws_port = normalize_host(ip), ssh_port(port), valid_agent_port(ws_port)
     with _LOCKS_GUARD:
         lock = _LOCKS.setdefault((ip, port), threading.Lock())
     if not lock.acquire(blocking=False):
         return False, 'AGENT_INSTALL_BUSY: نصب دیگری روی همین سرور در حال اجراست.'
     try:
+        if rotate_token:return _deploy(monitor,db,ip,port,user,password,ws_port,progress,agent_script,rotate_token=True)
         return (_deploy(monitor, db, ip, port, user, password, ws_port, progress) if agent_script is None else _deploy(monitor, db, ip, port, user, password, ws_port, progress, agent_script))
     except Exception as exc:
         # Commands and secrets must not appear in installer exceptions.
@@ -138,7 +139,7 @@ def deploy_agent(monitor, db, ip, port, user, password, ws_port, progress=None, 
         lock.release()
 
 
-def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent_script=None):
+def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent_script=None, rotate_token=False):
     root = Path(__file__).resolve().parent
     script = agent_script if agent_script is not None else (root / 'monitor_agent.py').read_text()
     meter_script = (root / 'agent_metering.py').read_text()
@@ -165,13 +166,13 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent
                 rollback_files = ("python3 - " + shlex.quote(backup_path) + " <<'SONAR_ROLLBACK'\n" +
                     "import pathlib,shutil,sys,subprocess\n" +
                     "folder=pathlib.Path(sys.argv[1])\n" +
-                    "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service','/usr/local/sbin/sonar-diagnostic-read','/etc/sudoers.d/sonar-agent-diagnostics','/etc/systemd/journald@sonar.conf.d/retention.conf']\n" +
+                    "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/service_probes.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service','/usr/local/sbin/sonar-diagnostic-read','/etc/sudoers.d/sonar-agent-diagnostics','/etc/systemd/journald@sonar.conf.d/retention.conf']\n" +
                     "for ix,path in enumerate(paths):\n" +
                     " source=folder/str(ix); target=pathlib.Path(path)\n" +
                     " if source.is_file():\n  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)\n" +
                     " elif target.is_file():target.unlink()\n" +
                     "subprocess.run(['systemctl','daemon-reload'],check=False)\n" +
-                    "subprocess.run(['systemctl','try-restart','sonar-agent'] if pathlib.Path(paths[7]).exists() else ['systemctl','stop','sonar-agent'],check=False)\n" +
+                    "subprocess.run(['systemctl','try-restart','sonar-agent'] if any(pathlib.Path(path).exists() for path in paths if path.endswith('/systemd/system/sonar-agent.service')) else ['systemctl','stop','sonar-agent'],check=False)\n" +
                     "SONAR_ROLLBACK\n")
                 run(rollback_files, 80)
             except Exception:log.error('Installer file rollback failed')
@@ -197,6 +198,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent
         _emit(progress, 'port_auto_selected',
               f'پورت {requested_ws_port} اشغال بود؛ پورت آزاد {ws_port} انتخاب شد. ثبت دیتابیس پس از تأیید TLS انجام می‌شود.')
     token = db.get_or_create_agent_token(ip, port, ws_port)
+    if rotate_token:token=secrets.token_urlsafe(48)
     ok, out = run('id -u', 25)
     if not ok:
         return False, out
@@ -205,7 +207,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent
             "import pathlib,shutil,sys,os\n" +
             "folder=pathlib.Path(sys.argv[1]);folder.mkdir(mode=0o700)\n" +
             "os.chmod(folder,0o700)\n" +
-            "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service','/usr/local/sbin/sonar-diagnostic-read','/etc/sudoers.d/sonar-agent-diagnostics','/etc/systemd/journald@sonar.conf.d/retention.conf']\n" +
+            "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/service_probes.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service','/usr/local/sbin/sonar-diagnostic-read','/etc/sudoers.d/sonar-agent-diagnostics','/etc/systemd/journald@sonar.conf.d/retention.conf']\n" +
             "for i,path in enumerate(paths):\n" +
             " source=pathlib.Path(path)\n" +
             " if source.is_symlink():raise SystemExit('REFUSING_SYMLINKED_IDENTITY')\n" +
@@ -239,6 +241,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent
         for name,payload in (
             ('monitor_agent.py',script.encode('utf-8')),
             ('agent_metering.py',meter_script.encode('utf-8')),
+            ('service_probes.py',(root/'service_probes.py').read_bytes()),
             ('ssh_relay.py',relay_script.encode('utf-8')),
             ('agent_runtime.lock.json',json.dumps(runtime_lock).encode('utf-8')),
             ('sonar-diagnostic-read.sh',diagnostic_helper.encode('utf-8'))):
@@ -248,6 +251,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent
         destination=shlex.quote(remote_dir)
         upload=(f'install -d -m 0755 /opt/sonar-agent\n'
                 f'install -m 0644 {destination}/monitor_agent.py /opt/sonar-agent/monitor_agent.py\n'
+                f'install -m 0644 {destination}/service_probes.py /opt/sonar-agent/service_probes.py\n'
                 f'install -m 0644 {destination}/agent_metering.py /opt/sonar-agent/agent_metering.py\n'
                 f'install -m 0644 {destination}/ssh_relay.py /opt/sonar-agent/ssh_relay.py\n'
                 f'install -m 0644 {destination}/agent_runtime.lock.json /opt/sonar-agent/agent_runtime.lock.json\n'
@@ -266,7 +270,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent
         if ssh:
             try:
                 if remote_dir:
-                    for name in ('monitor_agent.py','agent_metering.py','ssh_relay.py','agent_runtime.lock.json','sonar-diagnostic-read.sh'):
+                    for name in ('monitor_agent.py','agent_metering.py','service_probes.py','ssh_relay.py','agent_runtime.lock.json','sonar-diagnostic-read.sh'):
                         try:sftp.remove(remote_dir+'/'+name)
                         except OSError:pass
                     sftp.rmdir(remote_dir)
@@ -413,7 +417,11 @@ WantedBy=multi-user.target
             await pool.close_all()
     if not asyncio.run(probe()):
         return fail(f'WSS_HEALTH_FAILED: از میزبان ربات اتصال TLS/توکن/Xray روی {ws_port} تأیید نشد؛ فایروال و سرویس را بررسی کنید.')
-    db.store_agent_certificate(ip, port, cert.strip(), ws_port)
+    try:
+        if rotate_token:db.store_agent_certificate(ip,port,cert.strip(),ws_port,token=token)
+        else:db.store_agent_certificate(ip,port,cert.strip(),ws_port)
+    except Exception:
+        return fail('AGENT_TRANSPORT_COMMIT_FAILED: ثبت ارتباط امن ناموفق بود؛ نسخه قبلی بازیابی می‌شود.')
     _emit(progress, 'success', 'WSS، TLS و قابلیت Xray تأیید شدند')
     # Only garbage collect prior venv generations AFTER successful WSS readiness.
     # Retain exactly one verified previous environment for future manual rollback.

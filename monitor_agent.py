@@ -1,4 +1,5 @@
 import sys
+import platform
 import os
 import json
 import time
@@ -21,7 +22,7 @@ import asyncio
 import hmac
 import copy
 import ssl
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 
 AGENT_VERSION = '6.9.10'
@@ -1035,15 +1036,19 @@ async def get_stats():
         cpu=psutil.cpu_percent(interval=0.1)
         uptime=int(time.time()-psutil.boot_time())
         net=psutil.net_io_counters()
+        memory=psutil.virtual_memory();disk=psutil.disk_usage('/')
         return {'status':'Online','cpu':cpu,'ram':psutil.virtual_memory().percent,
-            'disk':psutil.disk_usage('/').percent,
+            'disk':disk.percent,'os_name':platform.system(),'os_release':platform.release(),
+            'memory_total_bytes':memory.total,'memory_used_bytes':memory.used,
+            'disk_total_bytes':disk.total,'disk_used_bytes':disk.used,'disk_free_bytes':disk.free,
+            'load_average':list(os.getloadavg()) if hasattr(os,'getloadavg') else None,
             'bytes_sent':int(net.bytes_sent),'bytes_recv':int(net.bytes_recv),
             'traffic_gb':round((net.bytes_sent+net.bytes_recv)/(1024**3),2),
             'agent_usage':agent_usage_snapshot(),
             'agent_version':AGENT_VERSION,'agent_protocol':AGENT_PROTOCOL,
             **runtime_versions(),
             'uptime_sec':uptime,'uptime_str':str(timedelta(seconds=uptime)),
-            'capabilities':{'ssh_relay':True, 'xray_ready':os.path.isfile(XRAY_BIN) and os.path.isfile(os.path.join(WORK_DIR,'geoip.dat')),
+            'capabilities':{'ssh_relay':True,'service_probe':True,'self_check':True, 'xray_ready':os.path.isfile(XRAY_BIN) and os.path.isfile(os.path.join(WORK_DIR,'geoip.dat')),
                             'formats':['plain','base64','clash_yaml','singbox_json'],
                             'proxies':['vmess','vless','trojan','shadowsocks']}}
     return await asyncio.get_running_loop().run_in_executor(_get_test_executor(),snapshot)
@@ -1205,6 +1210,25 @@ Protocol:
             if action == 'get_stats':
                 await websocket.send(json.dumps(await get_stats()))
                 
+            elif action == 'service_probe':
+                try:
+                    from service_probes import check
+                    from dataclasses import asdict
+                    kind,target=data.get('kind'),data.get('target')
+                    if not isinstance(target,str) or len(target)>1024:raise ValueError('Invalid target')
+                    timeout=int(data.get('timeout',5))
+                    if not 1<=timeout<=15:raise ValueError('Invalid timeout')
+                    async with _get_test_semaphore():
+                        result=await asyncio.wait_for(asyncio.to_thread(check,kind,target,timeout,data.get('expected_status'),allow_private=False),timeout=timeout+5)
+                    await websocket.send(json.dumps(asdict(result)))
+                except Exception:
+                    await websocket.send(json.dumps({'error':'SERVICE_PROBE_UNAVAILABLE'}))
+            elif action == 'self_check':
+                stats=await get_stats()
+                await websocket.send(json.dumps({'version':stats.get('version'),
+                    'uptime_sec':stats.get('uptime_sec'),'cpu':stats.get('cpu'),'ram':stats.get('ram'),
+                    'disk':stats.get('disk'),'capabilities':stats.get('capabilities'),
+                    'tls_configured':bool(os.getenv('SONAR_AGENT_TLS_CERT'))}))
             elif action == 'test_config':
                 # اجرای تست کانفیگ داخل پروسه سرور (بدون باز کردن پایتون جدید)
                 # این کار بسیار سریع‌تر از روش SSH است
@@ -1260,7 +1284,7 @@ Protocol:
                     configs,complete=await loop.run_in_executor(_get_test_executor(),_fetch)
                     await websocket.send(json.dumps({'links':configs,'sub_info':{
                         'total':len(configs),'complete':complete,
-                        'fetched_at':datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+                        'fetched_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
                         'mode':'list'}}))
                 except SubscriptionFetchError as exc:
                     await websocket.send(json.dumps({'error':str(exc)[:100]}))
@@ -1396,7 +1420,7 @@ if __name__ == "__main__":
             sub_info = {
                 "url": link,
                 "total": len(configs),
-                "fetched_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                 "mode": "tested" if size and size > 0.5 else "list"
             }
 

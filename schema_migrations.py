@@ -31,6 +31,10 @@ def _registry():
     from log_management import install_schema as log_schema
     from log_management import install_reliability_schema as log_reliability_schema
 
+    from control_store import install_schema as control_schema
+    from billing import install_schema as billing_schema
+    from quota_policy import install_schema as quota_schema
+
     return (
         (2, "pro_store", pro_store_schema),
         (3, "enterprise_services", enterprise_services_schema),
@@ -46,6 +50,9 @@ def _registry():
         (13, "log_management", log_schema),
         (14, "log_reliability", log_reliability_schema),
         (15, "web_login_security", web_security_schema),
+        (16, "billing", billing_schema),
+        (17, "independent_quotas", quota_schema),
+        (18, "account_controls", control_schema),
     )
 
 

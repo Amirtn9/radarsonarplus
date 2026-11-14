@@ -16,6 +16,8 @@ def literal(node):
 
 
 def explanation(label, callback):
+    if callback.startswith('bill_'):
+        return 'بخش اشتراک و پرداخت را باز می‌کند؛ مبلغ ریالی، مقصد و شبکه رمزارز را پیش از پرداخت بررسی کنید. رسید دستی فقط پس از تأیید مسئول مالی به اعتبار تبدیل می‌شود.'
     if 'مدیریت سازمانی' in label:
         return 'مرکز عملیات گروهی، سلامت سرورها، انتشار Agent، گزارش‌ها و سیاست‌های سازمان را برای مدیر مجاز باز می‌کند.'
     if any(word in label for word in ('بازگشت','قبلی','بعدی','صفحه اصلی')):
@@ -83,7 +85,7 @@ def build():
                 if fn in ('B','InlineKeyboardButton') and node.args:
                     label=literal(node.args[0]).strip()
                     callback=next((literal(kw.value) for kw in node.keywords if kw.arg=='callback_data'),'')
-                    admin=self.admin or callback.startswith(('admin_','v6_admin','v6_diag','fleet_','enterprise_','ent_','balancer_'))
+                    admin=self.admin or callback.startswith(('admin_','v6_admin','v6_diag','fleet_','enterprise_','ent_','balancer_','bill_admin','bill_review','bill_approve','bill_reject'))
                     if label.strip(' …'):
                         group=('مدیریت' if admin else 'اعلان‌ها' if name=='config_alert_bot.py' or 'cron' in self.function or 'alert' in self.function
                                else 'همکاری' if name=='workspace_ui.py' else 'سرویس‌ها' if name=='service_bot.py'

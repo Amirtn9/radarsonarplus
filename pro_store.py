@@ -104,9 +104,9 @@ class ProStore:
 
     def require(self, actor, owner, write=False):
         role=self.role(actor,owner)
-        if role not in (('owner','manager') if write else ('owner','manager','operator','viewer','auditor')):
+        if role not in (('owner','manager','technical','monitor','server') if write else ('owner','manager','technical','monitor','server','viewer','auditor')):
             raise PermissionError('Not authorized for this workspace')
-        allowed, _ = self.db.check_access(owner)
+        allowed, _ = (self.db.check_access(owner) if write else getattr(self.db,'check_read_access',self.db.check_access)(owner))
         if not allowed:
             raise PermissionError('Workspace owner is inactive')
         return role
@@ -118,7 +118,7 @@ class ProStore:
         self.require(actor,owner)
         # A valid member never overrides a suspended/expired workspace owner.
         # The check is repeated for every resource and write operation.
-        allowed, _ = self.db.check_access(owner)
+        allowed, _ = getattr(self.db,'check_read_access',self.db.check_access)(owner)
         if not allowed:
             raise PermissionError('Workspace owner is inactive')
         return owner
@@ -148,7 +148,7 @@ class ProStore:
         return {'owner_id':owner,'servers':dict(servers),'configs':dict(configs),
                 'incidents':inc,'services':dict(services),'last_test_at':stamp.isoformat() if stamp else None}
 
-    def list_resources(self,actor,kind,owner=None,term='',tag=None,favorites=False,page=1,per_page=12):
+    def list_resources(self,actor,kind,owner=None,term='',tag=None,favorites=False,page=1,per_page=12,include_total=False):
         owner=self.workspace(actor,owner)
         table=_resource_table(kind)
         page=max(1,min(int(page),10000));per_page=max(1,min(int(per_page),50))
@@ -165,9 +165,15 @@ class ProStore:
         if tag:
             sql+=' AND EXISTS (SELECT 1 FROM pro_tags t WHERE t.owner_id=r.owner_id AND t.resource_type=%s AND t.resource_id=r.id AND t.tag=%s)'
             params.extend([kind,tag[:40]])
+        if include_total:sql=sql.replace('SELECT r.id,','SELECT COUNT(*) OVER() AS _total,r.id,',1)
         sql+=' ORDER BY favorite DESC,r.id DESC LIMIT %s OFFSET %s'
         params.extend([per_page,(page-1)*per_page])
-        return [dict(r) for r in self.db.execute(sql,params,fetch='all')]
+        rows=[dict(r) for r in self.db.execute(sql,params,fetch='all')]
+        if include_total:
+            total=rows[0]['_total'] if rows else 0
+            for row in rows:row.pop('_total',None)
+            return rows,int(total)
+        return rows
 
     def toggle_favorite(self,actor,owner,kind,rid):
         self.require(actor,owner,write=True)
@@ -206,7 +212,7 @@ class ProStore:
         if not self.resource(owner,'config',config_id):raise PermissionError('Unknown config')
         days=max(1,min(int(days),30))
         return self.db.execute('''SELECT region,ok,ping,jitter,down_mbps,up_mbps,measured_at
-          FROM pro_metrics WHERE owner_id=%s AND config_id=%s AND measured_at>NOW()-(%s*INTERVAL '1 day')
+          FROM pro_metrics WHERE owner_id=%s AND config_id=%s AND measured_at>NOW()-(LEAST(%s,sonar_retention_days(owner_id))*INTERVAL '1 day')
           ORDER BY measured_at DESC LIMIT 600''',(owner,config_id,days),fetch='all')
 
     def rankings(self,actor,owner=None,limit=10):
@@ -370,24 +376,15 @@ class ProStore:
         members={int(row['member_id']):dict(row) for row in legacy}
         shared=self.db.execute('SELECT member_id,joined_at FROM sonar_workspaces WHERE owner_id=%s AND member_id<>%s',(owner,owner),fetch='all')
         for member in shared:
-            members[int(member['member_id'])]={'member_id':member['member_id'],'role':'manager','created_at':member['joined_at']}
+            members.setdefault(int(member['member_id']),{'member_id':member['member_id'],'role':'manager','created_at':member['joined_at']})
         return list(members.values())[:50]
 
     def set_member(self,actor,owner,member,role):
-        self.require(actor,owner)
-        if actor != owner: raise PermissionError('Only workspace owner can manage team')
-        if role in ('manager','viewer'):
-            raise ValueError('Invitations require recipient approval. Use the Team wizard.')
-        member=int(member)
-        if member==owner:raise ValueError('Owner cannot be added as a member')
-        if role not in ('manager','viewer','remove'):raise ValueError('Role invalid')
-        if role=='remove':
-            self.db.execute('DELETE FROM pro_team WHERE owner_id=%s AND member_id=%s',(owner,member))
-        else:
-            if not self.db.get_user(member):raise ValueError('Member must start the bot first')
-            self.db.execute('''INSERT INTO pro_team(owner_id,member_id,role) VALUES(%s,%s,%s)
-                ON CONFLICT(owner_id,member_id) DO UPDATE SET role=EXCLUDED.role''',(owner,member,role))
-        self.audit(owner,actor,'team_member',str(member),role)
+        from control_store import Control
+        if role=='remove':return Control(self).role(actor,int(member),role)
+        existing=self.db.execute('SELECT 1 FROM pro_team WHERE owner_id=%s AND member_id=%s',(owner,member),fetch='one')
+        if existing:return Control(self).role(actor,int(member),role)
+        return Control(self).invite(actor,int(member),role)
 
     def rules(self,actor,owner=None):
         owner=self.workspace(actor,owner)

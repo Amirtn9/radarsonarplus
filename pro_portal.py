@@ -4,6 +4,7 @@ Every request verifies signed Telegram initData and resource ownership.
 Run: uvicorn pro_portal:app --host 127.0.0.1 --port 8090 --proxy-headers
 """
 from __future__ import annotations
+from contextlib import asynccontextmanager
 import asyncio
 import json
 import logging
@@ -13,8 +14,9 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Literal
+from urllib.parse import urlencode
 from fastapi import FastAPI, Depends, HTTPException, Header, Query, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.background import BackgroundTask
 from settings import SUPER_ADMIN_ID
 from diagnostics import snapshot, build_bundle, collect_agent_journals, collect_operational_state
@@ -27,14 +29,23 @@ from web_login import digest as session_digest, csrf_proof, redeem, create_sessi
 from subscription_health import summaries as subscription_summaries
 from pro_auth import verify_init_data
 from pro_store import ProStore
+from psycopg2.errors import RaiseException,UniqueViolation,ForeignKeyViolation
 from service_monitor import ServiceStore
 from user_errors import UserError
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
-app=FastAPI(title='RadarSonarPlus 6.9.10',docs_url=None,redoc_url=None,openapi_url=None)
+@asynccontextmanager
+async def lifespan(application):
+    await _configure_executor()
+    try:
+        await bootstrap_additive_schemas()
+        yield
+    finally:
+        await stop_web_agent_queue()
 
-@app.on_event('startup')
+app=FastAPI(title='RadarSonarPlus 6.9.10',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+
 async def _configure_executor():
     # The event loop owns and shuts down its default executor. Giving it the
     # process-wide run_sync pool would break other loops and later app lifespans.
@@ -43,6 +54,10 @@ async def _configure_executor():
     asyncio.get_running_loop().set_default_executor(
         ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix='sonar-web')
     )
+@app.exception_handler(UserError)
+async def user_error_response(request,exc):
+    return JSONResponse({'detail':str(exc)},status_code=400)
+
 app.mount('/static',StaticFiles(directory=BASE/'pro_web'/'static'),name='static')
 store=ProStore()
 service_store=ServiceStore(store)
@@ -90,6 +105,9 @@ async def actor(request:Request,authorization:str=Header(default='')):
         if not session_data:raise HTTPException(status_code=401,detail='Please sign in with a one-time code from the Telegram bot')
         uid=int(session_data['user_id'])
         cookie_auth=True
+        if request.headers.get('x-user-activity')=='1' or request.method not in ('GET','HEAD','OPTIONS'):
+            from web_login import touch_session
+            await asyncio.to_thread(touch_session,store.db,session)
         if request.method not in ('GET','HEAD','OPTIONS'):
             expected=os.getenv('SONAR_WEB_ORIGIN','').rstrip('/') or str(request.base_url).rstrip('/')
             allowed_origins={value for value in (expected,str(request.base_url).rstrip('/')) if value.startswith('https://')}
@@ -102,20 +120,69 @@ async def actor(request:Request,authorization:str=Header(default='')):
                     secrets.compare_digest(sent,csrf_proof(session))):
                 raise HTTPException(status_code=403,detail='CSRF validation failed')
     try:
-        allowed,_=await asyncio.to_thread(store.db.check_access,uid)
+        allowed,_=await asyncio.to_thread(getattr(store.db,'check_read_access',store.db.check_access),uid)
         if not allowed:raise HTTPException(status_code=403,detail='Inactive account')
     except HTTPException:raise
     except Exception:log.exception('Auth database failure');raise HTTPException(status_code=503,detail='Service unavailable')
-    from workspace_service import ACTOR_ID
+    if (request.headers.get('x-user-activity')=='1' or request.method not in ('GET','HEAD','OPTIONS')) and callable(getattr(store.db,'execute',None)):
+        await asyncio.to_thread(store.db.execute,'UPDATE users SET last_active_at=NOW() WHERE user_id=%s',(uid,))
+    from control_api import destructive_request,require_elevated
+    if destructive_request(request):
+        if cookie_auth:
+            elevated=await asyncio.to_thread(require_elevated,store.db,request.cookies.get('sonar_web_session',''))
+        elif authorization.startswith('tma '):
+            try:
+                verify_init_data(authorization[4:],get_bot_token(),max_age=60)
+                elevated=True
+            except (PermissionError,ValueError,KeyError):elevated=False
+        else:elevated=False
+        if not elevated:raise HTTPException(status_code=403,detail='STEP_UP_REQUIRED')
+    request.state.session_authenticated=cookie_auth
+    from workspace_service import ACTOR_ID,ACTIVE_WORKSPACE
+    selected=request.headers.get('x-workspace-id','')
+    workspace_token=None
+    if selected:
+        try:selected=int(selected)
+        except ValueError:raise HTTPException(status_code=400,detail='Invalid workspace')
+        if selected!=uid:
+            await guarded(store.require,uid,selected)
+        workspace_token=ACTIVE_WORKSPACE.set(selected)
     token=ACTOR_ID.set(uid)
     try:
+        path=request.url.path
+        feature=('api' if token_scopes is not None else
+                 'advanced_reports' if path.startswith('/api/reports') or '/analytics' in path else
+                 'automation' if '/automation/' in path and request.method!='GET' else
+                 'backups' if '/backups/' in path and request.method!='GET' else
+                 'agents' if path.startswith('/api/hosting/agents') and request.method not in ('GET','DELETE') else None)
+        if feature and callable(getattr(store.db,'execute',None)):
+            from billing import Billing
+            owner=getattr(request.state,'api_token_owner',None) or await asyncio.to_thread(store.db.workspace_owner,uid)
+            subscription=await asyncio.to_thread(Billing(store.db,SUPER_ADMIN_ID).subscription,owner)
+            if subscription and subscription['snapshot'].get('features',{}).get(feature) is False:
+                raise HTTPException(status_code=403,detail='این قابلیت در پلن فضای کاری فعال نیست')
         yield uid
     finally:
         ACTOR_ID.reset(token)
+        if workspace_token is not None:ACTIVE_WORKSPACE.reset(workspace_token)
 
 
 async def guarded(fn,*args,**kwargs):
     try:return await asyncio.to_thread(fn,*args,**kwargs)
+    except UniqueViolation:raise HTTPException(status_code=409,detail='این مورد قبلاً ثبت شده است') from None
+    except ForeignKeyViolation:raise HTTPException(status_code=400,detail='منبع وابسته وجود ندارد یا هنوز استفاده می‌شود') from None
+    except RaiseException as exc:
+        code=str(exc).splitlines()[0]
+        if code.startswith('QUOTA_EXCEEDED:'):
+            raise HTTPException(status_code=409,detail='ظرفیت این منبع در اشتراک شما تکمیل شده است') from None
+        if code=='PLAN_INTERVAL_TOO_SHORT':
+            raise HTTPException(status_code=400,detail='فاصله پایش از حداقل مجاز پلن کمتر است') from None
+        if code=='WORKSPACE_FORBIDDEN':
+            raise HTTPException(status_code=403,detail='این عملیات با نقش شما مجاز نیست') from None
+        if code=='SUBSCRIPTION_INACTIVE':
+            raise HTTPException(status_code=403,detail='اشتراک فعال لازم است؛ اطلاعات قبلی حذف نشده‌اند') from None
+        log.exception('Database policy failure')
+        raise HTTPException(status_code=500,detail='Database operation failed') from None
     except UserError as exc:raise HTTPException(status_code=400,detail=str(exc)) from None
     except PermissionError:raise HTTPException(status_code=403,detail='Not authorized')
     except ValueError:raise HTTPException(status_code=400,detail='Invalid request')
@@ -144,6 +211,9 @@ async def headers(request:Request,call_next):
         await asyncio.to_thread(event_log.log,logging.WARNING if response.status_code>=400 else logging.INFO,
                       '%s %s status=%s duration_ms=%.1f',request.method,route,
                       response.status_code,(time.monotonic()-started)*1000)
+    if getattr(request.state,'session_authenticated',False) and not request.url.path.startswith('/api/web/logout'):
+        response.set_cookie('sonar_web_session',request.cookies['sonar_web_session'],max_age=8*3600,
+                            secure=True,httponly=True,samesite='strict',path='/')
     response.headers['Cache-Control']='no-store'
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['Referrer-Policy']='no-referrer'
@@ -156,8 +226,27 @@ async def headers(request:Request,call_next):
     return response
 
 
+@app.get('/login')
+async def login_page():return FileResponse(BASE/'pro_web'/'index.html')
+
 @app.get('/')
-async def index():return FileResponse(BASE/'pro_web'/'index.html')
+async def index(request:Request):
+    return RedirectResponse(('/dashboard' if request.cookies.get('sonar_web_session') else '/login')+('?' + request.url.query if request.url.query else ''),status_code=303)
+
+PANEL_PATHS=('/dashboard','/servers','/configs','/monitoring','/notifications','/team','/settings','/logs',
+             '/billing','/users','/reports','/rankings','/incidents','/enterprise','/fleet','/balancer','/support','/resources/new')
+
+async def panel_page(request:Request):
+    session=request.cookies.get('sonar_web_session','')
+    current=await asyncio.to_thread(identify,store.db,session) if session else None
+    if not current:return RedirectResponse('/login?'+urlencode({'next':request.url.path+('?' + request.url.query if request.url.query else '')}),status_code=303)
+    return FileResponse(BASE/'pro_web'/'index.html')
+
+for detail_path in ('/servers/{resource_id:int}','/configs/{resource_id:int}'):
+    app.add_api_route(detail_path,panel_page,methods=['GET'],include_in_schema=False)
+
+for panel_path in PANEL_PATHS:
+    app.add_api_route(panel_path,panel_page,methods=['GET'],include_in_schema=False)
 
 @app.get('/guide')
 async def public_guide():return FileResponse(BASE/'pro_web'/'guide.html')
@@ -191,18 +280,25 @@ async def web_login_endpoint(body:WebCode,request:Request,response:Response):
     # never take a caller-controlled X-Forwarded-For header directly.
     client_ip=request.client.host if request.client else 'unknown'
     client_hash=hmac.new(secret.encode(),client_ip.encode(),hashlib.sha256).hexdigest()
-    if not await asyncio.to_thread(allow_login_attempt,store.db,client_hash):
-        raise HTTPException(status_code=429,detail='Too many login attempts; retry later')
+    reserved=await asyncio.to_thread(allow_login_attempt,store.db,client_hash)
+    if not reserved:
+        # Possession of an unguessable, live one-time code must remain usable
+        # when unrelated users share a proxy/NAT address. It is still redeemed
+        # atomically below. Do not trust caller-supplied forwarded headers.
+        from web_login import live_code
+        if not await asyncio.to_thread(live_code,store.db,body.code):
+            raise HTTPException(status_code=429,detail='Too many login attempts; retry later')
     result=await asyncio.to_thread(redeem,store.db,body.code)
     if not result:raise HTTPException(status_code=401,detail='Code is invalid, expired or already used')
     uid,session,csrf=result
-    allowed,_=await asyncio.to_thread(store.db.check_access,uid)
+    allowed,_=await asyncio.to_thread(getattr(store.db,'check_read_access',store.db.check_access),uid)
     if not allowed:
         await asyncio.to_thread(logout,store.db,session)
         raise HTTPException(status_code=403,detail='Inactive account')
-    await asyncio.to_thread(release_login_attempt,store.db,client_hash)
+    if reserved:await asyncio.to_thread(release_login_attempt,store.db,client_hash)
     response.set_cookie('sonar_web_session',session,max_age=8*3600,secure=True,
                          httponly=True,samesite='strict',path='/')
+    await asyncio.to_thread(store.db.execute,'UPDATE sonar_web_sessions SET client_label=%s WHERE token_hash=%s',(request.headers.get('user-agent','')[:200],session_digest(session)))
     return {'ok':True,'csrf':csrf}
 
 
@@ -229,7 +325,7 @@ async def miniapp_session(request:Request,response:Response,authorization:str=He
     except (PermissionError,ValueError,KeyError,TypeError):
         raise HTTPException(status_code=401,detail='Invalid or expired Telegram authorization')
     try:
-        allowed,_=await asyncio.to_thread(store.db.check_access,uid)
+        allowed,_=await asyncio.to_thread(getattr(store.db,'check_read_access',store.db.check_access),uid)
     except Exception:
         log.exception('Mini App authorization database check failed')
         raise HTTPException(status_code=503,detail='Service unavailable')
@@ -241,6 +337,7 @@ async def miniapp_session(request:Request,response:Response,authorization:str=He
         raise HTTPException(status_code=503,detail='Could not create a secure session')
     response.set_cookie('sonar_web_session',session,max_age=8*3600,secure=True,
                          httponly=True,samesite='strict',path='/')
+    await asyncio.to_thread(store.db.execute,'UPDATE sonar_web_sessions SET client_label=%s WHERE token_hash=%s',(request.headers.get('user-agent','')[:200],session_digest(session)))
     return {'ok':True,'csrf':csrf,'expires_in':8*3600}
 
 @app.get('/api/web/csrf')
@@ -267,7 +364,6 @@ async def web_logout_all(response:Response,uid:int=Depends(actor)):
     response.delete_cookie('sonar_web_session',path='/')
     return {'ok':True}
 
-@app.on_event('startup')
 async def bootstrap_additive_schemas():
     # The same versioned ledger and advisory lock are used by the Telegram Bot.
     # Either service may start first; only one process applies a migration.
@@ -283,9 +379,15 @@ async def bootstrap_additive_schemas():
         scheduled_backup_worker, rollout_worker
     )
     app.state.enterprise_stop=asyncio.Event()
+    from service_jobs import web_worker as service_monitor_worker
+    from billing_delivery import worker as billing_message_worker
+    from config_probe_jobs import worker as config_probe_worker
     from web_reporting import observation_worker
     from log_purge import worker as log_purge_worker
     app.state.enterprise_tasks=[
+        asyncio.create_task(service_monitor_worker(store.db,app.state.enterprise_stop,get_bot_token)),
+        asyncio.create_task(billing_message_worker(store.db,app.state.enterprise_stop,get_bot_token)),
+        asyncio.create_task(config_probe_worker(store.db,app.state.enterprise_stop)),
         asyncio.create_task(log_purge_worker(store.db,SUPER_ADMIN_ID,app.state.enterprise_stop)),
         asyncio.create_task(observation_worker(store.db,app.state.enterprise_stop)),
         asyncio.create_task(operations_worker(store.db,app.state.enterprise_stop)),
@@ -295,7 +397,6 @@ async def bootstrap_additive_schemas():
         asyncio.create_task(asyncio.to_thread(scheduled_backup_worker,store.db,app.state.enterprise_stop)),
     ]
 
-@app.on_event('shutdown')
 async def stop_web_agent_queue():
     if hasattr(app.state,'web_agent_stop'):
         app.state.web_agent_stop.set()
@@ -342,13 +443,22 @@ async def readiness():
 async def summary(uid:int=Depends(actor),owner:int|None=None):return await guarded(store.summary,uid,owner)
 
 @app.get('/api/resources/{kind}')
-async def resources(kind:str,uid:int=Depends(actor),owner:int|None=None,q:str='',tag:str|None=None,favorites:bool=False,page:int=Query(default=1,ge=1,le=10000),per_page:int=Query(default=12,ge=1,le=50)):
+async def resources(kind:str,response:Response,uid:int=Depends(actor),owner:int|None=None,q:str='',tag:str|None=None,favorites:bool=False,page:int=Query(default=1,ge=1,le=10000),per_page:int=Query(default=12,ge=1,le=50)):
     if kind not in ('server','config'):raise HTTPException(status_code=404)
-    return await guarded(store.list_resources,uid,kind,owner, '' if q.startswith('#') else q, q[1:] if q.startswith('#') else tag, favorites,page,per_page)
+    rows,total=await guarded(store.list_resources,uid,kind,owner, '' if q.startswith('#') else q, q[1:] if q.startswith('#') else tag, favorites,page,per_page,True)
+    response.headers['X-Total-Count']=str(total)
+    return rows
+
+@app.get('/api/server-options')
+async def server_options(uid:int=Depends(actor),q:str=Query(default='',max_length=80)):
+    def read():
+        owner=store.workspace(uid)
+        return store.db.execute('SELECT id,name FROM servers WHERE owner_id=%s AND name ILIKE %s ORDER BY name,id LIMIT 10000',(owner,'%'+q+'%'),fetch='all')
+    return await guarded(read)
 
 
 @app.get('/api/server-resources/{server_id}')
-async def server_resources(server_id:int,uid:int=Depends(actor),hours:int=Query(default=24,ge=1,le=48)):
+async def server_resources(server_id:int,uid:int=Depends(actor),hours:int=Query(default=24,ge=1,le=720)):
     from web_reporting import server_history
     return await guarded(server_history,store,uid,server_id,hours)
 
@@ -468,7 +578,9 @@ async def set_preferences(body:PreferencesUpdate,uid:int=Depends(actor)):
 
 @app.get('/api/me')
 async def me(uid:int=Depends(actor)):
-    return {'id':uid,'admin': bool(SUPER_ADMIN_ID and uid==SUPER_ADMIN_ID),'version':(BASE/'VERSION').read_text().strip()}
+    from billing import Billing
+    permissions=await guarded(Billing(store.db,SUPER_ADMIN_ID).permissions,uid) if callable(getattr(store.db,'execute',None)) else []
+    return {'billing_permissions':permissions,'id':uid,'admin': bool(SUPER_ADMIN_ID and uid==SUPER_ADMIN_ID),'version':(BASE/'VERSION').read_text().strip()}
 
 
 from config_alerts import AlertSettings
@@ -609,3 +721,46 @@ app.include_router(_make_ssh_terminal_router(store, SUPER_ADMIN_ID, verify_tma=v
 
 from web_reporting import router as reporting_router
 app.include_router(reporting_router(store,actor,guarded))
+
+from billing_api import router as billing_router
+app.include_router(billing_router(store,actor,guarded,SUPER_ADMIN_ID))
+
+from control_api import router as control_router
+app.include_router(control_router(store,actor,guarded))
+
+@app.get('/api/services/{sid}/regions')
+async def service_regions(sid:int,uid:int=Depends(actor),days:int=Query(default=7,ge=1,le=30)):
+    from regional_monitor import report
+    return await guarded(report,store,uid,sid,days)
+
+from notification_api import router as notification_router
+app.include_router(notification_router(store,actor,guarded,get_bot_token))
+
+from hosting_agents import router as hosting_router
+app.include_router(hosting_router(store,actor,guarded,lambda:os.getenv('SONAR_WEB_ORIGIN','')))
+
+
+@app.get('/api/events')
+async def live_events(request:Request,uid:int=Depends(actor),owner:int|None=None):
+    from fastapi.responses import StreamingResponse
+    session=request.cookies.get('sonar_web_session','')
+    if not session:raise HTTPException(status_code=401,detail='Cookie session required')
+    selected=await guarded(store.workspace,uid,owner)
+    async def stream():
+        sequence=0
+        while not await request.is_disconnected():
+            current=await asyncio.to_thread(identify,store.db,session)
+            if not current or current['user_id']!=uid:break
+            try:
+                data=await asyncio.to_thread(store.summary,uid,selected)
+                sequence+=1
+                yield 'id: '+str(sequence)+'\nevent: summary\ndata: '+json.dumps(data,default=str,ensure_ascii=False)+'\n\n'
+            except PermissionError:break
+            await asyncio.sleep(15)
+    return StreamingResponse(stream(),media_type='text/event-stream',headers={'Cache-Control':'no-store','X-Accel-Buffering':'no'})
+
+from control_api import policy_router
+app.include_router(policy_router(store,actor,guarded))
+
+from config_probe_jobs import router as config_probe_router
+app.include_router(config_probe_router(store,actor,guarded))

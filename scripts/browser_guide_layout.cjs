@@ -29,7 +29,7 @@ const server=http.createServer((request,response)=>{
   for(const width of [320,360,390,600,820,1280]){
    await page.setViewportSize({width,height:720});
    await page.goto(base+'/guide');
-   await page.waitForFunction(()=>document.querySelectorAll('#chapter-content section').length===10);
+   await page.waitForFunction(count=>document.querySelectorAll('#chapter-content section').length===count,data.chapters.length);
    await page.evaluate(()=>document.fonts.ready);
    for(const fontSize of [16,24,32]){
     await page.evaluate(size=>{document.documentElement.style.fontSize=size+'px';document.querySelector('details').open=true;},fontSize);

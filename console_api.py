@@ -64,14 +64,14 @@ def make_router(store, actor, guarded):
             owner = store.workspace(uid)
             row = store.db.execute('''SELECT id,name,ip,port,ws_port,location_type,is_active,
                 last_status,last_agent_status,last_cpu,last_ram,last_disk,
-                last_checked_at,agent_last_seen,group_id,
+                last_checked_at,agent_last_seen,group_id,telemetry,telemetry_at,
                 EXISTS(SELECT 1 FROM agent_nodes a
                        WHERE a.id=servers.agent_id AND a.agent_cert_pem<>'') AS tls_enrolled
                 FROM servers WHERE id=%s AND owner_id=%s''',(server_id,owner),fetch='one')
             if not row: raise HTTPException(status_code=404, detail='Server not found')
             allowed=('id','name','ip','port','ws_port','location_type','is_active',
                      'last_status','last_agent_status','last_cpu','last_ram','last_disk',
-                     'last_checked_at','agent_last_seen','group_id','tls_enrolled')
+                     'last_checked_at','agent_last_seen','group_id','telemetry','telemetry_at','tls_enrolled')
             data={key:row.get(key) for key in allowed}
             for field in ('last_status','last_agent_status'):
                 data[field] = safe_status(data.get(field))
@@ -86,11 +86,11 @@ def make_router(store, actor, guarded):
         def read():
             owner = store.workspace(uid)
             row = store.db.execute('''SELECT id,name,type,last_status,last_ping,
-                last_jitter,last_speed_up,last_speed_down,quality_score,added_at
+                last_jitter,last_speed_up,last_speed_down,quality_score,added_at,monitoring_enabled
                 FROM tunnel_configs WHERE id=%s AND owner_id=%s''',(config_id,owner),fetch='one')
             if not row: raise HTTPException(status_code=404, detail='Config not found')
             allowed=('id','name','type','last_status','last_ping','last_jitter',
-                     'last_speed_up','last_speed_down','quality_score','added_at')
+                     'last_speed_up','last_speed_down','quality_score','added_at','monitoring_enabled')
             data={key:row.get(key) for key in allowed}
             data['last_status'] = safe_status(data.get('last_status'))
             # Deliberately exclude raw links/subscription and credentials.

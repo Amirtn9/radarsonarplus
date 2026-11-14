@@ -21,6 +21,7 @@ class ProbeResult:
     ok: bool
     latency_ms: float | None
     detail: str
+    diagnostics: dict | None = None
 
 
 def normalize_target(kind: str, target: str) -> str:
@@ -127,20 +128,32 @@ def check(kind: str, target: str, timeout: int = 5, expected_status: int | None 
         if kind == 'http':
             url = urlsplit(target)
             host,port = url.hostname,url.port or (443 if url.scheme == 'https' else 80)
+            dns_start=time.monotonic()
             entries = _resolve(host, port, allow_private)
+            diagnostics={'dns_ms':round((time.monotonic()-dns_start)*1000,2)}
             cls = _PinnedHTTPS if url.scheme == 'https' else _PinnedHTTP
             conn = cls(host, port, entries, timeout)
             try:
                 path = url.path or '/'
                 if url.query: path += '?' + url.query
+                connection_start=time.monotonic()
+                conn.connect()
+                diagnostics['connect_ms']=round((time.monotonic()-connection_start)*1000,2)
+                if url.scheme=='https':
+                    certificate=conn.sock.getpeercert()
+                    diagnostics['tls_verified']=True
+                    diagnostics['tls_expires_at']=ssl.cert_time_to_seconds(certificate['notAfter']) if certificate.get('notAfter') else None
+                response_start=time.monotonic()
                 conn.request('GET', path, headers={'User-Agent': 'Sonar-Radar/6.3 uptime-check', 'Accept': '*/*', 'Connection': 'close'})
                 response = conn.getresponse()
                 # Do not follow redirects or read response bodies.
                 status = response.status
+                diagnostics['http_status']=status
+                diagnostics['response_ms']=round((time.monotonic()-response_start)*1000,2)
             finally:
                 conn.close()
             ok = status == expected_status if expected_status is not None else 200 <= status < 400
-            return ProbeResult(ok, round((time.monotonic()-start)*1000, 2), f'HTTP {status}')
+            return ProbeResult(ok, round((time.monotonic()-start)*1000, 2), f'HTTP {status}',diagnostics)
         target = normalize_target(kind,target)
         if target.startswith('['):
             host,port_str = target[1:].split(']:', 1)

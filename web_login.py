@@ -83,7 +83,7 @@ def create_session(db, uid):
     with db.get_connection() as (conn,cur):
         # Bound storage growth without deleting active or recently revoked sessions.
         cur.execute('DELETE FROM sonar_web_sessions WHERE expires_at<NOW()')
-        cur.execute("INSERT INTO sonar_web_sessions(token_hash,user_id,csrf_hash,expires_at) VALUES(%s,%s,%s,NOW()+INTERVAL '8 hours')",
+        cur.execute("INSERT INTO sonar_web_sessions(token_hash,user_id,csrf_hash,expires_at,elevated_at) VALUES(%s,%s,%s,NOW()+INTERVAL '8 hours',NOW())",
                     (digest(session),uid,digest(csrf)))
         conn.commit()
     return session,csrf
@@ -100,7 +100,7 @@ def redeem(db,code):
         if not row:
             conn.rollback();return None
         uid=int(row['user_id'])
-        cur.execute("INSERT INTO sonar_web_sessions(token_hash,user_id,csrf_hash,expires_at) VALUES(%s,%s,%s,NOW()+INTERVAL '8 hours')",(digest(session),uid,digest(csrf)))
+        cur.execute("INSERT INTO sonar_web_sessions(token_hash,user_id,csrf_hash,expires_at,elevated_at) VALUES(%s,%s,%s,NOW()+INTERVAL '8 hours',NOW())",(digest(session),uid,digest(csrf)))
         conn.commit()
     return uid,session,csrf
 
@@ -108,7 +108,9 @@ def redeem(db,code):
 def identify(db,session):
     if not valid_token(session):return None
     row=db.execute('''SELECT user_id,csrf_hash FROM sonar_web_sessions
-         WHERE token_hash=%s AND revoked_at IS NULL AND expires_at>NOW()''',(digest(session),),fetch='one')
+         WHERE token_hash=%s AND revoked_at IS NULL AND expires_at>NOW()
+         AND last_seen_at>NOW()-INTERVAL '30 minutes'
+         ''',(digest(session),),fetch='one')
     return dict(row) if row else None
 
 
@@ -149,3 +151,12 @@ def logout_all(db,uid):
         cur.execute('UPDATE sonar_web_sessions SET revoked_at=NOW() WHERE user_id=%s AND revoked_at IS NULL',(int(uid),))
         cur.execute('DELETE FROM sonar_web_codes WHERE user_id=%s',(int(uid),))
         conn.commit()
+
+
+def live_code(db,code):
+    if not valid_token(code):return False
+    return bool(db.execute("SELECT 1 FROM sonar_web_codes WHERE code_hash=%s AND used_at IS NULL AND expires_at>NOW()",(digest(code),),fetch='one'))
+
+
+def touch_session(db,session):
+    db.execute("UPDATE sonar_web_sessions SET last_seen_at=NOW(),expires_at=LEAST(created_at+INTERVAL '30 days',NOW()+INTERVAL '8 hours') WHERE token_hash=%s AND revoked_at IS NULL AND expires_at>NOW() AND last_seen_at>NOW()-INTERVAL '30 minutes'",(digest(session),))

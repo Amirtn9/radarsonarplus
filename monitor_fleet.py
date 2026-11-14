@@ -72,7 +72,7 @@ def available(db, admin_id, user_id=None):
                f.enabled,f.approved_by,f.latency_ms,f.cpu_pct,f.last_probe_ok,f.last_probe_at,
                f.error_code,(SELECT COUNT(*) FROM monitor_fleet_test_leases l WHERE l.server_id=f.server_id AND l.expires_at>NOW()) AS inflight,f.completed_tests,f.successful_tests,f.consecutive_failures,f.admin_only,f.relay_ready
             FROM monitor_fleet_nodes f JOIN servers s ON s.id=f.server_id
-            WHERE s.is_active=1 AND s.location_type='ir'
+            WHERE s.is_active=1 AND sonar_monitor_allowed(s.owner_id,'agents',s.id) AND s.location_type='ir'
               AND (s.owner_id=%s OR (f.enabled=TRUE AND f.approved_by IS NOT NULL AND NOT f.admin_only))
             ORDER BY s.id'''
     if uid==int(admin_id):
@@ -129,7 +129,7 @@ def relay_candidates(db, admin_id):
                  WHERE l.server_id=f.server_id AND l.expires_at>NOW()) AS inflight
             FROM servers s JOIN agent_nodes a ON a.id=s.agent_id AND a.ip=s.ip AND a.ssh_port=s.port
             JOIN monitor_fleet_nodes f ON f.server_id=s.id
-            WHERE s.is_active=1 AND s.location_type IN ('ir','ext')
+            WHERE s.is_active=1 AND sonar_monitor_allowed(s.owner_id,'agents',s.id) AND s.location_type IN ('ir','ext')
               AND f.enabled=TRUE AND f.approved_by IS NOT NULL
               AND a.agent_cert_pem<>'' AND a.agent_token<>''
               AND (s.owner_id=%s OR (f.admin_only=FALSE AND EXISTS(
@@ -161,7 +161,7 @@ def available_relay_nodes(db, admin_id, *, user_id=None, exclude_ip=None):
             FROM servers s
             JOIN agent_nodes a ON a.id=s.agent_id AND a.ip=s.ip AND a.ssh_port=s.port
             JOIN monitor_fleet_nodes f ON f.server_id=s.id
-            WHERE s.is_active=1 AND s.location_type IN ('ir','ext')
+            WHERE s.is_active=1 AND sonar_monitor_allowed(s.owner_id,'agents',s.id) AND s.location_type IN ('ir','ext')
               AND f.enabled=TRUE AND f.approved_by IS NOT NULL AND f.relay_ready=TRUE
               AND a.agent_cert_pem<>'' AND a.agent_token<>''
               AND (s.owner_id=%s OR (f.admin_only=FALSE AND EXISTS(

@@ -17,6 +17,7 @@ setup_advanced_logging(
 )
 
 from telegram.ext import ApplicationBuilder
+from update_processor import OrderedUserProcessor
 from logger_setup import setup_logger
 from dispatcher import register_all_handlers
 import cronjobs
@@ -180,7 +181,7 @@ def main():
         .write_timeout(60.0)
         .pool_timeout(30.0)
         .connection_pool_size(256)
-        .concurrent_updates(False)  # ConversationHandler needs ordered updates
+        .concurrent_updates(OrderedUserProcessor(16))  # Same-user updates remain strictly ordered
         .post_init(_post_init)
         .post_stop(_post_stop)
         .post_shutdown(_post_shutdown)
@@ -203,6 +204,8 @@ def main():
 
     # راه‌اندازی جاب‌ها (Job Queue)
     if app.job_queue:
+        from billing_delivery import bot_job as billing_message_job
+        app.job_queue.run_repeating(billing_message_job,interval=15,first=20,job_kwargs={'max_instances':1,'coalesce':True})
         app.job_queue.run_once(cronjobs.system_startup_notification, when=2)
         app.job_queue.run_once(cronjobs.startup_whitelist_job, when=15)
         app.job_queue.run_once(cronjobs.send_startup_topic_test, when=10)

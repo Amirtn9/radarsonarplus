@@ -101,7 +101,7 @@ def test_only_safe_automation_actions_allowed():
     s=(ROOT/'pro_store.py').read_text()
     assert "action IN ('notify','digest')" in s
     assert "if action not in ('notify','digest')" in s
-    assert "if actor != owner" in s
+    assert "Control(self).invite" in s and "Control(self).role" in s
 
 
 def test_web_api_auth_enforced_end_to_end_with_fake_db():

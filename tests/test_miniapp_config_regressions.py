@@ -113,6 +113,8 @@ def test_legacy_config_buttons_share_the_durable_pipeline(monkeypatch):
 
 
 def test_web_collector_persists_real_observations_without_bot(monkeypatch):
+    import notification_api
+    monkeypatch.setattr(notification_api,'claim_sample',lambda *a:True)
     import asyncio
     from unittest.mock import AsyncMock
     from web_reporting import observation_worker

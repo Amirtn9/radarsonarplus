@@ -159,7 +159,7 @@ class EnterpriseStore:
                 'unknown':sum(x['state']=='unknown' for x in result)}
 
     def create_operation(self, actor, owner, kind, resource_ids, idempotency_key, payload=None):
-        if self.pro.role(actor,owner) not in ('owner','manager','operator'): raise PermissionError('Operation role required')
+        if self.pro.role(actor,owner) not in ('owner','manager','technical','monitor','operator'): raise PermissionError('Operation role required')
         allowed,_=self.db.check_access(owner)
         if not allowed: raise PermissionError('Workspace owner is inactive')
         if kind not in ('agent_update','service_restart','diagnostic','maintenance'):
@@ -439,7 +439,7 @@ class EnterpriseStore:
         return self.revoke_api_token(actor,owner,token_id)
 
     def transition_incident(self,actor,owner,incident_id,status):
-        if self.pro.role(actor,owner) not in ('owner','manager','operator'): raise PermissionError('Incident role required')
+        if self.pro.role(actor,owner) not in ('owner','manager','technical','monitor','operator'): raise PermissionError('Incident role required')
         allowed,_=self.db.check_access(owner)
         if not allowed: raise PermissionError('Workspace owner is inactive')
         if status not in ('acknowledged','investigating','resolved'):raise ValueError('Invalid incident state')
@@ -470,13 +470,11 @@ class EnterpriseStore:
 
     def set_role(self,actor,owner,member,role):
         if int(actor)!=int(owner):raise PermissionError('Only owner can change team roles')
-        if role not in ('manager','operator','viewer','auditor','remove'):raise ValueError('Invalid role')
-        if role=='remove':self.db.execute('DELETE FROM pro_team WHERE owner_id=%s AND member_id=%s',(owner,member))
-        else:
-            if not self.db.get_user(int(member)):raise ValueError('Member must start the bot first')
-            self.db.execute('''INSERT INTO pro_team(owner_id,member_id,role) VALUES(%s,%s,%s)
-             ON CONFLICT(owner_id,member_id) DO UPDATE SET role=EXCLUDED.role''',(owner,member,role))
-        self.pro.audit(owner,actor,'team_role',str(member),role)
+        role='monitor' if role=='operator' else role
+        from control_store import Control
+        exists=self.db.execute('SELECT 1 FROM pro_team WHERE owner_id=%s AND member_id=%s',(owner,member),fetch='one')
+        if exists or role=='remove':return Control(self.pro).role(actor,int(member),role)
+        return Control(self.pro).invite(actor,int(member),role)
 
     def create_backup_schedule(self,actor,owner,name,cadence,destination,retention=7):
         from settings import SUPER_ADMIN_ID

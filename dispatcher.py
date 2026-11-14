@@ -35,6 +35,8 @@ async def _dev_feature_callback(update, context):
 
 def register_all_handlers(app:  Application):
     logger.debug("📝 Starting handler registration...")
+    from billing_bot import register as register_billing
+    register_billing(app)
     from v6_ui import register as register_v6
     register_v6(app)
     from pro_handlers import register as register_pro_handlers
@@ -344,5 +346,8 @@ def register_all_handlers(app:  Application):
         '^set_auto_sub_': bot_logic.set_auto_sub_update_action,
     }
 
+    conversation_patterns={handler.pattern.pattern for handler in conv_handler.entry_points
+                           if isinstance(handler,CallbackQueryHandler) and handler.pattern is not None}
     for ptrn, func in simple_patterns.items():
-        app.add_handler(CallbackQueryHandler(func, pattern=ptrn))
+        if ptrn not in conversation_patterns:
+            app.add_handler(CallbackQueryHandler(func, pattern=ptrn))

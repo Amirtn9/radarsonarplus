@@ -80,9 +80,13 @@ class ServiceStore:
         if expected_status is not None:
             expected_status=int(expected_status)
             if kind!='http' or not 200<=expected_status<=599: raise ValueError('Invalid HTTP status')
+        from billing import Billing
+        sub=Billing(self.db).subscription(owner)
+        maximum=sub['limits']['websites'] if sub else int(os.getenv('SONAR_SERVICE_LIMIT_PER_WORKSPACE','50'))
         with self.db.get_connection() as (conn,cur):
+            cur.execute('SELECT pg_advisory_xact_lock(535320,hashtext(%s))',(str(owner),))
             cur.execute('SELECT count(*) n FROM pro_services WHERE owner_id=%s',(owner,))
-            if cur.fetchone()['n']>=int(os.getenv('SONAR_SERVICE_LIMIT_PER_WORKSPACE','50')):
+            if cur.fetchone()['n']>=maximum:
                 raise ValueError('Service limit reached')
             cur.execute('''INSERT INTO pro_services(owner_id,name,kind,target,interval_seconds,timeout_seconds,
                 failure_threshold,recovery_threshold,expected_status) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
@@ -149,19 +153,19 @@ class ServiceStore:
             raise ValueError('Service not found')
         days=max(1,min(30,int(days)))
         rows=self.db.execute('''SELECT ok,latency_ms,detail,checked_at FROM pro_service_history
-            WHERE owner_id=%s AND service_id=%s AND checked_at>=NOW()-(%s*INTERVAL '1 day')
+            WHERE owner_id=%s AND service_id=%s AND checked_at>=NOW()-(LEAST(%s,sonar_retention_days(owner_id))*INTERVAL '1 day')
             ORDER BY checked_at DESC LIMIT 1500''',(owner,ident,days),fetch='all')
         return [dict(r) for r in reversed(rows)]
 
-    def claim(self,limit=20):
+    def claim(self,limit=5):
         """Reserve a bounded batch atomically; separate bot replicas avoid double probes."""
         with self.db.get_connection() as (conn,cur):
-            cur.execute('''SELECT * FROM pro_services WHERE enabled=TRUE AND next_check_at<=NOW()
-              ORDER BY next_check_at,id FOR UPDATE SKIP LOCKED LIMIT %s''',(max(1,min(30,int(limit))),))
+            cur.execute('''SELECT * FROM pro_services WHERE enabled=TRUE AND next_check_at<=NOW() AND sonar_monitor_allowed(owner_id,'websites',id)
+              ORDER BY next_check_at,id FOR UPDATE SKIP LOCKED LIMIT %s''',(max(1,min(5,int(limit))),))
             rows=[dict(row) for row in cur.fetchall()]
             for row in rows:
                 cur.execute('''UPDATE pro_services SET next_check_at=NOW()+(%s*INTERVAL '1 second')
-                     WHERE id=%s AND enabled=TRUE''',(max(row['interval_seconds'],row['timeout_seconds']+30),row['id']))
+                     WHERE id=%s AND enabled=TRUE''',(max(row['interval_seconds'],90),row['id']))
             conn.commit()
         return rows
 
@@ -177,7 +181,7 @@ class ServiceStore:
             state,fail,success,event=transition(previous['status'],previous['fail_count'],previous['success_count'],
                  result.ok,previous['failure_threshold'],previous['recovery_threshold'])
             cur.execute('''UPDATE pro_services SET status=%s,fail_count=%s,success_count=%s,
-                last_checked_at=NOW(),last_latency_ms=%s,last_detail=%s,updated_at=NOW()
+                last_checked_at=NOW(),last_latency_ms=%s,last_detail=%s,updated_at=NOW(),next_check_at=NOW()+(interval_seconds*INTERVAL '1 second')
                 WHERE id=%s AND owner_id=%s''',
                 (state,fail,success,result.latency_ms,result.detail[:180],row['id'],row['owner_id']))
             cur.execute('''INSERT INTO pro_service_history(owner_id,service_id,ok,latency_ms,detail)

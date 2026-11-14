@@ -425,11 +425,20 @@ class ServerMonitor:
     # 🛠 INSTALLATION & SETUP
     # ---------------------------------------------------------
     @staticmethod
-    def install_agent_service(ip, port_ssh, user, password, ws_port, progress=None, agent_script=None):
+    def install_agent_service(ip, port_ssh, user, password, ws_port, progress=None, agent_script=None, rotate_token=False):
         from agent_deploy import deploy_agent
         from database import Database
+        from workspace_service import ACTOR_ID
+        actor=ACTOR_ID.get()
+        if actor:
+            from settings import SUPER_ADMIN_ID
+            from pro_store import ProStore
+            if actor!=SUPER_ADMIN_ID:
+                database=Database();owner=database.workspace_owner(actor)
+                if ProStore(database).require(actor,owner,True) not in ('owner','manager','technical'):
+                    return False,'TECHNICAL_ROLE_REQUIRED'
         try:
-            return deploy_agent(ServerMonitor, Database(), ip, port_ssh, user, password, ws_port, progress=progress, agent_script=agent_script)
+            return deploy_agent(ServerMonitor, Database(), ip, port_ssh, user, password, ws_port, progress=progress, agent_script=agent_script,**({'rotate_token':True} if rotate_token else {}))
         except (ValueError, LookupError) as exc:
             return False, str(exc)
 

@@ -1,0 +1,2 @@
+# Linux x86_64 lint tool only; runtime dependency locks are unchanged.
+ruff==0.14.14 --hash=sha256:bb8481604b7a9e75eff53772496201690ce2687067e038b3cc31aaf16aa0b974

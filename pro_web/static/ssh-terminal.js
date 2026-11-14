@@ -218,6 +218,7 @@
     serverId = id;
     $('ssh-terminal-server').textContent = 'Server #' + id;
     try {
+      if (window.SonarStepUp) await window.SonarStepUp();
       if (!isDialogOpen()) showDialog();
       createTerminal();
       if (!resizeObserver && typeof ResizeObserver === 'function') {

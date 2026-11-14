@@ -9,6 +9,8 @@ function signedLaunchData(){
 let auth=tg?.initData||signedLaunchData();
 function isMiniApp(){return !!auth||!!signedLaunchData()||!!(tg?.platform&&tg.platform!=='unknown');}
 let telegramSdkPromise=null;
+let lastInteraction=Date.now();for(const event of ['pointerdown','keydown','touchstart'])window.addEventListener(event,()=>{lastInteraction=Date.now();},{passive:true});
+let activeWorkspace='';try{activeWorkspace=sessionStorage.getItem('sonar-workspace')||'';}catch{}
 let panelBooting=false;
 let panelBootComplete=false;
 let panelAuthenticated=false;
@@ -43,17 +45,32 @@ function loadTelegramWebApp(timeoutMs=1800){
 let cookieAuth=false;
 let csrfToken='';
 const $=id=>document.getElementById(id);
-const state={tab:'overview',index:1,search:'',admin:false,listingRequest:0,resourceRequest:0,onlyFavorites:false,incidentStatus:'unresolved'};
+const state={tab:'overview',index:1,search:'',admin:false,listingRequest:0,resourceRequest:0,onlyFavorites:false,incidentStatus:'unresolved',selectedConfigs:new Set()};
 window.SonarWebAuth={getCsrf:()=>csrfToken,setCsrf:value=>{csrfToken=String(value||'');}};
-const titles={overview:'داشبورد',servers:'مدیریت سرورها',configs:'کانفیگ‌ها و اشتراک‌ها',rankings:'رتبه‌بندی کیفیت',incidents:'مرکز رخدادها',enterprise:'مرکز سازمانی',team:'اعضای تیم',audit:'فعالیت‌ها',settings:'تنظیمات',reports:'گزارش‌ها',support:'مرکز عیب‌یابی',fleet:'استخر Agentهای چندمنطقه‌ای',balancer:'بالانسر مسیرها',services:'مانیتورینگ سرویس‌ها',channels:'کانال‌های اعلان', 'server-detail':'جزئیات سرور','config-detail':'جزئیات کانفیگ','web-create':'افزودن منبع جدید'};
+const titles={billing:'اشتراک و کیف پول',users:'مدیریت کاربران و فروش',overview:'داشبورد',servers:'مدیریت سرورها',configs:'کانفیگ‌ها و اشتراک‌ها',rankings:'رتبه‌بندی کیفیت',incidents:'مرکز رخدادها',enterprise:'مرکز سازمانی',team:'اعضای تیم',audit:'فعالیت‌ها',settings:'تنظیمات',reports:'گزارش‌ها',support:'مرکز عیب‌یابی',fleet:'استخر Agentهای چندمنطقه‌ای',balancer:'بالانسر مسیرها',services:'مانیتورینگ سرویس‌ها',channels:'اطلاع‌رسانی', 'server-detail':'جزئیات سرور','config-detail':'جزئیات کانفیگ','web-create':'افزودن منبع جدید'};
 const elem=(tag,text,cl)=>{const el=document.createElement(tag);if(text!=null)el.textContent=String(text);if(cl)el.className=cl;return el;};
 function toast(text){$('toast').textContent=text;$('toast').classList.add('visible');clearTimeout(toast.delay);toast.delay=setTimeout(()=>$('toast').classList.remove('visible'),4000);}
+async function boundedFetch(path,options){
+ const attempts=(options.method||'GET').toUpperCase()==='GET'?2:1;
+ for(let attempt=0;attempt<attempts;attempt++){
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);
+  try{return await fetch(path,{...options,signal:options.signal||controller.signal});}
+  catch(error){if(options.signal?.aborted||attempt+1===attempts)throw Error(error.name==='AbortError'?'زمان دریافت پاسخ تمام شد؛ دوباره تلاش کنید.':'ارتباط با سرور برقرار نشد.');}
+  finally{clearTimeout(timer);}
+ }
+}
+async function stepUp(){
+ const code=prompt('برای تأیید مجدد، یک کد ورود تازه از ربات بگیرید و وارد کنید:');
+ if(!code)throw Error('تأیید مجدد لغو شد');
+ await jsonPost('/api/control/step-up',{code:code.trim()});
+}
+window.SonarStepUp=async()=>{const result=await request('/api/control/step-up');if(!result.elevated)await stepUp();};
 async function request(path,options={}){
   // Use signed Telegram initData until it is exchanged for an HttpOnly cookie session.
   const method=String(options.method||'GET').toUpperCase();
-  const response=await fetch(path,{...options,credentials:'same-origin',cache:'no-store',headers:{...(auth&&!cookieAuth?{Authorization:'tma '+auth}:{}),...((!auth||cookieAuth)&&method!=='GET'&&method!=='HEAD'?{'X-CSRF-Token':csrfToken}:{}),...options.headers}});
-  if(response.status===401){if(!isMiniApp()){$('web-auth').hidden=false;}else{const banner=$('session-warning');if(banner)banner.hidden=false;}}
-  if(!response.ok){let message=`خطای ارتباط (${response.status})`;try{const d=await response.json();message=d.detail||message;}catch{}throw Error(message);}
+  const response=await boundedFetch(path,{...options,credentials:'same-origin',cache:'no-store',headers:{...(Date.now()-lastInteraction<60000?{'X-User-Activity':'1'}:{}),...(activeWorkspace&&!path.startsWith('/api/billing')&&!['/api/me','/api/control/workspaces','/api/control/sessions'].some(p=>path.startsWith(p))?{'X-Workspace-Id':activeWorkspace}:{}),...(auth&&!cookieAuth?{Authorization:'tma '+auth}:{}),...((!auth||cookieAuth)&&method!=='GET'&&method!=='HEAD'?{'X-CSRF-Token':csrfToken}:{}),...options.headers}});
+  if(response.status===401){if(document.body?.dataset)delete document.body.dataset.authenticated;if(!isMiniApp()){$('web-auth').hidden=false;if(location.pathname!=='/login')history.replaceState({},'','/login?next='+encodeURIComponent(panelRoutes[state.tab]||'/dashboard'));}else{const banner=$('session-warning');if(banner)banner.hidden=false;}}
+  if(!response.ok){let message=`خطای ارتباط (${response.status})`;try{const d=await response.json();message=d.detail||message;}catch{}if(message==='STEP_UP_REQUIRED'&&!options.stepUpRetried){await stepUp();return request(path,{...options,stepUpRetried:true});}throw Error(message);}
   if(options.raw)return response;
   return response.json();
 }
@@ -88,7 +105,8 @@ async function prepareMiniAppSession(){
  cookieAuth=false;
 }
 function setStatus(text,good=true){$('side-state').textContent=text;const top=$('topbar-status');if(top){top.textContent=text;top.classList.toggle('is-error',!good);}const dot=document.querySelector?.('.statusdot');if(dot?.style)dot.style.background=good?'#47d7a0':'#ff7887';}
-async function summary(){const data=await request('/api/summary');$('srv').textContent=`${data.servers.active}/${data.servers.total}`;$('cfg').textContent=`${data.configs.healthy}/${data.configs.total}`;$('inc').textContent=data.incidents;$('service-up').textContent=`${data.services?.up??0}/${data.services?.total??0}`;$('last-test').textContent='آخرین تست ثبت‌شده: '+(data.last_test_at||'هنوز داده‌ای وجود ندارد');}
+function renderSummary(data){$('srv').textContent=`${data.servers.active}/${data.servers.total}`;$('cfg').textContent=`${data.configs.healthy}/${data.configs.total}`;$('inc').textContent=data.incidents;$('service-up').textContent=`${data.services?.up??0}/${data.services?.total??0}`;$('last-test').textContent='آخرین تست ثبت‌شده: '+(data.last_test_at||'هنوز داده‌ای وجود ندارد');}
+async function summary(){renderSummary(await request('/api/summary'));}
 async function loadDashboardRoutes(){
  const panel=$('dashboard-route-panel'),host=$('dashboard-route-status');if(!panel||!host||!state.admin)return;
  panel.hidden=false;host.replaceChildren(elem('p','در حال دریافت وضعیت مسیرهای سالم...','muted'));
@@ -100,6 +118,36 @@ async function loadDashboardRoutes(){
  }catch(error){host.replaceChildren(elem('p',error.message,'muted'));}
 }
 function choose(name){tabClick(name);}
+const panelRoutes={overview:'/dashboard',servers:'/servers',configs:'/configs',services:'/monitoring',channels:'/notifications',team:'/team',settings:'/settings',audit:'/logs',billing:'/billing',users:'/users',reports:'/reports',rankings:'/rankings',incidents:'/incidents',enterprise:'/enterprise',fleet:'/fleet',balancer:'/balancer',support:'/support','web-create':'/resources/new'};
+let restoringRoute=false;
+function updateRoute(replace=false){
+ if(!panelAuthenticated)return;
+ let path=panelRoutes[state.tab];if(state.tab==='server-detail')path='/servers/'+window.SonarConsole?.currentServerId?.();if(state.tab==='config-detail')path='/configs/'+window.SonarConsole?.currentConfigId?.();if(!path)return;
+ const url=new URL(path,location.origin);
+ if(state.search)url.searchParams.set('q',state.search);
+ if(state.index>1)url.searchParams.set('page',String(state.index));
+ if(state.onlyFavorites)url.searchParams.set('favorites','1');
+ if(state.tab==='incidents')url.searchParams.set('status',state.incidentStatus);
+ const target=url.pathname+url.search;
+ if(location.pathname+location.search!==target)history[replace?'replaceState':'pushState']({tab:state.tab},'',target+(cookieAuth?'':location.hash));
+}
+function routeFromLocation(){
+ const detail=location.pathname.match(/^\/(servers|configs)\/([1-9][0-9]*)$/);if(detail)return detail[1]==='servers'?'server-detail':'config-detail';
+ const query=new URLSearchParams(location.search),path=Object.keys(panelRoutes).find(key=>panelRoutes[key]===location.pathname);
+ const fallback=query.get('view');
+ const next=query.get('next');if(next){try{const url=new URL(next,location.origin);if(url.origin===location.origin){const match=url.pathname.match(/^\/(servers|configs)\/([1-9][0-9]*)$/);if(match){window.SonarConsole?.setActive(match[1]==='servers'?'server':'config',Number(match[2]));return match[1]==='servers'?'server-detail':'config-detail';}const view=Object.keys(panelRoutes).find(k=>panelRoutes[k]===url.pathname);if(view)return view;}}catch{}}
+ return (['/','/login','/dashboard'].includes(location.pathname)&&Object.prototype.hasOwnProperty.call(titles,fallback)?fallback:null)||path||(Object.prototype.hasOwnProperty.call(titles,fallback)?fallback:'overview');
+}
+function restoreRoute(){
+ const params=new URLSearchParams(location.search),name=routeFromLocation();
+ const detail=location.pathname.match(/^\/(servers|configs)\/([1-9][0-9]*)$/);if(detail)window.SonarConsole?.setActive(detail[1]==='servers'?'server':'config',Number(detail[2]));
+ restoringRoute=true;tabClick(name);restoringRoute=false;
+ state.search=params.get('q')||'';state.index=Math.max(1,Math.min(10000,Math.trunc(Number(params.get('page'))||1)));
+ state.onlyFavorites=params.get('favorites')==='1';state.incidentStatus=params.get('status')||'unresolved';
+ $('search').value=state.search;if($('only-favorites'))$('only-favorites').checked=state.onlyFavorites;
+ if(['servers','configs','incidents'].includes(name))loadList();updateRoute(true);
+}
+window.addEventListener('popstate',()=>{if(panelAuthenticated)restoreRoute();});
 function tabClick(name){if(!Object.prototype.hasOwnProperty.call(titles,name)||(['support','balancer'].includes(name)&&!state.admin))return;state.listingRequest++;state.tab=name;state.index=1;state.search='';$('search').value='';
   $('page-title').textContent=titles[name]||name;
   document.title=(titles[name]||name)+' | SONAR RADAR PRO';
@@ -111,18 +159,20 @@ function tabClick(name){if(!Object.prototype.hasOwnProperty.call(titles,name)||(
   const pages=['servers','configs','rankings','incidents'];
   if(pages.includes(name))loadList();
   if(name==='overview'){summary().catch(e=>toast(e.message));loadResourceServers();loadNotificationDelivery();window.SonarConsole?.loadRecent();if(state.admin)loadDashboardRoutes();}
+  if(!restoringRoute)updateRoute();
+  if(name==='billing'||name==='users')window.SonarBilling?.load(name);
   if(name==='services')loadServices();
   if(name==='enterprise')window.SonarEnterprise?.load?.();
-  if(name==='team')loadTeam();
+  if(name==='team')loadTeam().then(()=>window.SonarControl?.team()).catch(e=>toast(e.message));
   if(name==='audit')loadAudit();
-  if(name==='settings')loadPreferences();
+  if(name==='settings'){loadPreferences();window.SonarControl?.sessions().catch(e=>toast(e.message));window.SonarControl?.policy().catch(e=>toast(e.message));}
   if(name==='reports')window.SonarReports?.load();
   if(name==='support')loadHealth();
-  if(name==='channels')window.SonarConsole?.loadChannels();
-  if(name==='fleet')window.SonarNext?.loadFleet?.();
+  if(name==='channels'){window.SonarConsole?.loadChannels();window.SonarControl?.notifications().catch(e=>toast(e.message));}
+  if(name==='fleet'){window.SonarNext?.loadFleet?.();window.SonarControl?.agents().catch(e=>toast(e.message));}
   if(name==='balancer')window.SonarBalancer?.load?.();
-  if(name==='server-detail')window.SonarConsole?.loadServer();
-  if(name==='config-detail')window.SonarConsole?.loadConfig();
+  if(name==='server-detail')window.SonarConsole?.loadServer().then(()=>window.SonarControl?.serverActions()).catch(e=>toast(e.message));
+  if(name==='config-detail')window.SonarConsole?.loadConfig().then(()=>window.SonarControl?.configActions()).catch(e=>toast(e.message));
 }
 function statusText(item){const raw=String(item.last_status||'Unknown');return raw.length<70?raw:raw.slice(0,67)+'…';}
 function rowItem(item){const root=elem('article',null,'item'),detail=elem('div'),name=elem('strong',item.name||item.title||item.kind||'بدون نام');detail.append(name);
@@ -134,6 +184,7 @@ function rowItem(item){const root=elem('article',null,'item'),detail=elem('div')
  detail.append(elem('small',subtitle));root.append(detail);
  if(state.tab==='servers'){const live=elem('span','','live-label');window.SonarTelemetry?.live(live,item);detail.append(live);}
  const controls=elem('div',null,'tools');
+ if(state.tab==='configs'&&item.type!=='sub_source'){const select=elem('input');select.type='checkbox';select.setAttribute('aria-label','انتخاب برای آزمون گروهی');select.checked=state.selectedConfigs.has(item.id);select.onchange=()=>{if(select.checked)state.selectedConfigs.add(item.id);else state.selectedConfigs.delete(item.id);};controls.append(select);}
  if(['servers','configs'].includes(state.tab)){const b=elem('button',item.favorite?'★':'☆');b.setAttribute('aria-label','تغییر علاقه‌مندی');b.onclick=async()=>{try{const v=await jsonPost('/api/favorites',{kind:state.tab==='servers'?'server':'config',rid:item.id});item.favorite=v.favorite;b.textContent=v.favorite?'★':'☆';toast('علاقه‌مندی ذخیره شد');}catch(e){toast(e.message);}};controls.append(b);}
  if(['servers','configs'].includes(state.tab)){const tag=elem('button','🏷 برچسب');tag.setAttribute('aria-label','افزودن برچسب');tag.onclick=async()=>{const value=prompt('برچسب کوتاه بنویسید (حداکثر ۳۲ کاراکتر):');if(!value)return;try{await jsonPost('/api/console/tags',{kind:state.tab==='servers'?'server':'config',rid:item.id,tag:value.trim()});toast('برچسب ذخیره شد');}catch(e){toast(e.message);}};controls.append(tag);const details=elem('button','جزئیات');details.className='primary';details.onclick=()=>window.SonarConsole?.openDetails(state.tab==='servers'?'server':'config',item.id);controls.append(details);}
  if(state.tab==='rankings'){controls.append(elem('strong',`${item.score??0}/100`,'score'));const b=elem('button','📈 نمودار');b.onclick=()=>drawTrend(item);controls.append(b);}
@@ -144,6 +195,7 @@ async function loadList(){const requestId=++state.listingRequest,tab=state.tab,p
  const title=titles[tab];$('list-title').textContent=title;$('list-subtitle').textContent=tab==='incidents'?'رخدادهای فضای کاری؛ فیلتر بر اساس چرخه رسیدگی':'اطلاعات ثبت‌شده در فضای کاری';
  const resourceTab=['servers','configs'].includes(tab),incidentTab=tab==='incidents';
  $('search').hidden=!resourceTab;
+ let bulk=$('config-bulk-test');if(!bulk){bulk=elem('button','آزمون کانفیگ‌های انتخاب‌شده');bulk.type='button';bulk.id='config-bulk-test';$('list-title').after(bulk);bulk.onclick=async()=>{try{await window.SonarControl.probe([...state.selectedConfigs]);state.selectedConfigs.clear();await loadList();}catch(error){toast(error.message);}};}bulk.hidden=tab!=='configs';
  const ftools=document.querySelector?.('.filter-tools');if(ftools)ftools.hidden=!(resourceTab||incidentTab);
  const favoritesFilter=$('favorites-filter');if(favoritesFilter)favoritesFilter.hidden=!resourceTab;
  const hint=$('list-filter-hint');if(hint)hint.hidden=!resourceTab;
@@ -153,10 +205,11 @@ async function loadList(){const requestId=++state.listingRequest,tab=state.tab,p
  try{
  let url='';if(resourceTab){url=`/api/resources/${tab==='servers'?'server':'config'}?page=${page}&q=${encodeURIComponent(search)}&favorites=${state.onlyFavorites?'true':'false'}`;}
  else url=tab==='rankings'?'/api/rankings':`/api/incidents?status=${encodeURIComponent(state.incidentStatus)}`;
- const list=await request(url);if(requestId!==state.listingRequest||tab!==state.tab)return;if(!Array.isArray(list))throw Error('پاسخ نامعتبر از سرور');
+ if(!restoringRoute)updateRoute();
+ const response=await request(url,{raw:true});const list=await response.json();const total=Number(response.headers.get('X-Total-Count'));if(requestId!==state.listingRequest||tab!==state.tab)return;if(!Array.isArray(list))throw Error('پاسخ نامعتبر از سرور');
  host.replaceChildren();if(!list.length)host.append(elem('p',resourceTab&&state.onlyFavorites?'هنوز موردی به علاقه‌مندی‌ها اضافه نشده است.':'موردی برای نمایش وجود ندارد.','muted'));
  list.forEach(item=>host.append(rowItem(item)));
- $('next').disabled=!resourceTab||list.length<12;
+ $('next').disabled=!resourceTab||(response.headers.has('X-Total-Count')?page*12>=total:list.length<12);
  $('page-number').textContent=page.toLocaleString('fa-IR');setStatus('متصل');
  }catch(e){if(requestId!==state.listingRequest)return;host.replaceChildren(elem('p',e.message,'bad'));setStatus('خطای ارتباط',false);}
 }
@@ -231,6 +284,7 @@ async function boot(){
      const me=await request('/api/me');
      if(!auth&&!cookieAuth){const session=await request('/api/web/csrf');csrfToken=session.csrf||'';cookieAuth=true;}
      state.admin=!!me.admin;
+     if($('billing-admin-tab'))$('billing-admin-tab').hidden=!me.admin&&!(me.billing_permissions||[]).length;
      $('admin-tab').hidden=!me.admin;
      if($('balancer-tab'))$('balancer-tab').hidden=!me.admin;
      if($('dashboard-route-panel'))$('dashboard-route-panel').hidden=!me.admin;
@@ -239,7 +293,10 @@ async function boot(){
      $('web-auth').hidden=true;
      if($('session-warning'))$('session-warning').hidden=true;
      panelAuthenticated=true;
-     setStatus('متصل');const initialView=new URLSearchParams(window.location?.search||'').get('view');tabClick(initialView&&Object.prototype.hasOwnProperty.call(titles,initialView)?initialView:'overview');
+     document.body.dataset.authenticated='true';
+     await window.SonarControl?.workspaces();
+     window.SonarLive?.connect();
+     setStatus('متصل');restoreRoute();
    }catch(e){
      setStatus('اتصال ناموفق',false);
      $('web-auth').hidden=isMiniApp();
@@ -262,20 +319,7 @@ async function loadResourceServers(){
  const select=$('resource-server');if(!select)return;
  const current=select.value;select.disabled=true;
  try{
-   const servers=[];
-   let complete=false;
-   for(let page=1;page<=100;page++){
-     const batch=await request(`/api/resources/server?page=${page}&per_page=50`);
-     if(!Array.isArray(batch))throw Error('فهرست سرورها نامعتبر است');
-     servers.push(...batch);
-     if(batch.length<50){complete=true;break;}
-   }
-   if(!complete){
-     const overflow=await request('/api/resources/server?page=101&per_page=50');
-     if(!Array.isArray(overflow))throw Error('فهرست سرورها نامعتبر است');
-     if(overflow.length===0)complete=true;
-   }
-   if(!complete)throw Error('فهرست سرورها بیش از حد مجاز برای بارگذاری یک‌باره است؛ از جست‌وجو یا فیلتر استفاده کنید.');
+   const servers=await request('/api/server-options');
    select.replaceChildren(elem('option','انتخاب سرور'));
    for(const server of servers){const opt=elem('option',server.name||`سرور ${server.id}`);opt.value=String(server.id);select.append(opt);}
    if(current&&servers.some(s=>String(s.id)===current))select.value=current;
@@ -373,6 +417,7 @@ async function loadServiceHistory(item){
    if(data.length)host.append(elem('p','نمونه‌های ۷ روز اخیر (تا ۱۵۰۰ نتیجه): '+up+' موفق از '+data.length+' تست · '+(100*up/data.length).toFixed(1)+'٪','muted'));
    latest.slice(0,25).forEach(sample=>host.append(simpleEntry((sample.ok?'🟢 ':'🔴 ')+sample.detail,
          serviceDate(sample.checked_at)+' · '+(sample.latency_ms==null?'—':sample.latency_ms+'ms'))));
+   await window.SonarControl?.regions(x);
  }catch(err){host.replaceChildren(elem('p',err.message,'bad'));}
 }
 $('services-refresh')?.addEventListener?.('click',loadServices);
@@ -395,3 +440,12 @@ $('service-form')?.addEventListener?.('submit',async ev=>{
 $('resource-hours')?.addEventListener('change',loadResourceChart);
 $('resource-refresh')?.addEventListener('click',loadResourceChart);
 window.setInterval?.(()=>{if(state.tab==='overview'&&document.visibilityState==='visible'&&$('resource-server')?.value)void loadResourceChart();},15000);
+
+let liveSource=null;
+window.SonarLive={connect(){
+ if(liveSource)liveSource.close();
+ if(!cookieAuth||typeof EventSource==='undefined')return;
+ liveSource=new EventSource('/api/events'+(activeWorkspace?'?owner='+encodeURIComponent(activeWorkspace):''));
+ liveSource.addEventListener('summary',event=>{try{if(state.tab==='overview')renderSummary(JSON.parse(event.data));}catch{}});
+ liveSource.onerror=()=>{if(!panelAuthenticated)liveSource.close();};
+}};

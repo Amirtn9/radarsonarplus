@@ -27,7 +27,7 @@ class IncidentAssign(BaseModel):
 class RoleUpdate(BaseModel):
     owner: int | None = None
     member_id: int = Field(gt=0)
-    role: Literal['manager','operator','viewer','auditor','remove']
+    role: Literal['manager','operator','technical','monitor','server','viewer','auditor','remove']
 class BackupSchedule(BaseModel):
     owner: int | None = None
     name: str = Field(min_length=1,max_length=100)

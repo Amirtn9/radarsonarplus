@@ -186,11 +186,13 @@ def test_web_app_initialization_and_page_switch_use_actual_input():
 const fs=require('fs'),vm=require('vm');
 const elements=new Map(),calls=[];
 function element(id){return {id,textContent:'',value:'',classList:{add(){},remove(){},toggle(){}},
- addEventListener(){},replaceChildren(){},append(){},querySelector(){throw Error('An input has no child input')}}}
+ addEventListener(){},replaceChildren(){},append(){},after(){},querySelector(){throw Error('An input has no child input')}}}
 const document={getElementById(id){if(!elements.has(id))elements.set(id,element(id));return elements.get(id)},
  querySelectorAll(){return []},createElement(tag){return element(tag)}};
- const context={document,window:{addEventListener(){},Telegram:{WebApp:{initData:'test',ready(){},expand(){}}},setTimeout},setTimeout,clearTimeout,
- fetch:async(path)=>{calls.push(path);return {ok:true,json:async()=>path==='/api/summary'?{servers:{active:0,total:0},configs:{healthy:0,total:0},incidents:0}:[]}}};
+ const location={origin:'https://testserver',pathname:'/dashboard',search:'',hash:''};
+ document.body={dataset:{}};
+ const context={document,AbortController,URL,location,history:{pushState(){},replaceState(){}},window:{addEventListener(){},Telegram:{WebApp:{initData:'test',ready(){},expand(){}}},setTimeout},setTimeout,clearTimeout,
+ fetch:async(path)=>{calls.push(path);return {ok:true,status:200,headers:new Headers(),json:async()=>path==='/api/summary'?{servers:{active:0,total:0},configs:{healthy:0,total:0},incidents:0}:[]}}};
 vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);
 setTimeout(()=>{context.choose('configs');setTimeout(()=>{
 if(!calls.some(p=>p.includes('/api/resources/config')))process.exit(2);
@@ -394,7 +396,7 @@ def test_notifications_route_to_specific_topic_and_fallback_to_owner():
         {'chat_id': -1002, 'topic_id': 12, 'usage_type': 'all'}])
     context = types.SimpleNamespace(bot=types.SimpleNamespace(send_message=send))
     assert asyncio.run(send_notification(context, 15, 'test', 'down', db=db))
-    assert calls == [{'chat_id': -1001, 'message_thread_id': 11, 'text': 'test', 'parse_mode': None}]
+    assert {(c['chat_id'],c['message_thread_id']) for c in calls} == {(-1001,11),(-1002,12)}
     async def fail_channel(**kwargs):
         calls.append(kwargs)
         if kwargs['chat_id'] < 0:
@@ -402,7 +404,7 @@ def test_notifications_route_to_specific_topic_and_fallback_to_owner():
     calls.clear()
     context.bot.send_message = fail_channel
     assert asyncio.run(send_notification(context, 15, 'test', 'down', db=db))
-    assert [call['chat_id'] for call in calls] == [-1001, 15]
+    assert [call['chat_id'] for call in calls] == [-1002,-1001,15]
 
 
 def test_error_summary_excludes_update_contents_and_exception_text():
@@ -454,12 +456,15 @@ def test_monitoring_options_match_agent_limits():
 
 
 @pytest.mark.parametrize('healthy', [False, True])
-def test_deployment_commits_actual_port_only_after_wss_and_runtime_health(monkeypatch, tmp_path, healthy):
+@pytest.mark.parametrize('rotate', [False, True])
+def test_deployment_commits_actual_port_only_after_wss_and_runtime_health(monkeypatch, tmp_path, healthy, rotate):
     pytest.importorskip('paramiko')
     import agent_deploy
     import ws_client
     import ssh_support
     calls, commits, firewall = [], [], []
+    monkeypatch.setattr(agent_deploy.secrets,'token_urlsafe',lambda n:'rotated-test-token')
+    expected_token='rotated-test-token' if rotate else 'local-only-token'
     # Deployment uploads the agent via SFTP over a verified SSH connection.
     # Simulate the remote file system instead of contacting localhost:22.
     class RemoteWriter:
@@ -485,7 +490,7 @@ def test_deployment_commits_actual_port_only_after_wss_and_runtime_health(monkey
     monkeypatch.setattr(agent_deploy, 'privileged_script', lambda command: command)
     monkeypatch.setattr(agent_deploy.asyncio, 'sleep', AsyncMock())
     async def request(self, ip, port, token, payload, **kwargs):
-        assert port == 9090 and token == 'local-only-token'
+        assert port == 9090 and token == expected_token
         assert kwargs['tls_certificate'] == 'test-certificate'
         return {'status': 'Online', 'capabilities': {'xray_ready': healthy}}
     monkeypatch.setattr(ws_client.WebSocketPool, 'request', request)
@@ -499,10 +504,10 @@ def test_deployment_commits_actual_port_only_after_wss_and_runtime_health(monkey
     monitor = types.SimpleNamespace(_run_ssh_command=run, get_bot_public_ip=lambda: '8.8.8.8',
         whitelist_bot_ip=lambda *args: (firewall.append(args) or (True, 'rule accepted')))
     db = types.SimpleNamespace(get_or_create_agent_token=lambda *args: 'local-only-token',
-        store_agent_certificate=lambda *args: commits.append(args), execute=lambda *args, **kwargs: None)
-    ok, detail = agent_deploy.deploy_agent(monitor, db, '127.0.0.1', 22, 'audit', 'local-only', 9090)
+        store_agent_certificate=lambda *args, **kwargs: commits.append((args,kwargs)), execute=lambda *args, **kwargs: None)
+    ok, detail = agent_deploy.deploy_agent(monitor, db, '127.0.0.1', 22, 'audit', 'local-only', 9090,rotate_token=rotate)
     assert ok == healthy, detail
-    assert commits == ([('127.0.0.1', 22, 'test-certificate', 9090)] if healthy else [])
+    assert commits == ([(('127.0.0.1',22,'test-certificate',9090),{'token':expected_token} if rotate else {})] if healthy else [])
     assert firewall[0][-1] == 9090
     if not healthy:
         rollback = next(command for command in calls if "<<'SONAR_ROLLBACK'" in command)
@@ -510,7 +515,7 @@ def test_deployment_commits_actual_port_only_after_wss_and_runtime_health(monkey
         backup = tmp_path / 'backup'
         backup.mkdir()
         # A root installation has a service unit but no diagnostic sudoers file.
-        (backup / '7').write_text('[Service]\n')
+        (backup / '8').write_text('[Service]\n')
         for prefix in ('/opt/', '/etc/', '/usr/local/'):
             rollback_code = rollback_code.replace(prefix, str(tmp_path) + prefix)
         from unittest.mock import patch
@@ -532,7 +537,7 @@ def test_deployment_commits_actual_port_only_after_wss_and_runtime_health(monkey
     exec(compile(env_source, 'generated-agent-env', 'exec'), {})
     parsed = dict(line.split('=', 1) for line in env_file.read_text().splitlines())
     assert parsed['SONAR_XRAY_SHA256'] == 'custom-pin'
-    assert parsed['SONAR_AGENT_TOKEN'] == 'local-only-token'
+    assert parsed['SONAR_AGENT_TOKEN'] == expected_token
     assert env_file.stat().st_mode & 0o777 == 0o600
     syntax = subprocess.run(['bash', '-n'], input=unit, text=True, capture_output=True)
     assert syntax.returncode == 0, syntax.stderr
@@ -595,6 +600,8 @@ def test_server_wizard_preserves_custom_port_for_background_install():
 
 
 def test_monitor_job_persists_down_streak_and_recovery(monkeypatch):
+    import notification_api
+    monkeypatch.setattr(notification_api,'claim_sample',lambda *a:True)
     observations, persisted_states = [], []
     notify = AsyncMock(return_value=True)
     health = [{'status': 'Offline', 'error': 'test failure'}] * 3 + [

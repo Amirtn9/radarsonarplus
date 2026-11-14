@@ -42,7 +42,7 @@
         ['آدرس سرور',info.ip],['پورت SSH',metric(info.port)],['پورت Agent',metric(info.ws_port)],
         ['وضعیت سرور',info.last_status],['وضعیت Agent',info.last_agent_status],
          ['ثبت TLS',info.tls_enrolled?'گواهی ثبت و تأیید شده':'ثبت نشده / نیازمند تعمیر'],
-        ['CPU',metric(info.last_cpu,'٪')],['RAM',metric(info.last_ram,'٪')],['Disk',metric(info.last_disk,'٪')],
+        ['سیستم‌عامل',info.telemetry?.os_name?info.telemetry.os_name+' '+(info.telemetry.os_release||''):'نامشخص'],['نسخه Agent',info.telemetry?.agent_version||'نامشخص'],['دیسک آزاد',info.telemetry?.disk_free_bytes==null?'نامشخص':(info.telemetry.disk_free_bytes/1073741824).toFixed(2)+' GiB'],['CPU',metric(info.last_cpu,'٪')],['RAM',metric(info.last_ram,'٪')],['Disk',metric(info.last_disk,'٪')],
         ['آخرین نمونه',localTime(info.last_checked_at)],['آخرین اتصال Agent',localTime(info.agent_last_seen)],
         ['محل سرور',info.location_type||'—'],['گروه',info.group_id??'بدون گروه']
       ]));
@@ -65,7 +65,7 @@
       const info=await request(`/api/console/configs/${id}`);if(!isCurrent('config',id,serial))return;
       host.replaceChildren();setHeading(host,'🔗',info.name,`شناسه کانفیگ: ${id} · ${info.type}`);
       host.append(pairs([['وضعیت تست',info.last_status],['پینگ',metric(info.last_ping,' ms')],['جیتر',metric(info.last_jitter,' ms')],['امتیاز',metric(info.quality_score,'/100')],['آپلود',info.last_speed_up],['دانلود',info.last_speed_down],['تاریخ اضافه‌شدن',info.added_at||'نامشخص']]));
-      host.append(node('p','لینک و مشخصات محرمانه کانفیگ در وب نمایش داده نمی‌شود. تنظیمات و تست عملیاتی از داخل ربات تلگرام قابل انجام است.','info-strip'));
+      host.append(node('p','لینک و مشخصات محرمانه کانفیگ در وب نمایش داده نمی‌شود. آزمون عملیاتی و توقف پایش از همین صفحه یا ربات تلگرام قابل انجام است.','info-strip'));
     }catch(err){if(isCurrent('config',id,serial))empty(host,err.message);}
   }
   async function loadChannels(){
@@ -106,5 +106,5 @@
   byId('channels-refresh')?.addEventListener('click',loadChannels);
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshVisible();});
   window.setInterval(refreshVisible,15000);
-  window.SonarConsole={openDetails,loadServer,loadConfig,loadChannels,loadRecent,currentServerId:()=>active.kind==='server'?active.id:null};
+  window.SonarConsole={setActive:(kind,id)=>{active.kind=kind;active.id=id;},openDetails,loadServer,loadConfig,loadChannels,loadRecent,currentServerId:()=>active.kind==='server'?active.id:null,currentConfigId:()=>active.kind==='config'?active.id:null};
 })();

@@ -110,7 +110,7 @@ def test_parallel_startup_and_upgrade_preserve_existing_rows(isolated_database):
     from schema_migrations import run_startup_migrations
     assert run_startup_migrations(db) == []
     assert db.execute('SELECT full_name FROM users WHERE user_id=901', fetch='one')['full_name'] == 'preserve me'
-    assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 15
+    assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 18
 
 
 def test_upgrade_from_695_schema_and_failed_migration_preserve_credentials(isolated_database,monkeypatch,tmp_path):
@@ -149,7 +149,7 @@ def test_upgrade_from_695_schema_and_failed_migration_preserve_credentials(isola
         with pytest.raises(psycopg2.errors.DivisionByZero):schema_migrations.run_startup_migrations(db)
     assert db.execute("SELECT COUNT(*) n FROM information_schema.columns WHERE table_name='pro_application_logs' AND column_name='event_id'",fetch='one')['n']==0
     assert db.execute('SELECT COUNT(*) n FROM sonar_schema_migrations WHERE version=14',fetch='one')['n']==0
-    assert schema_migrations.run_startup_migrations(db)==['log_reliability','web_login_security']
+    assert schema_migrations.run_startup_migrations(db)==['log_reliability','web_login_security','billing','independent_quotas','account_controls']
     assert db.execute('SELECT full_name FROM users WHERE user_id=901',fetch='one')['full_name']=='upgrade owner'
     saved=db.execute('SELECT password FROM servers WHERE id=%s',(server,),fetch='one')['password']
     assert saved==credential and security.decrypt(saved)=='synthetic-preserved-password'

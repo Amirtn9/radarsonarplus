@@ -63,10 +63,13 @@ def server_health(store,actor,owner):
     return [dict(x) for x in store.db.execute(sql,(owner,),fetch='all')]
 
 
-def generate_pdf(actor,owner=None):
+def generate_pdf(actor,owner=None,store=None):
     from weasyprint import HTML
     from weasyprint.text.fonts import FontConfiguration
-    store=ProStore();owner=store.workspace(actor,owner)
+    store=store or ProStore();owner=store.workspace(actor,owner)
+    from billing import Billing
+    subscription=Billing(store.db).subscription(owner)
+    if subscription and subscription['snapshot'].get('features',{}).get('advanced_reports') is False:raise PermissionError('Advanced reports are disabled for this plan')
     summary=store.summary(actor,owner)
     rankings=store.rankings(actor,owner,20)
     incidents=store.incidents(actor,owner,'unresolved',20)

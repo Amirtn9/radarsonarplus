@@ -47,7 +47,23 @@ GROUP_ID = (re.compile(r'^delgroup_(\d+)$'),)
 CHANNEL_ID = (re.compile(r'^delchan_(\d+)$'),)
 
 
-def _access_sync(uid, data, callback_name):
+_READ_CALLBACK=re.compile(r'^(?:v6_(?:home|return|servers|configs|monitor|tools|settings|account|guide|lesson_[a-z-]+_\d+)|pro_(?:home|favorites|rank|incidents|tags|prefs|find_help|team|audit|report|insights|rules|list_(?:server|config)_\d+|export_(?:rank|server|pdf))|detail_\d+(?:_.*)?|conf_detail_\d+(?:_.*)?|tunnel_list_menu|gen_web_token|wallet_menu|channels_menu|settings_menu)$')
+
+def team_callback_allowed(role,data,name,module):
+    if role in ('owner','manager','technical'):return True
+    if _READ_CALLBACK.fullmatch(data or ''):return True
+    if name in ('help_command','show_profile','history','find','team','home','pdf_report'):return True
+    if role=='server' and module=='bot_logic_mod.servers':
+        if name in ('ask_terminal_command','run_terminal_action'):return False
+        if data.startswith('act_'):
+            try:return parse_server_action(data)[0] in ('del','editexpiry','chart')
+            except ValueError:return False
+        return True
+    if role=='monitor' and module=='service_bot':return True
+    return False
+
+
+def _access_sync(uid, data, callback_name,callback_module=""):
     db = Database()
     if not uid:
         return False
@@ -61,7 +77,15 @@ def _access_sync(uid, data, callback_name):
         if uid != SUPER_ADMIN_ID and not db.owns_resource('servers', sid, uid):
             return False
     if uid != SUPER_ADMIN_ID:
-        allowed, _ = db.check_access(uid, SUPER_ADMIN_ID)
+        if callable(getattr(db,'workspace_owner',None)):
+            owner=db.workspace_owner(uid)
+            if owner!=uid:
+                from pro_store import ProStore
+                role=ProStore(db).role(uid,owner)
+                if not team_callback_allowed(role,data or '',callback_name,callback_module):return False
+        if data in ('gen_web_token','v6_account','wallet_menu','pro_home'):
+            allowed,_=getattr(db,'check_read_access',db.check_access)(uid)
+        else:allowed, _ = db.check_access(uid, SUPER_ADMIN_ID)
         if not allowed:
             return False
         if data:
@@ -71,6 +95,7 @@ def _access_sync(uid, data, callback_name):
                     hit = pattern.match(data)
                     if hit and not db.owns_resource(table, int(hit.group(1)), uid):
                         return False
+    if callable(getattr(db,'execute',None)):db.execute('UPDATE users SET last_active_at=NOW() WHERE user_id=%s',(uid,))
     return True
 
 
@@ -81,7 +106,7 @@ async def _is_allowed(update, callback):
     uid = getattr(getattr(update, 'effective_user', None), 'id', None)
     data = getattr(getattr(update, 'callback_query', None), 'data', '') or ''
     try:
-        return await asyncio.to_thread(_access_sync, uid, data, getattr(callback, '__name__', ''))
+        return await asyncio.to_thread(_access_sync, uid, data, getattr(callback, '__name__', ''),getattr(callback,'__module__',''))
     except Exception:
         log.exception('Authorization failed closed')
         return False

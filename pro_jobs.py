@@ -77,12 +77,12 @@ def _select_configs(uid):
         cur.execute('SELECT last_id FROM pro_job_cursors WHERE name=%s FOR UPDATE',(key,))
         last=int(cur.fetchone()['last_id'])
         cur.execute("""SELECT id,link FROM tunnel_configs
-            WHERE owner_id=%s AND type IN ('single','sub_item','json') AND id>%s
+            WHERE owner_id=%s AND monitoring_enabled=TRUE AND sonar_monitor_allowed(owner_id,'configs',id) AND type IN ('single','sub_item','json') AND id>%s
             ORDER BY id LIMIT 8""",(uid,last))
         rows=[dict(r) for r in cur.fetchall()]
         if len(rows)<8:
             cur.execute("""SELECT id,link FROM tunnel_configs
-                WHERE owner_id=%s AND type IN ('single','sub_item','json') AND id<=%s
+                WHERE owner_id=%s AND monitoring_enabled=TRUE AND sonar_monitor_allowed(owner_id,'configs',id) AND type IN ('single','sub_item','json') AND id<=%s
                 ORDER BY id LIMIT %s""",(uid,last,8-len(rows)))
             rows.extend(dict(r) for r in cur.fetchall())
         if rows:
@@ -101,7 +101,8 @@ def _parse_speed(v):
     except (ValueError,OverflowError):return None
 
 
-def _record(uid,cid,region,data):
+def _record(uid,cid,region,data,pro=None,expected_revision=None):
+    pro=pro or store
     if not isinstance(data,dict) or data.get('status') not in ('OK','Fail'):
         return None
     ok=isinstance(data,dict) and data.get('status')=='OK'
@@ -112,7 +113,12 @@ def _record(uid,cid,region,data):
     if ok and (ping is None or jitter is None or not math.isfinite(ping) or not math.isfinite(jitter) or ping<=0 or jitter<0):
         return None
     # The displayed latest status and its history sample commit together.
-    with store.db.get_connection() as (conn,cur):
+    with pro.db.get_connection() as (conn,cur):
+        if expected_revision is not None:
+            cur.execute('SELECT id FROM tunnel_configs WHERE id=%s AND owner_id=%s AND config_revision=%s FOR UPDATE',(cid,uid,expected_revision))
+            if not cur.fetchone():
+                from user_errors import UserError
+                raise UserError('CONFIG_CHANGED_DURING_PROBE')
         cur.execute('''INSERT INTO pro_metrics(owner_id,config_id,region,ok,ping,jitter,down_mbps,up_mbps)
             SELECT owner_id,id,%s,%s,%s,%s,%s,%s FROM tunnel_configs WHERE id=%s AND owner_id=%s''',
             (str(region)[:80],ok,ping,jitter,_parse_speed(data.get('down')) if ok else None,
@@ -126,16 +132,16 @@ def _record(uid,cid,region,data):
              (f"{data['down']} Mbps" if isinstance(data.get('down'),(int,float)) else str(data['down'])) if data.get('down') is not None else None,
              (f"{data['up']} Mbps" if isinstance(data.get('up'),(int,float)) else str(data['up'])) if data.get('up') is not None else None,cid,uid))
         conn.commit()
-    with store.db.get_connection() as(conn,cur):
+    with pro.db.get_connection() as(conn,cur):
         cur.execute('''SELECT ok FROM pro_metrics WHERE owner_id=%s AND config_id=%s AND region=%s
                        ORDER BY id DESC LIMIT 2''',(uid,cid,region))
         latest=cur.fetchall()
     # Two consecutive failures required to raise; first success resolves.
     incident_key='probe_'+hashlib.sha256(region.encode()).hexdigest()[:12]
     if ok:
-        return store.incident(uid,'config',cid,incident_key,f'اختلال کانفیگ #{cid}',active=False)
+        return pro.incident(uid,'config',cid,incident_key,f'اختلال کانفیگ #{cid}',active=False)
     if len(latest)>=2 and not latest[0]['ok'] and not latest[1]['ok']:
-        return store.incident(uid,'config',cid,incident_key,f'اختلال کانفیگ #{cid} از {region}',severity='warning')
+        return pro.incident(uid,'config',cid,incident_key,f'اختلال کانفیگ #{cid} از {region}',severity='warning')
     return None
 
 

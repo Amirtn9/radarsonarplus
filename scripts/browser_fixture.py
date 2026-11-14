@@ -59,7 +59,10 @@ def main(port):
         async def idle(*args):await args[-1].wait()
         def idle_sync(*args):
             while not args[-1].is_set():time.sleep(.05)
-        import enterprise_runtime,web_reporting,web_agent_jobs,log_purge
+        import enterprise_runtime,web_reporting,web_agent_jobs,log_purge,billing_delivery,service_jobs
+        async def idle_billing(db,stop,get_token):await stop.wait()
+        billing_delivery.worker=idle_billing
+        service_jobs.web_worker=idle_billing
         async def synthetic_observations(db,stop):
             import asyncio
             while not stop.is_set():
