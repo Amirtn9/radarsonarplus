@@ -282,7 +282,6 @@ def test_web_miniapp_authentication_tenancy_and_pdf(isolated_database, monkeypat
     monkeypatch.setattr(web_reporting,'observation_worker',idle_collector)
     import pro_portal
     monkeypatch.setattr(pro_portal.store, 'db', db)
-    pro_portal.get_bot_token.cache_clear()
     with TestClient(pro_portal.app, base_url='https://testserver') as client:
         assert client.get('/healthz').status_code == 200
         assert client.get('/readyz').status_code == 200
@@ -561,3 +560,55 @@ def test_bot_instance_lease_excludes_duplicate_token_and_releases(isolated_datab
             with bot_instance_lock(db,'synthetic-poller-token'):pass
         with bot_instance_lock(db,'synthetic-other-token'):pass
     with bot_instance_lock(db,'synthetic-poller-token'):pass
+
+
+def test_csrf_read_is_stable_across_tabs_and_preserves_issued_proof(isolated_database, monkeypatch):
+    from fastapi.testclient import TestClient
+    from schema_migrations import run_startup_migrations
+    from web_login import create_session, digest
+    import pro_portal
+    db, _ = isolated_database
+    run_startup_migrations(db)
+    monkeypatch.setattr(pro_portal.store, 'db', db)
+    monkeypatch.setattr(db, 'check_access', lambda uid: (True, ''))
+    monkeypatch.setattr(db, 'workspace_owner', lambda uid: uid)
+    monkeypatch.setattr(pro_portal.store, 'set_preference', lambda *args: None)
+    monkeypatch.setenv('SONAR_WEB_ORIGIN', 'https://testserver')
+    session, issued = create_session(db, 901)
+    client = TestClient(pro_portal.app, base_url='https://testserver')
+    client.cookies.set('sonar_web_session', session)
+    before = db.execute('SELECT csrf_hash FROM sonar_web_sessions WHERE token_hash=%s', (digest(session),), fetch='one')
+    first = client.get('/api/web/csrf').json()['csrf']
+    second = client.get('/api/web/csrf').json()['csrf']
+    assert first == second and first != session
+    after = db.execute('SELECT csrf_hash FROM sonar_web_sessions WHERE token_hash=%s', (digest(session),), fetch='one')
+    assert after == before
+    for proof in (issued, first, second):
+        response = client.post('/api/preferences', json={'key': 'daily_digest', 'value': True},
+                               headers={'Origin': 'https://testserver', 'X-CSRF-Token': proof})
+        assert response.status_code == 200, response.text
+    for proof in ('', 'x' * 64, session):
+        assert client.post('/api/preferences', json={'key': 'daily_digest', 'value': True},
+                           headers={'Origin': 'https://testserver', 'X-CSRF-Token': proof}).status_code == 403
+    assert client.post('/api/web/logout', headers={'Origin': 'https://testserver', 'X-CSRF-Token': first}).status_code == 200
+    assert client.get('/api/web/csrf').status_code == 401
+
+
+def test_statistics_tehran_labels_do_not_depend_on_database_timezone(isolated_database, monkeypatch):
+    from datetime import datetime, timezone
+    db, _ = isolated_database
+    sid = db.execute("INSERT INTO servers(owner_id,name,ip) VALUES(901,'timezone test','192.0.2.1') RETURNING id", fetch='one')['id']
+    moment = datetime.now(timezone.utc).replace(minute=15, second=0, microsecond=0)
+    db.execute('INSERT INTO server_stats(server_id,cpu,created_at) VALUES(%s,20,%s)', (sid, moment.replace(tzinfo=None)))
+    def in_timezone(zone):
+        def execute(query, params, fetch):
+            with db.get_connection() as (_, cur):
+                cur.execute("SELECT set_config('TimeZone',%s,true)", (zone,))
+                cur.execute(query, params)
+                return cur.fetchall()
+        monkeypatch.setattr(db, 'execute', execute)
+        return db.get_server_stats(sid)[0]['time_str']
+    from zoneinfo import ZoneInfo
+    expected = moment.astimezone(ZoneInfo('Asia/Tehran')).strftime('%H:%M')
+    assert in_timezone('UTC') == expected
+    assert in_timezone('America/New_York') == expected

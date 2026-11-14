@@ -1,6 +1,7 @@
 """One callback grammar and capability policy for UI and execution boundaries."""
 import re
 import math
+from user_errors import UserError
 from urllib.parse import urlsplit
 
 SERVER_ACTIONS = frozenset({
@@ -52,7 +53,7 @@ def valid_subscription_url(value):
     except ValueError:
         valid = False
     if not valid or len(value) > 8192:
-        raise ValueError('لینک اشتراک باید HTTPS با پورت 443، 8443، 2096، 2053، 2083 یا 2087 و بدون نام کاربری یا رمز باشد.')
+        raise UserError('لینک اشتراک باید HTTPS با پورت 443، 8443، 2096، 2053، 2083 یا 2087 و بدون نام کاربری یا رمز باشد.')
     return value
 
 
@@ -60,11 +61,11 @@ def monitoring_setting(kind, value):
     if kind == 'int':
         result = int(value)
         if not 10 <= result <= 1440:
-            raise ValueError('فاصلهٔ تست باید بین 10 تا 1440 دقیقه باشد.')
+            raise UserError('فاصلهٔ تست باید بین 10 تا 1440 دقیقه باشد.')
     elif kind in ('small', 'big'):
         result = float(value)
         if not math.isfinite(result) or not 0 <= result <= 10:
-            raise ValueError('حجم تست باید بین 0 تا 10 مگابایت باشد؛ 0 یعنی فقط پینگ.')
+            raise UserError('حجم تست باید بین 0 تا 10 مگابایت باشد؛ 0 یعنی فقط پینگ.')
     else:
-        raise ValueError('تنظیم ناشناخته است.')
+        raise UserError('تنظیم ناشناخته است.')
     return result

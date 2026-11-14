@@ -3,7 +3,6 @@ No new SSH command, payment gateway, router, or WebSocket transport is created.
 """
 from __future__ import annotations
 import ipaddress
-from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -313,11 +312,10 @@ def make_router(store,actor,guarded,admin_id):
             existing=store.db.execute('''SELECT id FROM tunnel_configs
                 WHERE owner_id=%s AND type=%s AND link=%s''',(owner,body.kind,link),fetch='one')
             if existing:raise ValueError('This configuration already exists')
-            now=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             row=store.db.execute('''INSERT INTO tunnel_configs
                 (owner_id,type,link,name,added_at,quality_score,last_status)
-                VALUES(%s,%s,%s,%s,%s,0,'Pending') RETURNING id''',
-                (owner,body.kind,link,body.name,now),fetch='one')
+                VALUES(%s,%s,%s,%s,to_char(NOW() AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS'),0,'Pending') RETURNING id''',
+                (owner,body.kind,link,body.name),fetch='one')
             return int(row['id'])
         config_id=await guarded(save)
         return {'id':config_id,'status':'pending','message':'Registered. No connectivity test has been performed.'}

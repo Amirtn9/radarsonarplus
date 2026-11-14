@@ -1,4 +1,4 @@
-> نسخه جاری **۶.۹.۷** (`6.9.10`): [اعتبارسنجی CI، سازگاری Python و اصلاح ثبت لاگ](docs/RELEASE_6_9_10_FA.md).
+> نسخه جاری **۶.۹.۱۰** (`6.9.10`): [اعتبارسنجی CI، سازگاری Python و اصلاح ثبت لاگ](docs/RELEASE_6_9_10_FA.md).
 
 <div align="center">
   <img src="assets/sonar-radar-logo.png" alt="SONAR RADAR logo" width="240" />

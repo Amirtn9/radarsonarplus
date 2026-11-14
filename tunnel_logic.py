@@ -23,7 +23,7 @@ import json
 import asyncio
 import html
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from psycopg2.extras import execute_values
 
@@ -227,7 +227,7 @@ class TunnelLogic:
         return select_monitor_row(self.db,int(uid or SUPER_ADMIN_ID),SUPER_ADMIN_ID)
 
     def _register_sub_source(self, uid, sub_link, sub_name):
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
         with self.db.get_connection() as (conn, cur):
             cur.execute(
                 """INSERT INTO tunnel_configs (owner_id, type, link, name, added_at, quality_score)
@@ -289,7 +289,7 @@ class TunnelLogic:
 
         # Bounded tests. Failed connections can NEVER prune source membership.
         results = await asyncio.gather(*[_one(item) for item in unique.values()], return_exceptions=True)
-        now_dt = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        now_dt = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
         rows, report_lines = [], []
         counts = {'OK':0, 'Fail':0, 'Unknown':0}
         for item, data in zip(unique.values(), results):

@@ -3,11 +3,23 @@ Fresh Telegram initData can be exchanged for an HttpOnly session cookie.
 """
 from __future__ import annotations
 import hashlib
+import hmac
 import secrets
 from datetime import datetime, timezone
 
 
 def digest(s):return hashlib.sha256(s.encode('ascii')).hexdigest()
+
+
+def csrf_proof(session):
+    """Recover a stable, domain-separated proof without storing the cookie token.
+
+    The session remains HttpOnly. This proof cannot be used as a session cookie.
+    Existing randomly issued proofs remain valid until their session expires.
+    """
+    if not valid_token(session):
+        raise ValueError('Invalid session token')
+    return hmac.new(session.encode('ascii'), b'sonar-web-csrf-v1', hashlib.sha256).hexdigest()
 
 
 def valid_token(value, minimum=28, maximum=128):

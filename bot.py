@@ -3,6 +3,7 @@ import logging
 import json
 import asyncio
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 # 🔴 لاگینگ باید همین اول، قبل از import هر ماژول دیگه‌ی پروژه، یک‌بار
 # و فقط یک‌بار تنظیم بشه. قبلاً هم اینجا و هم داخل dispatcher.py صدا زده
@@ -205,7 +206,7 @@ def main():
         app.job_queue.run_once(cronjobs.system_startup_notification, when=2)
         app.job_queue.run_once(cronjobs.startup_whitelist_job, when=15)
         app.job_queue.run_once(cronjobs.send_startup_topic_test, when=10)
-        app.job_queue.run_daily(cronjobs.check_expiry_job, time=dt.time(hour=8, minute=30, second=0))
+        app.job_queue.run_daily(cronjobs.check_expiry_job, time=dt.time(hour=8, minute=30, second=0, tzinfo=ZoneInfo('Asia/Tehran')))
         from workspace_service import workspace_alert_job
         app.job_queue.run_repeating(workspace_alert_job, interval=10, first=15,
                                     job_kwargs={'max_instances':1, 'coalesce':True})
@@ -226,7 +227,7 @@ def main():
                                     job_kwargs={'max_instances': 1, 'coalesce': True})
         app.job_queue.run_repeating(digest_job, interval=3600, first=360,
                                     job_kwargs={'max_instances': 1, 'coalesce': True})
-        app.job_queue.run_daily(cleanup_job, time=dt.time(hour=3, minute=0))
+        app.job_queue.run_daily(cleanup_job, time=dt.time(hour=3, minute=0, tzinfo=ZoneInfo('Asia/Tehran')))
         from monitor_fleet import fleet_heartbeat_job, fleet_install_job
         app.job_queue.run_repeating(fleet_install_job, interval=35, first=50,
                                     job_kwargs={'max_instances':1,'coalesce':True})

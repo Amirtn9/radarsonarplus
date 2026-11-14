@@ -607,7 +607,6 @@ class Database:
             if current >= self.workspace_server_limit(owner_id):
                 return -1
 
-        now = self.get_tehran_datetime().strftime('%Y-%m-%d %H:%M:%S')
         loc = data.get('location_type', 'ext')
 
         password = data['password']
@@ -621,8 +620,8 @@ class Database:
         with self.get_connection() as (conn, cur):
             try:
                 cur.execute(
-                    'INSERT INTO servers (owner_id, group_id, name, ip, port, username, password, expiry_date, location_type, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id',
-                    (owner_id, g_id, data['name'], data['ip'], data['port'], data['username'], password, data. get('expiry_date'), loc, now)
+                    "INSERT INTO servers (owner_id, group_id, name, ip, port, username, password, expiry_date, location_type, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,to_char(NOW() AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS')) RETURNING id",
+                    (owner_id, g_id, data['name'], data['ip'], data['port'], data['username'], password, data. get('expiry_date'), loc)
                 )
                 server_id = cur.fetchone()['id']
                 ws_port = int(data.get('ws_port') or AGENT_PORT)
@@ -791,7 +790,7 @@ class Database:
 
     def get_server_stats(self, server_id):
         return self.execute("""SELECT cpu,ram,disk,traffic_gb,bytes_sent,bytes_recv,uptime_sec,created_at,
-            to_char(created_at+INTERVAL '3 hours 30 minutes','HH24:MI') time_str
+            to_char(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Tehran','HH24:MI') time_str
             FROM server_stats WHERE server_id=%s AND created_at>=NOW()-INTERVAL '30 days'
             ORDER BY created_at ASC""",(int(server_id),),fetch='all')
 

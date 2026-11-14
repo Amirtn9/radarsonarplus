@@ -4,6 +4,7 @@ Section: tunnels
 """
 
 from bot_logic_mod.base import *  # noqa
+from datetime import timezone
 from runtime import spawn_background
 from monitor_fleet import select_monitor_in_cursor
 from access_policy import valid_subscription_url, monitoring_setting
@@ -418,7 +419,7 @@ async def handle_single_config_auto(update: Update, context: ContextTypes.DEFAUL
             data = extract_safe_json(output)
             
             if ok and data and (data.get('status') == 'OK' or 'protocol' in data):
-                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
                 final_name = data.get('extracted_name', f"Config_{int(time.time())}").replace('+', ' ').strip()
                 score = data.get('score', 0)
                 ping = data.get('ping', 0)
@@ -548,7 +549,7 @@ async def handle_config_type_selection(update: Update, context: ContextTypes.DEF
                 data = extract_safe_json(output)
                 
                 if ok and data:
-                    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
                     
                     if data.get('status') == 'OK' or data.get('extracted_name') or 'protocol' in data:
                         # استخراج نام

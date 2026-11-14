@@ -12,7 +12,7 @@ import hmac
 import os
 from pathlib import Path
 from datetime import datetime, timezone
-from functools import lru_cache
+from typing import Literal
 from fastapi import FastAPI, Depends, HTTPException, Header, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
@@ -23,11 +23,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import secrets
 import time
-from web_login import digest as session_digest, redeem, create_session, identify, logout, logout_all, allow_login_attempt, release_login_attempt
+from web_login import digest as session_digest, csrf_proof, redeem, create_session, identify, logout, logout_all, allow_login_attempt, release_login_attempt
 from subscription_health import summaries as subscription_summaries
 from pro_auth import verify_init_data
 from pro_store import ProStore
 from service_monitor import ServiceStore
+from user_errors import UserError
 
 log=logging.getLogger(__name__)
 BASE=Path(__file__).resolve().parent
@@ -47,7 +48,6 @@ store=ProStore()
 service_store=ServiceStore(store)
 
 
-@lru_cache(maxsize=1)
 def get_bot_token():
     value=os.environ.get('SONAR_BOT_TOKEN','')
     if value:return value
@@ -97,7 +97,9 @@ async def actor(request:Request,authorization:str=Header(default='')):
                 raise HTTPException(status_code=403,detail='Origin check failed')
             sent=request.headers.get('x-csrf-token','')
             from web_login import valid_token
-            if not valid_token(sent) or not secrets.compare_digest(session_digest(sent),session_data['csrf_hash']):
+            if not valid_token(sent) or not (
+                    secrets.compare_digest(session_digest(sent),session_data['csrf_hash']) or
+                    secrets.compare_digest(sent,csrf_proof(session))):
                 raise HTTPException(status_code=403,detail='CSRF validation failed')
     try:
         allowed,_=await asyncio.to_thread(store.db.check_access,uid)
@@ -114,6 +116,7 @@ async def actor(request:Request,authorization:str=Header(default='')):
 
 async def guarded(fn,*args,**kwargs):
     try:return await asyncio.to_thread(fn,*args,**kwargs)
+    except UserError as exc:raise HTTPException(status_code=400,detail=str(exc)) from None
     except PermissionError:raise HTTPException(status_code=403,detail='Not authorized')
     except ValueError:raise HTTPException(status_code=400,detail='Invalid request')
 
@@ -145,7 +148,11 @@ async def headers(request:Request,call_next):
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['Referrer-Policy']='no-referrer'
     response.headers['X-Frame-Options']='SAMEORIGIN'
-    response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self' https://telegram.org; style-src 'self'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'self' https://web.telegram.org https://*.telegram.org"
+    response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=()'
+    response.headers['Cross-Origin-Opener-Policy']='same-origin'
+    if request.url.scheme=='https':
+        response.headers['Strict-Transport-Security']='max-age=31536000'
+    response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self' https://telegram.org; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://web.telegram.org https://*.telegram.org"
     return response
 
 
@@ -239,12 +246,14 @@ async def miniapp_session(request:Request,response:Response,authorization:str=He
 @app.get('/api/web/csrf')
 async def refresh_csrf(request:Request,uid:int=Depends(actor)):
     session=request.cookies.get('sonar_web_session','')
-    if not session:raise HTTPException(status_code=400,detail='Not a website session')
-    new=secrets.token_urlsafe(32)
-    await asyncio.to_thread(store.db.execute,
-      'UPDATE sonar_web_sessions SET csrf_hash=%s WHERE token_hash=%s AND user_id=%s',
-      (session_digest(new),session_digest(session),uid))
-    return {'csrf':new}
+    from web_login import valid_token
+    if not valid_token(session):raise HTTPException(status_code=400,detail='Not a website session')
+    # Signed Telegram auth may coexist with a cookie for a different account.
+    # Only return the proof for an active cookie owned by this authenticated user.
+    session_data=await asyncio.to_thread(identify,store.db,session)
+    if not session_data or int(session_data['user_id'])!=uid:
+        raise HTTPException(status_code=403,detail='Website session does not match account')
+    return {'csrf':csrf_proof(session)}
 
 @app.post('/api/web/logout')
 async def web_logout(request:Request,response:Response,uid:int=Depends(actor)):
@@ -357,12 +366,12 @@ async def subscription_overview(uid:int=Depends(actor)):
 async def rankings(uid:int=Depends(actor),owner:int|None=None):return await guarded(store.rankings,uid,owner,30)
 
 @app.get('/api/metrics/{config_id}')
-async def metrics(config_id:int,uid:int=Depends(actor),owner:int|None=None,days:int=7):
+async def metrics(config_id:int,uid:int=Depends(actor),owner:int|None=None,days:int=Query(default=7,ge=1,le=30)):
     rows=await guarded(store.history,uid,config_id,owner,days)
     return [dict(r) for r in rows]
 
 @app.get('/api/incidents')
-async def incidents(uid:int=Depends(actor),owner:int|None=None,status:str='unresolved'):
+async def incidents(uid:int=Depends(actor),owner:int|None=None,status:Literal['unresolved','open','acknowledged','resolved','all']='unresolved'):
     return await guarded(store.incidents,uid,owner,status)
 
 @app.get('/api/notifications/delivery')

@@ -4,6 +4,7 @@ Section: configs
 """
 
 from bot_logic_mod.base import *  # noqa
+from datetime import timezone
 from access_policy import valid_subscription_url
 
 # 📝 CONFIG MANAGEMENT (NEW GRAPHICAL MENU)
@@ -76,7 +77,7 @@ async def process_json_config(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         # ذخیره در دیتابیس (کانفیگ را فشرده می‌کنیم)
         minified_json = json.dumps(data)
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
         with db.get_connection() as (conn, cur):
             # استفاده از %s برای پستگرس
@@ -161,7 +162,7 @@ async def process_sub_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await msg.edit_text(f"✅ **{count} کانفیگ شناسایی شد.**\n⬇️ در حال ثبت در دیتابیس...")
             
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
             
             with db.get_connection() as (conn, cur):
                 for i, cfg in enumerate(configs):

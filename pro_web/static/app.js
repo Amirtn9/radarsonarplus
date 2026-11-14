@@ -302,7 +302,7 @@ async function loadResourceChart(){
  try{
    const result=await request('/api/server-resources/'+id+'?hours='+Number($('resource-hours')?.value||24));
    if(sequence!==state.resourceRequest||Number($('resource-server').value)!==id)return;
-   const samples=Array.isArray(result.samples)?result.samples:[],last=result.latest||samples.at(-1);
+   const samples=Array.isArray(result.samples)?result.samples:[],last=result.latest||samples[samples.length-1];
    window.SonarTelemetry?.live($('resource-live'),result.server,last?.time);
    const cpu=validPercent(last?.cpu),ram=validPercent(last?.ram);
    $('resource-cpu').textContent=cpu===null?'—':cpu.toFixed(1)+'٪';
