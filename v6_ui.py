@@ -86,7 +86,7 @@ MENUS = {
  'account': ('👤 <b>حساب و همکاران</b>\n\nپروفایل، اعتبار و فضای کاری مشترک.',
     [('👤 پروفایل من','user_profile'),('💳 اعتبار و اشتراک','wallet_menu'),('👥 هم‌گروهی و فضای مشترک','ui_team_home'),('🤝 دعوت دوستان','referral_menu'),('🌐 کد ورود وب‌سایت','gen_web_token'),('💎 مرکز Pro','pro_home')]),
  'admin': ('👑 <b>مدیریت ربات</b>\n\nاین بخش فقط برای مدیر اصلی است.',
-    [('👥 مدیریت کاربران','admin_users_page_1'),('🔎 جست‌وجوی کاربر','admin_search_start'),('🖥 سرورهای کاربران','admin_all_servers_1'),('🛰 مدیریت ایجنت‌ها','admin_agent_dashboard'),('📊 ترافیک Agentها','fleet_traffic'),('📦 پشتیبان‌گیری','admin_backup_get'),('📢 پیام همگانی','admin_broadcast_start'),('⚙️ تنظیمات مدیریت','admin_panel_main'),('🩺 عیب‌یابی','v6_diag')]),
+    [('💳 اشتراک و فروش','bill_console'),('👥 مدیریت کاربران','admin_users_page_1'),('🔎 جست‌وجوی کاربر','admin_search_start'),('🖥 سرورهای کاربران','admin_all_servers_1'),('🛰 مدیریت ایجنت‌ها','admin_agent_dashboard'),('📊 ترافیک Agentها','fleet_traffic'),('📦 پشتیبان‌گیری','admin_backup_get'),('📢 پیام همگانی','admin_broadcast_start'),('⚙️ تنظیمات مدیریت','admin_panel_main'),('🩺 عیب‌یابی','v6_diag')]),
 }
 
 

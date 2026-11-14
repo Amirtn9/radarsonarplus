@@ -48,7 +48,7 @@
  }
  let installationTimer=null,installationServer=0;
  function watchInstall(serverId){installationServer=serverId;showInstallHistory(serverId);if(installationTimer)clearInterval(installationTimer);
-   installationTimer=setInterval(()=>{if(installationServer===serverId)showInstallHistory(serverId);},10000);
+   installationTimer=setInterval(()=>{if(!document.hidden&&installationServer===serverId)showInstallHistory(serverId);},10000);
  }
  id('web-server-form').addEventListener('submit',async e=>{
    e.preventDefault();const btn=e.submitter;

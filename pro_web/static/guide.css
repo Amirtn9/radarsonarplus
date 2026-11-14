@@ -112,3 +112,10 @@ details[open]>summary::after{content:'−'}details[open]{border-color:var(--acce
 @supports (backdrop-filter:blur(16px)){nav a{background:color-mix(in srgb,var(--card) 84%,transparent);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}}
 a:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
 @media(prefers-reduced-motion:reduce){.hero-actions .button,nav a,summary{transition:none}}
+/* Same quiet glass material and touch sizing as the main app. */
+:root{--bg:#edf2fa;--card:#ffffffde;--text:#172943;--muted:#526582;--border:#9db0ce57;--accent:#075dc7;--soft:#e9f2ff}
+body{background:radial-gradient(ellipse at 10% 0%,#82b9f01a,transparent 45%),var(--bg)}
+.hero{border-radius:0 0 28px 28px}.hero-actions .button,nav a{min-height:44px}nav a{display:flex;align-items:center;background:var(--card);backdrop-filter:none;-webkit-backdrop-filter:none;border:1px solid var(--border)}details,.help-card{background:var(--card);box-shadow:inset 0 1px #ffffff55,0 6px 24px #294f8008}summary{min-height:48px}#guide-search{font-size:16px;min-height:48px;border-radius:14px}.hero-actions .button{backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+@media(prefers-color-scheme:dark){:root{--bg:#0b1220;--card:#1b273be8;--text:#f3f6fc;--muted:#a9b8cf;--border:#b2caef3d;--accent:#83b7ff;--soft:#26354c}.hero{background:linear-gradient(140deg,#192d4d,#18283c)}}
+@media(prefers-reduced-transparency:reduce){.hero-actions .button{backdrop-filter:none;-webkit-backdrop-filter:none}:root{--card:var(--bg)}}
+@media(prefers-contrast:more){:root{--border:#8092ae;--muted:var(--text)}details{box-shadow:none}}

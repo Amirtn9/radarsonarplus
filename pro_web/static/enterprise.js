@@ -5,7 +5,7 @@
  const post=(path,data)=>window.SonarWebPost(path,data);
  const call=(path,method='POST',data={})=>window.SonarWebRequest(path,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
  const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=String(text);if(cls)n.className=cls;return n;};
- const btn=(label,fn,cls='')=>{const b=el('button',label,cls);b.type='button';b.addEventListener('click',fn);return b;};
+ const btn=(label,fn,cls='')=>{const b=el('button',label,cls);b.type='button';b.addEventListener('click',async event=>{if(b.disabled)return;b.disabled=true;try{await fn(event);}catch(error){toast(error.message);}finally{b.disabled=false;}});return b;};
  const line=(host,text)=>host.append(el('p',text));
  async function health(){
   const host=$('enterprise-health');if(!host)return;host.textContent='در حال دریافت...';
@@ -126,7 +126,7 @@
   }catch(e){host.textContent=e.message;}
  }
  async function load(){await Promise.all([health(),operations(),analytics(),rollouts(),sourceInfo(),incidents(),healthPolicy(true),backups(),webhooks(),tokens()]);}
- document.addEventListener('DOMContentLoaded',()=>{
+ function initialize(){
   $('enterprise-health-refresh')?.addEventListener('click',health);
   $('enterprise-analytics-refresh')?.addEventListener('click',analytics);
   $('enterprise-incidents-refresh')?.addEventListener('click',incidents);
@@ -158,6 +158,7 @@
    }catch(err){$('enterprise-agent-release-result').textContent=err.message;}
   });
   $('enterprise-agent-rollout-form')?.addEventListener('submit',async e=>{e.preventDefault();const ids=$('enterprise-agent-server-ids').value.split(',').map(x=>Number(x.trim()));if(!ids.length||ids.some(x=>!Number.isSafeInteger(x)||x<1)){toast('شناسه سرورها نامعتبر است');return;}try{await post('/api/enterprise/agent/rollouts',{release_id:Number($('enterprise-agent-release-id').value),server_ids:ids,batch_size:Number($('enterprise-agent-batch').value),canary_count:Number($('enterprise-agent-canary').value)});await rollouts();}catch(err){toast(err.message);}});
- });
+ }
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',initialize,{once:true});else initialize();
  window.SonarEnterprise={load,health,operations,analytics,rollouts,incidents,backups,webhooks,tokens};
 })();

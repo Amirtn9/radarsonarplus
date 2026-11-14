@@ -185,14 +185,14 @@ def test_web_app_initialization_and_page_switch_use_actual_input():
     script = r'''
 const fs=require('fs'),vm=require('vm');
 const elements=new Map(),calls=[];
-function element(id){return {id,textContent:'',value:'',classList:{add(){},remove(){},toggle(){}},
- addEventListener(){},replaceChildren(){},append(){},after(){},querySelector(){throw Error('An input has no child input')}}}
+function element(id){return {id,dataset:{},textContent:'',value:'',classList:{add(){},remove(){},toggle(){}},
+ addEventListener(){},setAttribute(){},removeAttribute(){},replaceChildren(){},append(){},after(){},querySelector(){throw Error('An input has no child input')}}}
 const document={getElementById(id){if(!elements.has(id))elements.set(id,element(id));return elements.get(id)},
  querySelectorAll(){return []},createElement(tag){return element(tag)}};
  const location={origin:'https://testserver',pathname:'/dashboard',search:'',hash:''};
  document.body={dataset:{}};
  const context={document,AbortController,URL,location,history:{pushState(){},replaceState(){}},window:{addEventListener(){},Telegram:{WebApp:{initData:'test',ready(){},expand(){}}},setTimeout},setTimeout,clearTimeout,
- fetch:async(path)=>{calls.push(path);return {ok:true,status:200,headers:new Headers(),json:async()=>path==='/api/summary'?{servers:{active:0,total:0},configs:{healthy:0,total:0},incidents:0}:[]}}};
+ fetch:async(path)=>{calls.push(path);return new Response(JSON.stringify(path==='/api/summary'?{servers:{active:0,total:0},configs:{healthy:0,total:0},incidents:0}:[]),{status:200,headers:{'Content-Type':'application/json'}})}};
 vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);
 setTimeout(()=>{context.choose('configs');setTimeout(()=>{
 if(!calls.some(p=>p.includes('/api/resources/config')))process.exit(2);

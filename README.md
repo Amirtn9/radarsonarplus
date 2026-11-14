@@ -275,3 +275,5 @@ python3 -m pytest -q
 راهنمای توسعه یکپارچه و پیش‌نیازهای استقرار: [گزارش فارسی](docs/INTEGRATED_PLATFORM_FA.md).
 
 گزارش اجرای بازطراحی مدیریت، پلن و مالی: [جزئیات و محدودهٔ اعتبارسنجی](docs/PRODUCT_REVIEW_IMPLEMENTATION_FA.md).
+
+بازبینی UX و طراحی شیشه‌ای: [گزارش فارسی و محدودهٔ آزمون](docs/UX_LIQUID_REVIEW_FA.md).

@@ -103,7 +103,8 @@ def test_readonly_wss_retry_and_version_consistency():
     s=(ROOT/'core.py').read_text()
     assert "payload.get('action') in ('get_stats','ping','get_info','health') else 0" in s
     assert (ROOT/'VERSION').read_text().strip() in (ROOT/'settings.py').read_text()
-    assert (ROOT/'VERSION').read_text().strip() in (ROOT/'bot_logic_mod/menu.py').read_text()
+    assert 'from settings import PROJECT_VERSION' in (ROOT/'bot_logic_mod/menu.py').read_text()
+    assert '{PROJECT_VERSION}' in (ROOT/'bot_logic_mod/menu.py').read_text()
 
 
 def test_agent_diagnostic_codes_and_no_port_lease_collision():

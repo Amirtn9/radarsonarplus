@@ -4,7 +4,7 @@
 (() => {
  const charts=new Map(),liveHosts=new Map();
  const percent=[{key:'cpu',label:'CPU',color:'#1685f8'},{key:'ram',label:'RAM',color:'#9a78ed'},{key:'disk',label:'Disk',color:'#16ac7b'}];
- function time(value){if(!value)return NaN;return Date.parse(typeof value==='string'&&!/[zZ]|[+-]\d\d:\d\d$/.test(value)?value+'Z':value);}
+ function time(value){if(!value)return NaN;if(typeof value==='number')return Number.isFinite(value)?value:NaN;const raw=typeof value==='string'?value.trim().replace(' ','T'):value;return Date.parse(typeof raw==='string'&&!/[zZ]|[+-]\d\d:\d\d$/.test(raw)?raw+'Z':raw);}
  function number(value){if(value==null||value==='')return null;const n=Number(value);return Number.isFinite(n)?n:null;}
  const format=value=>Number(value).toLocaleString('fa-IR',{maximumFractionDigits:1});
  function redraw(chart){
@@ -89,7 +89,7 @@
   chart.options=options;chart.tooltip.hidden=true;
   chart.points=values.map(p=>({...p,t:time(p.time)})).filter(p=>Number.isFinite(p.t)).sort((a,b)=>a.t-b.t);
   const current=options.latest;
-  if(current&&Number.isFinite(time(current.time))&&time(current.time)>(chart.points.at(-1)?.t||0))chart.points.push({...current,t:time(current.time)});
+  if(current&&Number.isFinite(time(current.time))&&time(current.time)>(chart.points[chart.points.length-1]?.t||0))chart.points.push({...current,t:time(current.time)});
   chart.legend.replaceChildren();
   for(const s of options.series||percent){const button=document.createElement('button');button.type='button';button.textContent=s.label;button.style.setProperty('--series',s.color);button.setAttribute('aria-pressed',String(!chart.disabled.has(s.key)));button.onclick=()=>{chart.disabled.has(s.key)?chart.disabled.delete(s.key):chart.disabled.add(s.key);button.setAttribute('aria-pressed',String(!chart.disabled.has(s.key)));redraw(chart);};chart.legend.append(button);}
   canvas.dataset.sampleCount=String(chart.points.length);redraw(chart);
@@ -99,8 +99,8 @@
   liveHosts.set(host,{server,sampleTime});
   const stamp=time(sampleTime||server?.last_checked_at),age=Date.now()-stamp;
   const checkedAge=Date.now()-time(server?.last_checked_at);
-  const hasMetrics=!server||!Object.hasOwn(server,'last_cpu')||['last_cpu','last_ram','last_disk'].some(key=>number(server[key])!==null);
-  const online=server?.last_status==='Online'&&hasMetrics&&Number.isFinite(age)&&age>=-30000&&age<=180000&&checkedAge>=-30000&&checkedAge<=180000;
+  const hasMetrics=!server||!Object.prototype.hasOwnProperty.call(server,'last_cpu')||['last_cpu','last_ram','last_disk'].some(key=>number(server[key])!==null);
+  const online=navigator.onLine!==false&&server?.last_status==='Online'&&hasMetrics&&Number.isFinite(age)&&age>=-30000&&age<=180000&&checkedAge>=-30000&&checkedAge<=180000;
   host.classList.toggle('is-live',online);host.classList.toggle('stale',!online);
   host.textContent=online?'LIVE · '+new Date(stamp).toLocaleTimeString('fa-IR'):'○ '+(Number.isFinite(stamp)?'آخرین نمونه: '+new Date(stamp).toLocaleString('fa-IR'):'در انتظار نمونه');
   host.title=online?'سرور آنلاین است؛ داده‌های واقعی هر ۱۵ ثانیه بررسی می‌شوند.':'داده زنده در دسترس نیست؛ آخرین نمونه ذخیره‌شده نمایش داده می‌شود.';
@@ -108,6 +108,6 @@
  new MutationObserver(()=>charts.forEach(redraw)).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
  // Expire LIVE even if authentication or the network stops further polling.
  function expire(){for(const [host,data] of liveHosts){if(!host.isConnected){liveHosts.delete(host);continue;}live(host,data.server,data.sampleTime);}}
- window.setInterval?.(expire,10000);document.addEventListener('visibilitychange',expire);
+ window.setInterval?.(expire,10000);document.addEventListener('visibilitychange',expire);window.addEventListener('offline',expire);window.addEventListener('online',expire);
  window.SonarTelemetry={render,live,time};
 })();

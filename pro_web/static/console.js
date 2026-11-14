@@ -85,7 +85,7 @@
     try{
       const items=await request('/api/console/activity?limit=6');if(state.tab!=='overview'||version!==activityRevision)return;
       if(!Array.isArray(items)||!items.length){empty(host,'هنوز رویدادی ثبت نشده است.');return;}
-      host.replaceChildren();items.forEach(x=>{const wrap=node('div',null,'console-timeline-item');wrap.append(node('span','●','console-timeline-point'));const d=node('div');d.append(node('strong',x.event),node('small',`کاربر ${x.actor_id} · ${localTime(x.time)}`));wrap.append(d);host.append(wrap);});
+      host.replaceChildren();items.forEach(x=>{const wrap=node('div',null,'console-timeline-item');wrap.append(node('span','●','console-timeline-point'));const d=node('div');d.append(node('strong',window.SonarExperience?.eventName(x.event)||x.event),node('small',`کاربر ${x.actor_id} · ${localTime(x.time)}`));wrap.append(d);host.append(wrap);});
     }catch(err){if(state.tab==='overview')empty(host,err.message);}
   }
   // Poll read-only views for either cookie-authenticated web sessions or Telegram Mini Apps.

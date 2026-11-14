@@ -83,7 +83,7 @@ def _access_sync(uid, data, callback_name,callback_module=""):
                 from pro_store import ProStore
                 role=ProStore(db).role(uid,owner)
                 if not team_callback_allowed(role,data or '',callback_name,callback_module):return False
-        if data in ('gen_web_token','v6_account','wallet_menu','pro_home'):
+        if data in ('gen_web_token','v6_account','wallet_menu','pro_home','main_menu','v6_home','v6_return','v6_guide') or re.fullmatch(r'v6_lesson_[a-z-]+_\d+',data or ''):
             allowed,_=getattr(db,'check_read_access',db.check_access)(uid)
         else:allowed, _ = db.check_access(uid, SUPER_ADMIN_ID)
         if not allowed:

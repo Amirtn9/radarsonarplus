@@ -29,6 +29,18 @@ def router(store,actor,guarded):
     async def revoke(ident:str,uid:int=Depends(actor)):
         if len(ident)!=64 or any(c not in '0123456789abcdef' for c in ident):raise HTTPException(status_code=400,detail='Invalid session')
         await guarded(ctl().revoke,uid,ident);return {'ok':True}
+    @api.get('/capabilities')
+    async def capabilities(uid:int=Depends(actor)):
+        def read():
+            owner=store.workspace(uid);role=store.require(uid,owner)
+            active,_=store.db.check_access(owner)
+            return {'workspace':owner,'role':role,'active':bool(active),
+                    'technical':bool(active and role in ('owner','manager','technical')),
+                    'config':bool(active and role in ('owner','manager','technical')),
+                    'server':bool(active and role in ('owner','manager','technical','server')),
+                    'monitor':bool(active and role in ('owner','manager','technical','monitor')),
+                    'team':bool(active and role in ('owner','manager'))}
+        return await guarded(read)
     @api.get('/workspaces')
     async def workspaces(uid:int=Depends(actor)):
         return await guarded(store.db.execute,'SELECT owner_id,role FROM pro_team WHERE member_id=%s ORDER BY owner_id',(uid,),'all')

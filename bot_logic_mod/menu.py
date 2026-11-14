@@ -5,6 +5,11 @@ Section: menu
 
 from bot_logic_mod.base import *  # noqa
 from access_policy import has_premium
+from html import escape
+from datetime import datetime,timezone
+from math import ceil
+from billing import Billing
+from settings import PROJECT_VERSION
 
 # 🚀 STARTUP & MENU HANDLERS
 # ==============================================================================
@@ -59,9 +64,13 @@ async def register_user_logic(update: Update, context: ContextTypes.DEFAULT_TYPE
                 except Exception: pass
 
         try:
+            sub=await loop.run_in_executor(EXECUTOR,Billing(db).subscription,user_id)
+            detail=(f"پلن: {escape(sub['snapshot']['name'])}\n"
+                    f"مدت اولیه: {sub['snapshot']['days']} روز\n"
+                    f"ظرفیت سرور: {sub['limits']['servers']}" if sub else 'ظرفیت و اعتبار را از بخش «اشتراک و خرید» ببینید.')
             await update.message.reply_text(
-                f"🎉 **سلام {full_name} عزیز، خوش اومدی!** \n\n✅ حساب شما ایجاد شد:\n🔹 **اعتبار اولیه:** 60 روز\n🔹 **ظرفیت سرور:** 2 عدد\n\nمی‌تونی با دعوت دوستانت، این محدودیت‌ها رو رایگان افزایش بدی! 🚀",
-                parse_mode='Markdown'
+                f"سلام {escape(full_name)}، خوش آمدید.\n\nحساب شما ساخته شد.\n{detail}\n\nاز «سرورهای من» یا «کانفیگ‌ها» شروع کنید؛ راهنمای هر بخش همراه شماست.",
+                parse_mode='HTML'
             )
         except Exception: pass
 
@@ -70,28 +79,34 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     full_name = update.effective_user.full_name
     loop = asyncio.get_running_loop()
     
-    has_access, msg = await loop.run_in_executor(EXECUTOR, db.check_access, user_id)
-    if not has_access:
-        msg_text = f"⛔️ دسترسی مسدود است: {msg}"
-        if update.callback_query: await safe_edit_message(update, msg_text)
-        else: await update.message.reply_text(msg_text)
+    user=await loop.run_in_executor(EXECUTOR,db.get_user,user_id)
+    if not user or user.get('is_banned'):
+        txt='حساب شما در دسترس نیست. برای بررسی وضعیت با پشتیبانی تماس بگیرید.'
+        if update.callback_query:await safe_edit_message(update,txt)
+        else:await update.message.reply_text(txt)
         return
-
-    remaining = f"{msg} روز" if isinstance(msg, int) else "♾ نامحدود"
-    is_monitor_ready = await loop.run_in_executor(EXECUTOR, db.is_monitor_active)
-    reply_markup = keyboard.main_menu_kb(user_id, is_monitor_ready, SUPER_ADMIN_ID)
-
-    # No network-bound statistics calls on the home screen: navigation must be immediate.
-    txt = ("📡 *SONAR RADAR | Pro 6.9.10*\n"
-           "━━━━━━━━━━━━━━━━━\n"
-           f"👤 اعتبار شما: `{remaining}`\n\n"
-           "به کدام بخش نیاز دارید؟\n"
-           "تمام گزینه‌ها در دسته‌های کوتاه و روشن قرار دارند.")
+    has_access,msg=await loop.run_in_executor(EXECUTOR,db.check_access,user_id)
+    sub=await loop.run_in_executor(EXECUTOR,Billing(db).subscription,user_id)
+    if sub:
+        status={'active':'فعال','expired':'پایان اعتبار','suspended':'معلق','cancelled':'لغوشده'}[sub['effective_status']]
+        expiry=sub.get('expires_at')
+        remaining=(f"{max(0,ceil((expiry-datetime.now(timezone.utc)).total_seconds()/86400))} روز تا پایان" if expiry else 'بدون پایان زمانی')
+        plan=sub['snapshot']['name']
+    else:
+        status='فعال' if has_access else 'نیازمند بررسی اعتبار'
+        plan='مدیر سامانه' if user_id==SUPER_ADMIN_ID else 'حساب قبلی'
+        expiry=user.get('subscription_expires_at')
+        remaining=(f"{max(0,ceil((expiry-datetime.now(timezone.utc)).total_seconds()/86400))} روز تا پایان" if expiry else 'اعتبار قبلی' if user.get('subscription_date_invalid') else 'بدون پایان زمانی' if user.get('subscription_unlimited') or user_id==SUPER_ADMIN_ID else 'جزئیات در بخش اشتراک')
+    # Local DB reads only; opening the menu never waits for an Agent/network probe.
+    reply_markup=keyboard.main_menu_kb(user_id,False,SUPER_ADMIN_ID) if has_access else keyboard.renewal_menu_kb()
+    txt=(f"🛰 SONAR RADAR · {PROJECT_VERSION}\n\n"
+         f"وضعیت حساب: {status}\nپلن: {plan}\n{remaining}\n\n"
+         +('برای شروع، بخش موردنظر را انتخاب کنید.' if has_access else 'برای ادامهٔ پایش، اشتراک را تمدید یا وضعیت حساب را بررسی کنید. اطلاعات قبلی شما حفظ شده‌اند.'))
 
     if update.callback_query:
-        await safe_edit_message(update, txt, reply_markup=reply_markup)
+        await safe_edit_message(update,txt,reply_markup=reply_markup,parse_mode=None)
     else:
-        await update.message.reply_text(txt, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.message.reply_text(txt, reply_markup=reply_markup)
 
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from navigation import clear_section
@@ -130,7 +145,7 @@ async def user_profile_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     txt = (f"👤 **پروفایل کاربری شما**\n➖➖➖➖➖➖➖➖➖➖\n🏷 **نام:** `{user['full_name']}`\n🆔 **آیدی عددی:** `{user['user_id']}`\n📅 **تاریخ عضویت:** `{join_str}`\n\n💳 **نوع اشتراک:** {sub_type}\n⏳ **اعتبار باقی‌مانده:** `{expiry_str}`\n🔢 **سقف مجاز سرور:** `{user['server_limit']} عدد`\n\n🖥 **وضعیت سرورها:**\n   ├ 🟢 فعال: `{active_srv}`\n   └ ⚪️ کل ثبت شده: `{srv_count}`")
     reply_markup = keyboard.user_profile_kb()
-    await safe_edit_message(update, txt, reply_markup=reply_markup)
+    await safe_edit_message(update,txt,reply_markup=reply_markup,parse_mode=None)
 
 async def web_token_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Issue a single-use, short-lived website code only in the user's DM."""

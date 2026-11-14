@@ -22,28 +22,32 @@
  function closeMenu(){document.body.classList.remove('menu-open');el('nav-scrim').hidden=true;el('quick-menu').hidden=true;el('menu-trigger')?.setAttribute('aria-expanded','false');}
  function openMenu(){
   const host=el('quick-menu');host.replaceChildren();
-  const groups=[['منابع و دسترسی',['overview','servers','configs','fleet']],['پایش و گزارش',['rankings','services','incidents','reports']],['مدیریت و همکاری',['enterprise','team','channels','audit','settings','balancer','support']]];
+  const groups=[['منابع و دسترسی',['overview','servers','configs','web-create','fleet']],['پایش و گزارش',['rankings','services','incidents','reports']],['حساب و مدیریت',['billing','users']],['مدیریت و همکاری',['enterprise','team','channels','audit','settings','balancer','support']]];
   for(const [title,tabs] of groups){
    const section=safeNode('section');section.append(safeNode('h3',title));
    for(const tab of tabs){
     const source=document.querySelector(`#side-navigation [data-tab="${tab}"]`);
-    if(!source||source.hidden)continue;
+    if(!source||source.hidden||source.dataset.uxDenied==='true')continue;
     const button=safeNode('button',source.textContent.trim());button.type='button';button.dataset.quickTab=tab;
     button.onclick=()=>{tabClick(tab);closeMenu();el('menu-trigger').focus();};section.append(button);
    }
    host.append(section);
   }
+  const search=safeNode('button','جست‌وجوی سراسری');search.type='button';search.onclick=()=>{closeMenu();window.SonarProduct.search().catch(error=>toast(error.message));};host.append(search);
+  const close=safeNode('button','بستن منو');close.type='button';close.onclick=()=>{closeMenu();el('menu-trigger').focus();};host.append(close);
   const guide=safeNode('a','راهنمای گام‌به‌گام ←');guide.href='/guide';host.append(guide);
   document.body.classList.add('menu-open');el('nav-scrim').hidden=false;host.hidden=false;el('menu-trigger')?.setAttribute('aria-expanded','true');
   host.querySelector('button')?.focus();
  }
  el('menu-trigger')?.addEventListener('click',()=>document.body.classList.contains('menu-open')?closeMenu():openMenu());
  el('nav-scrim')?.addEventListener('click',closeMenu);
+ window.addEventListener('popstate',closeMenu);
+ window.addEventListener('sonar:view-change',closeMenu);
  document.addEventListener('keydown',event=>{
   if(!document.body.classList.contains('menu-open'))return;
   if(event.key==='Escape'){closeMenu();el('menu-trigger').focus();}
   if(event.key==='Tab'){
-   const targets=[...el('quick-menu').querySelectorAll('button,a')],first=targets[0],last=targets.at(-1);
+   const targets=[...el('quick-menu').querySelectorAll('button,a')],first=targets[0],last=targets[targets.length-1];
    if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}
    else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}
   }
@@ -57,7 +61,7 @@
  const existingTabClick=tabClick;
  // Track active view for the five-icon mobile dock, even for nested pages.
  tabClick=function(name){existingTabClick(name);const map={'server-detail':'servers','config-detail':'configs',rankings:'configs',incidents:'services'};
-    document.querySelectorAll('[data-mobile-tab]').forEach(b=>b.classList.toggle('active',b.dataset.mobileTab===(map[name]||name)));};
+    document.querySelectorAll('[data-mobile-tab]').forEach(b=>{const active=b.dataset.mobileTab===(map[state.tab]||state.tab)||b.dataset.mobileTab==='more'&&!['overview','servers','configs','services'].includes(map[state.tab]||state.tab);b.classList.toggle('active',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});};
  const preferred=()=>{try{return localStorage.getItem('sonar:theme')}catch{return null}};
  function setTheme(mode,persist=false){
    const next=mode==='light'?'light':'dark';document.documentElement.dataset.theme=next;
@@ -81,7 +85,7 @@
  }
  let lastId=0,lastConfigId=0,loading=false;
  async function loadSensors(){
-   if(state.tab!=='server-detail'||!window.SonarConsole)return;
+   if(document.hidden||state.tab!=='server-detail'||!window.SonarConsole)return;
    const id=Number(window.SonarConsole.currentServerId?.()||0);
    if(!id||loading)return;
    loading=true;
@@ -187,7 +191,7 @@
  });
  const parent=window.SonarNext?.loadFleet;
  if(parent){window.SonarNext.loadFleet=async()=>{await Promise.all([parent(),loadInstall()]);};}
- setInterval(()=>{if(state.tab==='fleet'&&admin)loadInstall();},30000);
+ setInterval(()=>{if(!document.hidden&&state.tab==='fleet'&&admin)loadInstall();},30000);
 })();
 
 // Administrator-only measured WSS/SSH-relay traffic. No raw credentials exposed.

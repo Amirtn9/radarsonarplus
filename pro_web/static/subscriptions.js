@@ -31,5 +31,5 @@
  }
  document.querySelectorAll('[data-tab="configs"], [data-mobile-tab="configs"], [data-go="configs"]').forEach(b=>b.addEventListener('click',()=>queueMicrotask(refresh)));
  document.getElementById('refresh')?.addEventListener('click',()=>queueMicrotask(refresh));
- setInterval(()=>{if(state.tab==='configs')refresh();},30000);
+ setInterval(()=>{if(!document.hidden&&state.tab==='configs')refresh();},30000);
 })();

@@ -35,7 +35,8 @@
  async function workspaces(){
   const options=await request('/api/control/workspaces'),me=await request('/api/me');let selectBox=document.getElementById('workspace-selector');if(!selectBox){selectBox=el('select');selectBox.id='workspace-selector';selectBox.setAttribute('aria-label','انتخاب فضای کاری');document.getElementById('navigation').before(selectBox);}selectBox.replaceChildren();
   const personal=el('option','فضای کاری پیش‌فرض');personal.value='';selectBox.append(personal);for(const item of options){const o=el('option',`تیم ${item.owner_id} · ${roles[item.role]||item.role}`);o.value=String(item.owner_id);selectBox.append(o);}selectBox.value=String(activeWorkspace||'');if(selectBox.selectedIndex<0){activeWorkspace='';selectBox.value='';}
-  selectBox.onchange=()=>{activeWorkspace=selectBox.value;state.selectedConfigs.clear();try{sessionStorage.setItem('sonar-workspace',activeWorkspace);}catch{}window.SonarLive?.connect();tabClick(state.tab);};
+  window.SonarExperience?.permissions();
+  selectBox.onchange=()=>{activeWorkspace=selectBox.value;state.selectedConfigs.clear();try{sessionStorage.setItem('sonar-workspace',activeWorkspace);}catch{}window.SonarLive?.connect();window.SonarExperience?.permissions();tabClick(state.tab);};
  }
  async function notifications(){
   const root=document.getElementById('channels'),p=panel(root,'control-destinations','مدیریت مقصدهای اطلاع‌رسانی');

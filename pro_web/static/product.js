@@ -15,7 +15,7 @@
  const dayLabel=v=>new Date(String(v).slice(0,10)+'T12:00:00+03:30').toLocaleDateString('fa-IR',{timeZone:'Asia/Tehran'});
  const localDate=v=>{const d=new Date(v);return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16);};
  function toRial(value){const raw=String(value).trim();if(!/^-?\d+(\.\d)?$/.test(raw))throw Error('مبلغ تومان را با حداکثر یک رقم اعشار وارد کنید');const [whole,fraction='']=raw.replace('-','').split('.');const n=Number(whole)*10+Number(fraction||0),signed=raw.startsWith('-')?-n:n;if(!Number.isSafeInteger(signed)||Math.abs(signed)>10**14)throw Error('مبلغ خارج از محدوده است');return signed;}
- const key=()=>crypto.randomUUID();let me=null,host=null,content=null,generation=0;
+ const key=()=>crypto.randomUUID?crypto.randomUUID():Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-');let me=null,host=null,content=null,generation=0;
  const can=cap=>cap==='root'?me?.admin:!cap||(me?.billing_permissions||[]).includes(cap);
  const empty=(root,text='اطلاعاتی برای این فیلتر ثبت نشده است.')=>root.append(el('p',text,'empty-state'));
  function button(title,action,cls=''){const b=el('button',title,cls);b.type='button';b.onclick=async()=>{b.disabled=true;try{await action();}catch(error){toast(error.message);}finally{b.disabled=false;}};return b;}
@@ -34,6 +34,7 @@
    me=await window.SonarWebRequest('/api/me');if(run!==generation)return;if(!me.admin&&!(me.billing_permissions||[]).length)throw Error('مجوز ورود به مدیریت ندارید');
    const area=location.pathname.startsWith('/admin/')?location.pathname.split('/')[2]:'overview';
    if(!areas[area]||!can(areas[area][1]))throw Error('مجوز این بخش مدیریتی را ندارید');
+   document.getElementById('page-title').textContent=areas[area][0];document.title=areas[area][0]+' | SONAR RADAR';
    host.replaceChildren();const heading=el('div',null,'management-heading');heading.append(el('div','SONAR RADAR · مدیریت مرکزی'),button('بازگشت به فضای کاری من',()=>tabClick('overview')));host.append(heading);
    const nav=el('nav',null,'management-nav');nav.setAttribute('aria-label','مدیریت مرکزی');for(const [name,[title,cap]]of Object.entries(areas))if(can(cap)){const b=button(title,()=>navigate(name));if(name===area)b.setAttribute('aria-current','page');nav.append(b);}host.append(nav);
    content=el('div',null,'management-content');host.append(content);
@@ -126,6 +127,6 @@
  async function archive(plan){if(!await window.SonarUI.confirm(`پلن «${plan.name}» از فروش خارج شود؟ سوابق خرید و اشتراک حفظ می‌شوند.`))return;await post('/plans/'+plan.id+'/archive',{reason:await reason()});await load();}
  async function search(){const q=await window.SonarUI.ask('نام، IP، دامنه، شناسه کاربر یا شماره سفارش را جست‌وجو کنید:');if(!q||q.trim().length<2)return;const rows=await api('/search?q='+encodeURIComponent(q.trim()));const existing=document.getElementById('global-search-results');existing?.remove();const box=panel(document.querySelector('#app-shell main'),'نتایج جست‌وجوی سراسری');box.id='global-search-results';box.append(button('بستن نتایج',()=>box.remove()));for(const r of rows)item(box,r.name||r.id,`${r.kind} · ${r.id}`).append(button('بازکردن',()=>{box.remove();if(r.kind==='user')navigate('users',{user:r.id});else if(r.kind==='order')navigate('payments',{q:r.id,status:''});else if(r.kind==='service')tabClick('services');else window.SonarConsole.openDetails(r.kind,r.id);}));if(!rows.length)empty(box);box.scrollIntoView({block:'start'});}
  document.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'&&document.body.dataset.authenticated==='true'){event.preventDefault();search().catch(e=>toast(e.message));}});
- document.addEventListener('DOMContentLoaded',()=>{const header=document.getElementById('navigation');header?.append(button('جست‌وجوی سراسری',search));});
+ document.addEventListener('DOMContentLoaded',()=>{const header=document.getElementById('navigation');const trigger=button('جست‌وجوی سراسری',search);trigger.id='global-search-trigger';trigger.className='navbtn';trigger.setAttribute('aria-keyshortcuts','Control+k Meta+k');header?.append(trigger);});
  window.SonarProduct={load,navigate,planEditor,preview,usage,archive,toRial,localDate,search};
 })();

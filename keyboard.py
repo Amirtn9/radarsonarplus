@@ -8,7 +8,7 @@ def _webapp_button():
     url=os.getenv('SONAR_WEBAPP_URL','').strip()
     parsed=urlparse(url)
     if parsed.scheme=='https' and parsed.hostname:
-        return InlineKeyboardButton('📱 پنل گرافیکی',web_app=WebAppInfo(url=url))
+        return InlineKeyboardButton('✦ ورود به پنل',web_app=WebAppInfo(url=url))
     return None
 
 # ==============================================================================
@@ -43,20 +43,23 @@ def ws_port_confirm_kb() -> InlineKeyboardMarkup:
 def main_menu_kb(user_id, is_monitor_ready, admin_id):
     """Beginner-first home: short labels, no duplicate actions."""
     kb = [
-        [InlineKeyboardButton('🖥 سرورهای من', callback_data='v6_servers'),
-         InlineKeyboardButton('🧩 کانفیگ‌ها', callback_data='v6_configs')],
-        [InlineKeyboardButton('📡 وضعیت و هشدارها', callback_data='v6_monitor'),
-         InlineKeyboardButton('🧰 ابزارها', callback_data='v6_tools')],
-        [InlineKeyboardButton('⚙️ تنظیمات', callback_data='v6_settings'),
-         InlineKeyboardButton('👤 حساب و همکاران', callback_data='v6_account')],
+        [InlineKeyboardButton('سرورهای من',callback_data='v6_servers'),InlineKeyboardButton('کانفیگ‌ها',callback_data='v6_configs')],
+        [InlineKeyboardButton('وضعیت و هشدارها',callback_data='v6_monitor'),InlineKeyboardButton('گزارش و ابزارها',callback_data='v6_tools')],
+        [InlineKeyboardButton('اشتراک و خرید',callback_data='bill_home'),InlineKeyboardButton('حساب و تیم',callback_data='v6_account')],
+        [InlineKeyboardButton('تنظیمات',callback_data='v6_settings'),InlineKeyboardButton('راهنما',callback_data='v6_guide')],
     ]
-    kb.append([InlineKeyboardButton('💳 اشتراک، تمدید و کیف پول',callback_data='bill_home')])
-    kb.append([InlineKeyboardButton('📚 آموزش و راهنمای ربات', callback_data='v6_guide')])
-    if user_id == admin_id and admin_id:
-        kb.append([InlineKeyboardButton('👑 مدیریت ربات', callback_data='v6_admin')])
     webapp=_webapp_button()
-    if webapp: kb.append([webapp])
+    if webapp:kb.insert(0,[webapp])
+    if user_id==admin_id and admin_id:kb.append([InlineKeyboardButton('مدیریت سامانه',callback_data='v6_admin')])
     return InlineKeyboardMarkup(kb)
+
+
+def renewal_menu_kb():
+    rows=[[InlineKeyboardButton('اشتراک و تمدید',callback_data='bill_home')],
+          [InlineKeyboardButton('راهنمای استفاده',callback_data='v6_guide')]]
+    webapp=_webapp_button()
+    if webapp:rows.insert(0,[webapp])
+    return InlineKeyboardMarkup(rows)
 
 def account_dashboard_kb():
     """منوی داخلی حساب کاربری و کیف پول"""
