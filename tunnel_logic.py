@@ -102,10 +102,10 @@ class TunnelLogic:
         # Never decrypt or reuse the SSH password as a WebSocket credential.
         return ip, int(ws_port), None
 
-    async def _test_via_ws(self, monitor: dict, link: str, size: float = 5.0, timeout: int = 60):
+    async def _test_via_ws(self, monitor: dict, link: str, size: float = 5.0, timeout: int = 60,owner_id=None):
         """تست یک کانفیگ روی کانکشن وب‌سوکت پایدار ایجنت."""
         ip, ws_port, token = self._agent_creds(monitor)
-        return await ServerMonitor.ws_test_config(ip, ws_port, token, link, size=size, timeout=timeout)
+        return await ServerMonitor.ws_test_config(ip,ws_port,token,link,size=size,timeout=timeout,owner_id=owner_id)
 
     async def _fetch_sub_links(self, monitor: dict, sub_link: str, timeout: int = 60):
         """دریافت لیست کانفیگ‌های داخل یک لینک اشتراک از طریق ایجنت."""
@@ -281,7 +281,7 @@ class TunnelLogic:
             try:
                 async with self._user_sem(uid):
                     async with self.global_sem:
-                        ok_t, data = await self._test_via_ws(monitor, item['link'], size=0.5, timeout=45)
+                        ok_t, data = await self._test_via_ws(monitor, item['link'], size=0.5, timeout=45,owner_id=uid)
                     return (data if ok_t and isinstance(data,dict) else None)
             except Exception as exc:
                 logger.warning('Subscription test failed (%s); membership unchanged',type(exc).__name__)
@@ -335,7 +335,7 @@ class TunnelLogic:
         async def _one(cfg):
             async with self._user_sem(uid or cfg.get('owner_id')):
                 async with self.global_sem:
-                    ok, data = await self._test_via_ws(monitor,cfg['link'],size=float(size),timeout=60)
+                    ok, data = await self._test_via_ws(monitor,cfg['link'],size=float(size),timeout=60,owner_id=uid or cfg.get('owner_id'))
                 return cfg, (data if ok else None)
 
         results = await asyncio.gather(*[_one(c) for c in singles], return_exceptions=True)

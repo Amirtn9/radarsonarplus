@@ -13,7 +13,7 @@ function launch(id){const d={auth_date:String(Math.floor(Date.now()/1000)),user:
  }
  for(const width of [320,390,768,1440]){await page.setViewportSize({width,height:1000});const size=await page.evaluate(()=>({a:document.documentElement.scrollWidth,b:document.documentElement.clientWidth}));assert.ok(size.a<=size.b+1,JSON.stringify({width,...size}));}
  await page.screenshot({path:'/tmp/radar-log-desktop.png',fullPage:true});await page.setViewportSize({width:390,height:844});await page.screenshot({path:'/tmp/radar-log-mobile.png',fullPage:true});
- page.on('dialog',dialog=>dialog.accept(dialog.type()==='prompt'?'DELETE ALL LOGS':undefined));
+ await require('./browser_dialogs.cjs')(page,'DELETE ALL LOGS');
  const deleted=page.waitForResponse(r=>r.url().endsWith('/api/admin/logs')&&r.request().method()==='DELETE');await page.locator('#managed-log-delete').click();assert.equal((await deleted).status(),200);
  await page.waitForFunction(()=>!document.getElementById('managed-log-delete').disabled);
  const remaining=await page.evaluate(async()=>await window.SonarWebRequest('/api/admin/logs?window=all'));

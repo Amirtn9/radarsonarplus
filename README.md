@@ -273,3 +273,5 @@ python3 -m pytest -q
 </div>
 
 راهنمای توسعه یکپارچه و پیش‌نیازهای استقرار: [گزارش فارسی](docs/INTEGRATED_PLATFORM_FA.md).
+
+گزارش اجرای بازطراحی مدیریت، پلن و مالی: [جزئیات و محدودهٔ اعتبارسنجی](docs/PRODUCT_REVIEW_IMPLEMENTATION_FA.md).

@@ -28,10 +28,10 @@
     const wrap=el('div');wrap.className='listitem';
     line(wrap,`${o.id} · ${o.kind} · ${o.status} · ${o.succeeded}/${o.total} موفق · ${o.failed} ناموفق`);
     wrap.append(btn('جزئیات',()=>showOperation(o.id)));
-    if(['queued','running'].includes(o.status))wrap.append(btn('توقف موقت',async()=>{try{await post(`/api/enterprise/operations/${o.id}/control`,{action:'pause'});await operations();}catch(e){alert(e.message);}}));
-    if(o.status==='paused')wrap.append(btn('ادامه',async()=>{try{await post(`/api/enterprise/operations/${o.id}/control`,{action:'resume'});await operations();}catch(e){alert(e.message);}}));
-    if(['queued','running','paused'].includes(o.status))wrap.append(btn('لغو',async()=>{if(!confirm('عملیات لغو شود؟'))return;try{await post(`/api/enterprise/operations/${o.id}/control`,{action:'cancel'});await operations();}catch(e){alert(e.message);}}));
-    if(['failed','cancelled'].includes(o.status))wrap.append(btn('تلاش مجدد',async()=>{try{await post(`/api/enterprise/operations/${o.id}/control`,{action:'retry'});await operations();}catch(e){alert(e.message);}}));
+    if(['queued','running'].includes(o.status))wrap.append(btn('توقف موقت',async()=>{try{await post(`/api/enterprise/operations/${o.id}/control`,{action:'pause'});await operations();}catch(e){toast(e.message);}}));
+    if(o.status==='paused')wrap.append(btn('ادامه',async()=>{try{await post(`/api/enterprise/operations/${o.id}/control`,{action:'resume'});await operations();}catch(e){toast(e.message);}}));
+    if(['queued','running','paused'].includes(o.status))wrap.append(btn('لغو',async()=>{if(!await window.SonarUI.confirm('عملیات لغو شود؟'))return;try{await post(`/api/enterprise/operations/${o.id}/control`,{action:'cancel'});await operations();}catch(e){toast(e.message);}}));
+    if(['failed','cancelled'].includes(o.status))wrap.append(btn('تلاش مجدد',async()=>{try{await post(`/api/enterprise/operations/${o.id}/control`,{action:'retry'});await operations();}catch(e){toast(e.message);}}));
     host.append(wrap);
    });
    if(!rows?.length)host.textContent='عملیاتی ثبت نشده است.';
@@ -55,10 +55,10 @@
    (rows||[]).forEach(r=>{
     const wrap=el('div');wrap.className='listitem';
     line(wrap,`#${r.id} · ${r.version} · ${r.state} · ${r.batch_offset}/${r.server_ids.length} · نسخه قبلی: ${r.previous_release_id||'ندارد'}`);
-    if(['queued','running'].includes(r.state))wrap.append(btn('توقف',async()=>{try{await post(`/api/enterprise/agent/rollouts/${r.id}/control`,{action:'pause'});await rollouts();}catch(e){alert(e.message);}}));
-    if(r.state==='paused')wrap.append(btn('ادامه',async()=>{try{await post(`/api/enterprise/agent/rollouts/${r.id}/control`,{action:'resume'});await rollouts();}catch(e){alert(e.message);}}));
-    if(['queued','running','paused'].includes(r.state))wrap.append(btn('لغو',async()=>{if(!confirm('انتشار لغو شود؟'))return;try{await post(`/api/enterprise/agent/rollouts/${r.id}/control`,{action:'cancel'});await rollouts();}catch(e){alert(e.message);}}));
-    if(['completed','failed'].includes(r.state)&&r.previous_release_id)wrap.append(btn('Rollback گروهی',async()=>{if(!confirm('Agent سرورهای موفق به Release قبلی برگردند؟'))return;try{await post(`/api/enterprise/agent/rollouts/${r.id}/control`,{action:'rollback'});await rollouts();}catch(e){alert(e.message);}}));
+    if(['queued','running'].includes(r.state))wrap.append(btn('توقف',async()=>{try{await post(`/api/enterprise/agent/rollouts/${r.id}/control`,{action:'pause'});await rollouts();}catch(e){toast(e.message);}}));
+    if(r.state==='paused')wrap.append(btn('ادامه',async()=>{try{await post(`/api/enterprise/agent/rollouts/${r.id}/control`,{action:'resume'});await rollouts();}catch(e){toast(e.message);}}));
+    if(['queued','running','paused'].includes(r.state))wrap.append(btn('لغو',async()=>{if(!await window.SonarUI.confirm('انتشار لغو شود؟'))return;try{await post(`/api/enterprise/agent/rollouts/${r.id}/control`,{action:'cancel'});await rollouts();}catch(e){toast(e.message);}}));
+    if(['completed','failed'].includes(r.state)&&r.previous_release_id)wrap.append(btn('Rollback گروهی',async()=>{if(!await window.SonarUI.confirm('Agent سرورهای موفق به Release قبلی برگردند؟'))return;try{await post(`/api/enterprise/agent/rollouts/${r.id}/control`,{action:'rollback'});await rollouts();}catch(e){toast(e.message);}}));
     host.append(wrap);
    });
    if(!rows?.length)host.textContent='انتشاری ثبت نشده است.';
@@ -68,11 +68,11 @@
   const host=$('enterprise-incidents');if(!host)return;
   try{const rows=await get(`/api/enterprise/incidents?status=${encodeURIComponent($('enterprise-incident-filter')?.value||'open')}`);host.replaceChildren();
    (rows||[]).forEach(r=>{const wrap=el('div');wrap.className='listitem';line(wrap,`#${r.id} · ${r.severity} · ${r.status} · ${r.title} · تکرار ${r.occurrences}`);
-    wrap.append(btn('جزئیات',async()=>{try{const d=await get(`/api/enterprise/incidents/${r.id}`);const detail=$('enterprise-incidents');const panel=el('pre',JSON.stringify(d,null,2));panel.style.whiteSpace='pre-wrap';detail.append(panel);}catch(e){alert(e.message);}}));
-    if(r.status==='open')wrap.append(btn('تأیید',async()=>{try{await post(`/api/enterprise/incidents/${r.id}/state`,{status:'acknowledged'});await incidents();}catch(e){alert(e.message);}}));
-    if(['open','acknowledged'].includes(r.status))wrap.append(btn('بررسی',async()=>{try{await post(`/api/enterprise/incidents/${r.id}/state`,{status:'investigating'});await incidents();}catch(e){alert(e.message);}}));
-    wrap.append(btn('یادداشت',async()=>{const note=prompt('یادداشت رخداد:');if(!note)return;try{await post(`/api/enterprise/incidents/${r.id}/notes`,{note});alert('یادداشت ثبت شد.');}catch(e){alert(e.message);}}));
-    if(r.status!=='resolved')wrap.append(btn('رفع شد',async()=>{try{await post(`/api/enterprise/incidents/${r.id}/state`,{status:'resolved'});await incidents();}catch(e){alert(e.message);}}));
+    wrap.append(btn('جزئیات',async()=>{try{const d=await get(`/api/enterprise/incidents/${r.id}`);const detail=$('enterprise-incidents');const panel=el('pre',JSON.stringify(d,null,2));panel.style.whiteSpace='pre-wrap';detail.append(panel);}catch(e){toast(e.message);}}));
+    if(r.status==='open')wrap.append(btn('تأیید',async()=>{try{await post(`/api/enterprise/incidents/${r.id}/state`,{status:'acknowledged'});await incidents();}catch(e){toast(e.message);}}));
+    if(['open','acknowledged'].includes(r.status))wrap.append(btn('بررسی',async()=>{try{await post(`/api/enterprise/incidents/${r.id}/state`,{status:'investigating'});await incidents();}catch(e){toast(e.message);}}));
+    wrap.append(btn('یادداشت',async()=>{const note=await window.SonarUI.ask('یادداشت رخداد:');if(!note)return;try{await post(`/api/enterprise/incidents/${r.id}/notes`,{note});toast('یادداشت ثبت شد.');}catch(e){toast(e.message);}}));
+    if(r.status!=='resolved')wrap.append(btn('رفع شد',async()=>{try{await post(`/api/enterprise/incidents/${r.id}/state`,{status:'resolved'});await incidents();}catch(e){toast(e.message);}}));
     host.append(wrap);
    });if(!rows?.length)host.textContent='رخدادی پیدا نشد.';
   }catch(e){host.textContent=e.message;}
@@ -86,19 +86,19 @@
     const thresholds=Object.fromEntries(['cpu','ram','disk'].map(k=>[k,Number($(`health-threshold-${k}`).value)]));
     if(Object.values(weights).reduce((a,b)=>a+b,0)!==100)throw Error('مجموع وزن‌ها باید دقیقاً ۱۰۰ باشد.');
     await post('/api/enterprise/health/policy',{weights,thresholds,stale_seconds:Number($('health-stale-seconds').value)});
-    alert('سیاست Health ذخیره شد.');await health();
+    toast('سیاست Health ذخیره شد.');await health();
    }
-  }catch(e){if(loadOnly)console.warn(e);else alert(e.message);}
+  }catch(e){if(loadOnly)console.warn(e);else toast(e.message);}
  }
  async function backups(){
   const host=$('enterprise-backups');if(!host)return;
   try{const rows=await get('/api/enterprise/backups/schedules');host.replaceChildren();
    (rows||[]).forEach(r=>{const wrap=el('div');wrap.className='listitem';line(wrap,`#${r.id} · ${r.name} · ${r.cadence} · ${r.enabled?'فعال':'متوقف'} · بعدی: ${r.next_run_at||'—'}`);
-    wrap.append(btn('ویرایش',async()=>{const destination=prompt('مقصد جدید (مسیر محلی یا s3://bucket/prefix):',r.destination);if(destination===null)return;const cadence=prompt('تناوب: daily یا weekly',r.cadence);if(cadence===null)return;const retention=prompt('تعداد نسخه برای نگهداری (1 تا 90):',String(r.retention_count));if(retention===null)return;try{await call(`/api/enterprise/backups/schedules/${r.id}`,'PUT',{destination,cadence,retention:Number(retention)});await backups();}catch(e){alert(e.message);}}));
-    wrap.append(btn('اجرای فوری',async()=>{try{await post(`/api/enterprise/backups/schedules/${r.id}/control`,{action:'run_now'});await backups();}catch(e){alert(e.message);}}));
-    wrap.append(btn(r.enabled?'توقف':'فعال‌سازی',async()=>{try{await post(`/api/enterprise/backups/schedules/${r.id}/control`,{action:r.enabled?'disable':'enable'});await backups();}catch(e){alert(e.message);}}));
-    wrap.append(btn('تاریخچه',async()=>{try{const d=await get(`/api/enterprise/backups/schedules/${r.id}/runs`);const panel=el('pre',JSON.stringify(d,null,2));panel.style.whiteSpace='pre-wrap';host.append(panel);}catch(e){alert(e.message);}}));
-    wrap.append(btn('حذف',async()=>{if(!confirm('زمان‌بندی حذف شود؟'))return;try{await post(`/api/enterprise/backups/schedules/${r.id}/control`,{action:'delete'});await backups();}catch(e){alert(e.message);}}));
+    wrap.append(btn('ویرایش',async()=>{const destination=await window.SonarUI.ask('مقصد جدید (مسیر محلی یا s3://bucket/prefix):',r.destination);if(destination===null)return;const cadence=await window.SonarUI.ask('تناوب: daily یا weekly',r.cadence);if(cadence===null)return;const retention=await window.SonarUI.ask('تعداد نسخه برای نگهداری (1 تا 90):',String(r.retention_count));if(retention===null)return;try{await call(`/api/enterprise/backups/schedules/${r.id}`,'PUT',{destination,cadence,retention:Number(retention)});await backups();}catch(e){toast(e.message);}}));
+    wrap.append(btn('اجرای فوری',async()=>{try{await post(`/api/enterprise/backups/schedules/${r.id}/control`,{action:'run_now'});await backups();}catch(e){toast(e.message);}}));
+    wrap.append(btn(r.enabled?'توقف':'فعال‌سازی',async()=>{try{await post(`/api/enterprise/backups/schedules/${r.id}/control`,{action:r.enabled?'disable':'enable'});await backups();}catch(e){toast(e.message);}}));
+    wrap.append(btn('تاریخچه',async()=>{try{const d=await get(`/api/enterprise/backups/schedules/${r.id}/runs`);const panel=el('pre',JSON.stringify(d,null,2));panel.style.whiteSpace='pre-wrap';host.append(panel);}catch(e){toast(e.message);}}));
+    wrap.append(btn('حذف',async()=>{if(!await window.SonarUI.confirm('زمان‌بندی حذف شود؟'))return;try{await post(`/api/enterprise/backups/schedules/${r.id}/control`,{action:'delete'});await backups();}catch(e){toast(e.message);}}));
     host.append(wrap);
    });if(!rows?.length)host.textContent='زمان‌بندی ثبت نشده است.';
   }catch(e){host.textContent=e.message;}
@@ -107,11 +107,11 @@
   const host=$('enterprise-webhooks');if(!host)return;
   try{const rows=await get('/api/enterprise/webhooks');host.replaceChildren();
    (rows||[]).forEach(r=>{const wrap=el('div');wrap.className='listitem';line(wrap,`#${r.id} · ${r.url} · ${r.enabled?'فعال':'متوقف'} · ${r.events.join(', ')}`);
-    wrap.append(btn('ویرایش مقصد/رویداد',async()=>{const url=prompt('HTTPS URL جدید:',r.url);if(url===null)return;const events=prompt('رویدادها با کاما: incident.opened,incident.resolved,operation.completed,server.offline',r.events.join(','));if(events===null)return;try{await call(`/api/enterprise/webhooks/${r.id}`,'PUT',{url,events:events.split(',').map(x=>x.trim()).filter(Boolean)});await webhooks();}catch(e){alert(e.message);}}));
-    wrap.append(btn('تحویل‌ها',async()=>{try{const d=await get(`/api/enterprise/webhooks/${r.id}/deliveries`);const out=$('enterprise-webhook-deliveries');out.replaceChildren();(d||[]).forEach(x=>{const row=el('div');line(row,`#${x.id} · ${x.event_key} · تلاش ${x.attempts} · ${x.delivered_at?'ارسال شد':x.dead_at?'Dead Letter':'در انتظار'} · ${x.last_error||''}`);if(x.dead_at)row.append(btn('تلاش مجدد',async()=>{try{await post(`/api/enterprise/webhooks/${r.id}/retry`,{delivery_id:x.id});await webhooks();}catch(e){alert(e.message);}}));out.append(row);});}catch(e){alert(e.message);}}));
-    wrap.append(btn(r.enabled?'توقف':'فعال‌سازی',async()=>{try{await call(`/api/enterprise/webhooks/${r.id}`,'PUT',{enabled:!r.enabled});await webhooks();}catch(e){alert(e.message);}}));
-    wrap.append(btn('چرخش Secret',async()=>{try{const d=await call(`/api/enterprise/webhooks/${r.id}`,'PUT',{rotate_secret:true});alert(`Secret جدید را ذخیره کنید:\n${d.secret}`);}catch(e){alert(e.message);}}));
-    wrap.append(btn('حذف',async()=>{if(!confirm('Webhook حذف شود؟'))return;try{await call(`/api/enterprise/webhooks/${r.id}`,'DELETE');await webhooks();}catch(e){alert(e.message);}}));
+    wrap.append(btn('ویرایش مقصد/رویداد',async()=>{const url=await window.SonarUI.ask('HTTPS URL جدید:',r.url);if(url===null)return;const events=await window.SonarUI.ask('رویدادها با کاما: incident.opened,incident.resolved,operation.completed,server.offline',r.events.join(','));if(events===null)return;try{await call(`/api/enterprise/webhooks/${r.id}`,'PUT',{url,events:events.split(',').map(x=>x.trim()).filter(Boolean)});await webhooks();}catch(e){toast(e.message);}}));
+    wrap.append(btn('تحویل‌ها',async()=>{try{const d=await get(`/api/enterprise/webhooks/${r.id}/deliveries`);const out=$('enterprise-webhook-deliveries');out.replaceChildren();(d||[]).forEach(x=>{const row=el('div');line(row,`#${x.id} · ${x.event_key} · تلاش ${x.attempts} · ${x.delivered_at?'ارسال شد':x.dead_at?'Dead Letter':'در انتظار'} · ${x.last_error||''}`);if(x.dead_at)row.append(btn('تلاش مجدد',async()=>{try{await post(`/api/enterprise/webhooks/${r.id}/retry`,{delivery_id:x.id});await webhooks();}catch(e){toast(e.message);}}));out.append(row);});}catch(e){toast(e.message);}}));
+    wrap.append(btn(r.enabled?'توقف':'فعال‌سازی',async()=>{try{await call(`/api/enterprise/webhooks/${r.id}`,'PUT',{enabled:!r.enabled});await webhooks();}catch(e){toast(e.message);}}));
+    wrap.append(btn('چرخش Secret',async()=>{try{const d=await call(`/api/enterprise/webhooks/${r.id}`,'PUT',{rotate_secret:true});toast(`Secret جدید را ذخیره کنید:\n${d.secret}`);}catch(e){toast(e.message);}}));
+    wrap.append(btn('حذف',async()=>{if(!await window.SonarUI.confirm('Webhook حذف شود؟'))return;try{await call(`/api/enterprise/webhooks/${r.id}`,'DELETE');await webhooks();}catch(e){toast(e.message);}}));
     host.append(wrap);
    });if(!rows?.length)host.textContent='Webhook ثبت نشده است.';
   }catch(e){host.textContent=e.message;}
@@ -120,7 +120,7 @@
   const host=$('enterprise-tokens');if(!host)return;
   try{const rows=await get('/api/enterprise/tokens');host.replaceChildren();
    (rows||[]).forEach(r=>{const wrap=el('div');wrap.className='listitem';line(wrap,`#${r.id} · ${r.label} · ${r.scopes.join(', ')} · انقضا: ${r.expires_at||'بدون انقضا'} · ${r.revoked_at?'لغوشده':'فعال'}`);
-    if(!r.revoked_at)wrap.append(btn('لغو Token',async()=>{if(!confirm('Token لغو شود؟'))return;try{await call(`/api/enterprise/tokens/${r.id}`,'DELETE');await tokens();}catch(e){alert(e.message);}}));
+    if(!r.revoked_at)wrap.append(btn('لغو Token',async()=>{if(!await window.SonarUI.confirm('Token لغو شود؟'))return;try{await call(`/api/enterprise/tokens/${r.id}`,'DELETE');await tokens();}catch(e){toast(e.message);}}));
     host.append(wrap);
    });if(!rows?.length)host.textContent='Token ثبت نشده است.';
   }catch(e){host.textContent=e.message;}
@@ -140,24 +140,24 @@
   $('enterprise-health-policy-form')?.addEventListener('submit',e=>{e.preventDefault();healthPolicy(false);});
   $('enterprise-operation-form')?.addEventListener('submit',async e=>{
    e.preventDefault();const ids=$('enterprise-server-ids').value.split(',').map(x=>Number(x.trim()));
-   if(!ids.length||ids.some(x=>!Number.isSafeInteger(x)||x<1)){alert('شناسه سرورها نامعتبر است');return;}
-   try{await post('/api/enterprise/operations',{kind:$('enterprise-operation-kind').value,service:$('enterprise-operation-service')?.value||'sonar-agent',server_ids:ids,idempotency_key:`web-${Date.now()}-${Math.random().toString(36).slice(2,10)}`});await operations();}catch(err){alert(err.message);}
+   if(!ids.length||ids.some(x=>!Number.isSafeInteger(x)||x<1)){toast('شناسه سرورها نامعتبر است');return;}
+   try{await post('/api/enterprise/operations',{kind:$('enterprise-operation-kind').value,service:$('enterprise-operation-service')?.value||'sonar-agent',server_ids:ids,idempotency_key:`web-${Date.now()}-${Math.random().toString(36).slice(2,10)}`});await operations();}catch(err){toast(err.message);}
   });
-  $('enterprise-backup-form')?.addEventListener('submit',async e=>{e.preventDefault();try{await post('/api/enterprise/backups/schedules',{name:$('enterprise-backup-name').value,cadence:$('enterprise-backup-cadence').value,destination:$('enterprise-backup-destination').value,retention:Number($('enterprise-backup-retention').value)});await backups();alert('زمان‌بندی ثبت شد.');}catch(err){alert(err.message);}});
+  $('enterprise-backup-form')?.addEventListener('submit',async e=>{e.preventDefault();try{await post('/api/enterprise/backups/schedules',{name:$('enterprise-backup-name').value,cadence:$('enterprise-backup-cadence').value,destination:$('enterprise-backup-destination').value,retention:Number($('enterprise-backup-retention').value)});await backups();toast('زمان‌بندی ثبت شد.');}catch(err){toast(err.message);}});
   $('enterprise-webhook-form')?.addEventListener('submit',async e=>{e.preventDefault();const host=$('enterprise-webhook-result');try{const r=await post('/api/enterprise/webhooks',{url:$('enterprise-webhook-url').value,events:[$('enterprise-webhook-event').value]});host.textContent=`Webhook #${r.id} ساخته شد. Secret را همین حالا ذخیره کنید: ${r.secret}`;await webhooks();}catch(err){host.textContent=err.message;}});
   $('enterprise-agent-release-form')?.addEventListener('submit',async e=>{
-   e.preventDefault();const file=$('enterprise-agent-file')?.files?.[0];if(!file){alert('فایل Agent را انتخاب کنید.');return;}
-   if(file.size>2_000_000){alert('حداکثر حجم Artifact دو مگابایت است.');return;}
+   e.preventDefault();const file=$('enterprise-agent-file')?.files?.[0];if(!file){toast('فایل Agent را انتخاب کنید.');return;}
+   if(file.size>2_000_000){toast('حداکثر حجم Artifact دو مگابایت است.');return;}
    try{
     const buffer=await file.arrayBuffer();const digest=await crypto.subtle.digest('SHA-256',buffer);
     const hash=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
     const bytes=new Uint8Array(buffer);let binary='';for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));
     const artifact_base64=btoa(binary);
     const r=await post('/api/enterprise/agent/releases',{version:$('enterprise-agent-version').value,sha256:hash,artifact_base64,signature:$('enterprise-agent-signature').value.trim(),channel:$('enterprise-agent-channel').value});
-    $('enterprise-agent-release-id').value=r.id;$('enterprise-agent-release-result').textContent=`Release #${r.id} ثبت شد. SHA-256: ${r.sha256}`;alert('امضا و هش Artifact تأیید شد.');
+    $('enterprise-agent-release-id').value=r.id;$('enterprise-agent-release-result').textContent=`Release #${r.id} ثبت شد. SHA-256: ${r.sha256}`;toast('امضا و هش Artifact تأیید شد.');
    }catch(err){$('enterprise-agent-release-result').textContent=err.message;}
   });
-  $('enterprise-agent-rollout-form')?.addEventListener('submit',async e=>{e.preventDefault();const ids=$('enterprise-agent-server-ids').value.split(',').map(x=>Number(x.trim()));if(!ids.length||ids.some(x=>!Number.isSafeInteger(x)||x<1)){alert('شناسه سرورها نامعتبر است');return;}try{await post('/api/enterprise/agent/rollouts',{release_id:Number($('enterprise-agent-release-id').value),server_ids:ids,batch_size:Number($('enterprise-agent-batch').value),canary_count:Number($('enterprise-agent-canary').value)});await rollouts();}catch(err){alert(err.message);}});
+  $('enterprise-agent-rollout-form')?.addEventListener('submit',async e=>{e.preventDefault();const ids=$('enterprise-agent-server-ids').value.split(',').map(x=>Number(x.trim()));if(!ids.length||ids.some(x=>!Number.isSafeInteger(x)||x<1)){toast('شناسه سرورها نامعتبر است');return;}try{await post('/api/enterprise/agent/rollouts',{release_id:Number($('enterprise-agent-release-id').value),server_ids:ids,batch_size:Number($('enterprise-agent-batch').value),canary_count:Number($('enterprise-agent-canary').value)});await rollouts();}catch(err){toast(err.message);}});
  });
  window.SonarEnterprise={load,health,operations,analytics,rollouts,incidents,backups,webhooks,tokens};
 })();

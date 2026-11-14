@@ -270,7 +270,7 @@ async def scheduled_config_probe_job(context):
         async def probe(row, monitor, owner):
             async with sem:
                 try:
-                    ok, data = await asyncio.wait_for(tunnel_manager._test_via_ws(monitor, row['link'], size=.25, timeout=30), timeout=35)
+                    ok, data = await asyncio.wait_for(tunnel_manager._test_via_ws(monitor, row['link'], size=.25, timeout=30,owner_id=owner), timeout=35)
                     if ok and isinstance(data, dict) and data.get('status') in ('OK', 'Fail'):
                         await asyncio.to_thread(_record, owner, row['id'], f"scheduled:{monitor['id']}", data)
                 except Exception:

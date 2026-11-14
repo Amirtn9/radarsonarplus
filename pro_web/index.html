@@ -7,11 +7,11 @@
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/console.css">
   <link rel="stylesheet" href="/static/next.css">
-  <link rel="stylesheet" href="/static/vendor/xterm.css">
+
   <link rel="stylesheet" href="/static/ssh-terminal.css">
   <link rel="stylesheet" href="/static/premium.css">
-  <script defer src="/static/vendor/xterm.js"></script>
-  <script defer src="/static/vendor/xterm-fit.js"></script>
+  <script defer src="/static/ui.js"></script>
+
   <script defer src="/static/web_ops.js"></script>
   <!-- Telegram WebApp SDK is loaded asynchronously by app.js with a bounded timeout. -->
   <script defer src="/static/telemetry.js"></script>
@@ -25,6 +25,7 @@
   <script defer src="/static/subscriptions.js"></script>
   <link rel="stylesheet" href="/static/config_alerts.css">
 <link rel="stylesheet" href="/static/workspace.css?v=6.9.10"><script defer src="/static/reports.js?v=6.9.10"></script><script defer src="/static/server-help.js?v=6.9.10"></script><script defer src="/static/log-management.js"></script>
+<link rel="stylesheet" href="/static/product.css"><script defer src="/static/product.js"></script>
 <link rel="stylesheet" href="/static/control.css"><script defer src="/static/billing.js"></script><script defer src="/static/control.js"></script>
 </head>
 <body>
@@ -38,7 +39,7 @@
   <aside id="side-navigation" class="sidebar" aria-label="منوی پنل">
     <div class="brand"><div class="brandmark"><img src="/static/sonar-radar-mark.png" alt="" aria-hidden="true"></div><div><b>SONAR <span>RADAR</span></b><small>INFRASTRUCTURE CONTROL</small></div></div>
     <p class="navtitle">دسترسی سریع</p>
-    <nav id="navigation" aria-label="بخش‌ها"><button class="navbtn" data-tab="billing">اشتراک و کیف پول</button><button class="navbtn" data-tab="users" id="billing-admin-tab" hidden>مدیریت کاربران و فروش</button>
+    <nav id="navigation" aria-label="بخش‌ها"><button class="navbtn" data-tab="billing">اشتراک و کیف پول</button><button class="navbtn" data-tab="users" id="billing-admin-tab" hidden>مدیریت مرکزی</button>
       <button class="navbtn active" data-tab="overview"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg><span class="nav-label">خانه</span></button>
       <div class="nav-group-label">منابع</div><button class="navbtn" data-tab="servers"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6"/></svg><span class="nav-label">سرورها</span></button>
       <button class="navbtn" data-tab="configs"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="m4.5 7.8 7.5 4.4 7.5-4.4M12 12.2V21"/></svg><span class="nav-label">کانفیگ‌ها</span></button>

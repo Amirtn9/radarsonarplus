@@ -56,7 +56,7 @@ def claim(db):
         cur.execute("UPDATE sonar_config_probes SET state='failed',error_code='WORKER_INTERRUPTED',completed_at=NOW() WHERE state='running' AND lease_until<NOW()")
         cur.execute("SELECT * FROM sonar_config_probes WHERE state='pending' ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 5")
         rows=[dict(r) for r in cur.fetchall()]
-        for row in rows:cur.execute("UPDATE sonar_config_probes SET state='running',lease_until=NOW()+INTERVAL '90 seconds' WHERE id=%s",(row['id'],))
+        for row in rows:cur.execute("UPDATE sonar_config_probes SET state='running',lease_until=NOW()+INTERVAL '6 minutes' WHERE id=%s",(row['id'],))
         conn.commit();return rows
 
 
@@ -72,7 +72,7 @@ async def execute(pro,job):
         if not cfg:raise UserError('QUOTA_OR_RESOURCE_UNAVAILABLE')
         monitor=await asyncio.to_thread(select_monitor_row,pro.db,job['owner_id'],SUPER_ADMIN_ID)
         if not monitor:raise UserError('MONITOR_NODE_UNAVAILABLE')
-        ok,data=await asyncio.wait_for(tunnel_manager._test_via_ws(monitor,cfg['link'],size=0,timeout=30),timeout=35)
+        ok,data=await asyncio.wait_for(tunnel_manager._test_via_ws(monitor,cfg['link'],size=0,timeout=30,owner_id=job['owner_id']),timeout=35)
         if not ok or not isinstance(data,dict) or data.get('status') not in ('OK','Fail'):raise UserError('PROBE_UNAVAILABLE')
         if data['status']=='OK' and any(type(data.get(k)) not in (int,float) or not math.isfinite(data[k]) or data[k]<(0 if k=='jitter' else .000001) for k in ('ping','jitter')):raise UserError('INVALID_PROBE_RESULT')
         result={k:data[k] for k in ('status','ping','jitter') if k in data}

@@ -86,7 +86,7 @@
        const row=document.createElement('div');row.className='item';
        const name=document.createElement('span');name.textContent=group.name;row.append(name);
        const del=document.createElement('button');del.type='button';del.textContent='حذف پوشه';
-       del.onclick=async()=>{if(!confirm('پوشه حذف و سرورهای آن بدون پوشه شوند؟'))return;
+       del.onclick=async()=>{if(!await window.SonarUI.confirm('پوشه حذف و سرورهای آن بدون پوشه شوند؟'))return;
          try{await request(`/api/operations/groups/${group.id}`,{method:'DELETE'});await loadGroups();}catch(err){toast(err.message);}};
        row.append(del);host.append(row);
      });
@@ -144,7 +144,7 @@
    }catch(err){serverStatus.textContent=err.message;}finally{btn.disabled=false;}
  });
  id('web-agent-install')?.addEventListener('click',async e=>{
-   const sid=currentServer();if(!sid||!confirm('تعمیر Agent و ثبت مجدد گواهی TLS اجرا شود؟ سرویس بررسی می‌شود و پس از تأیید WSS، گواهی دوباره در دیتابیس ثبت خواهد شد.'))return;
+   const sid=currentServer();if(!sid||!await window.SonarUI.confirm('تعمیر Agent و ثبت مجدد گواهی TLS اجرا شود؟ سرویس بررسی می‌شود و پس از تأیید WSS، گواهی دوباره در دیتابیس ثبت خواهد شد.'))return;
    e.currentTarget.disabled=true;
    try{const r=await jsonPost(`/api/operations/server/${sid}/agent/re-enroll`,{confirmed:true});
      serverStatus.textContent=`درخواست تعمیر و ثبت مجدد TLS با شناسه #${r.job_id} ثبت شد؛ نتیجه پس از تست واقعی WSS نمایش داده می‌شود.`;watchInstall(sid);
@@ -152,9 +152,9 @@
  });
  id('web-agent-port-update')?.addEventListener('click',async()=>{
    const sid=currentServer();if(!sid)return;
-   const text=prompt('پورت جدید Agent (۱۰۲۴ تا ۶۵۵۳۵):');if(text===null)return;
+   const text=await window.SonarUI.ask('پورت جدید Agent (۱۰۲۴ تا ۶۵۵۳۵):');if(text===null)return;
    const port=Number(text);if(!Number.isInteger(port)||port<1024||port>65535){toast('پورت نامعتبر');return;}
-   if(!confirm(`تغییر پورت ذخیره‌شده به ${port}؟ پس از این مرحله باید Agent را تعمیر کنید.`))return;
+   if(!await window.SonarUI.confirm(`تغییر پورت ذخیره‌شده به ${port}؟ پس از این مرحله باید Agent را تعمیر کنید.`))return;
    try{await jsonPost(`/api/operations/server/${sid}/agent-port`,{port});serverStatus.textContent='پورت ذخیره شد. برای اعمال روی سرور، Agent را مجدداً نصب کنید.';window.SonarConsole?.loadServer?.();}
    catch(err){serverStatus.textContent=err.message;}
  });
@@ -162,7 +162,7 @@
    const sid=currentServer();if(!sid)return;
    try{
      const existing=await request(`/api/console/servers/${sid}`);
-     const name=prompt('نام جدید سرور:',existing.name);if(name===null)return;
+     const name=await window.SonarUI.ask('نام جدید سرور:',existing.name);if(name===null)return;
      await jsonPost(`/api/operations/server/${sid}/rename`,{name:name.trim()});
      serverStatus.textContent='نام سرور تغییر کرد.';window.SonarConsole?.loadServer?.();
    }catch(err){serverStatus.textContent=err.message;}
@@ -172,7 +172,7 @@
    try{
      const groups=await request('/api/operations/groups');
      const options=groups.map(g=>`${g.id}: ${g.name}`).join(' | ');
-     const raw=prompt('شناسه پوشه (۰ = بدون پوشه): '+options,'0');if(raw===null)return;
+     const raw=await window.SonarUI.ask('شناسه پوشه (۰ = بدون پوشه): '+options,'0');if(raw===null)return;
      if(!/^\d+$/.test(raw.trim())){toast('شناسه پوشه نامعتبر است');return;}
      await jsonPost(`/api/operations/server/${sid}/group`,{group_id:Number(raw.trim())});
      serverStatus.textContent='پوشه سرور تغییر کرد.';window.SonarConsole?.loadServer?.();
@@ -184,7 +184,7 @@
    const host=id('web-config-actions-status');
    try{
      const info=await request(`/api/console/configs/${cid}`);
-     const typed=prompt(`برای حذف کانفیگ #${cid}، نام آن را وارد کنید: ${info.name}`);
+     const typed=await window.SonarUI.ask(`برای حذف کانفیگ #${cid}، نام آن را وارد کنید: ${info.name}`);
      if(typed!==info.name){host.textContent='نام مطابقت ندارد.';return;}
      await jsonPost(`/api/operations/config/${cid}/delete`,{confirm_id:cid,confirm_name:typed});
      host.textContent='کانفیگ حذف شد.';tabClick('configs');
@@ -194,7 +194,7 @@
    const sid=currentServer();if(!sid)return;
    try{
      const info=await request(`/api/console/servers/${sid}`);
-     const typed=prompt(`برای حذف سرور #${sid} نام آن را دقیقاً وارد کنید: ${info.name}`);
+     const typed=await window.SonarUI.ask(`برای حذف سرور #${sid} نام آن را دقیقاً وارد کنید: ${info.name}`);
      if(typed!==info.name){toast('نام سرور مطابقت ندارد');return;}
      await jsonPost(`/api/operations/server/${sid}/delete`,{confirm_id:sid,confirm_name:typed});
      serverStatus.textContent='سرور حذف شد.';tabClick('servers');
@@ -226,7 +226,7 @@
  const logout=id('web-logout');
  if(logout && !(window.Telegram?.WebApp?.initData)){
    logout.hidden=false;logout.onclick=async()=>{
-     if(!confirm('از نسخه وب خارج شوید؟'))return;
+     if(!await window.SonarUI.confirm('از نسخه وب خارج شوید؟'))return;
      try{await jsonPost('/api/web/logout',{});location.reload();}catch(err){toast(err.message);}
    };
  }

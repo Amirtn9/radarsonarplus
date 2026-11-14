@@ -47,7 +47,7 @@ let csrfToken='';
 const $=id=>document.getElementById(id);
 const state={tab:'overview',index:1,search:'',admin:false,listingRequest:0,resourceRequest:0,onlyFavorites:false,incidentStatus:'unresolved',selectedConfigs:new Set()};
 window.SonarWebAuth={getCsrf:()=>csrfToken,setCsrf:value=>{csrfToken=String(value||'');}};
-const titles={billing:'اشتراک و کیف پول',users:'مدیریت کاربران و فروش',overview:'داشبورد',servers:'مدیریت سرورها',configs:'کانفیگ‌ها و اشتراک‌ها',rankings:'رتبه‌بندی کیفیت',incidents:'مرکز رخدادها',enterprise:'مرکز سازمانی',team:'اعضای تیم',audit:'فعالیت‌ها',settings:'تنظیمات',reports:'گزارش‌ها',support:'مرکز عیب‌یابی',fleet:'استخر Agentهای چندمنطقه‌ای',balancer:'بالانسر مسیرها',services:'مانیتورینگ سرویس‌ها',channels:'اطلاع‌رسانی', 'server-detail':'جزئیات سرور','config-detail':'جزئیات کانفیگ','web-create':'افزودن منبع جدید'};
+const titles={billing:'اشتراک و کیف پول',users:'مدیریت مرکزی',overview:'داشبورد',servers:'مدیریت سرورها',configs:'کانفیگ‌ها و اشتراک‌ها',rankings:'رتبه‌بندی کیفیت',incidents:'مرکز رخدادها',enterprise:'مرکز سازمانی',team:'اعضای تیم',audit:'فعالیت‌ها',settings:'تنظیمات',reports:'گزارش‌ها',support:'مرکز عیب‌یابی',fleet:'استخر Agentهای چندمنطقه‌ای',balancer:'بالانسر مسیرها',services:'مانیتورینگ سرویس‌ها',channels:'اطلاع‌رسانی', 'server-detail':'جزئیات سرور','config-detail':'جزئیات کانفیگ','web-create':'افزودن منبع جدید'};
 const elem=(tag,text,cl)=>{const el=document.createElement(tag);if(text!=null)el.textContent=String(text);if(cl)el.className=cl;return el;};
 function toast(text){$('toast').textContent=text;$('toast').classList.add('visible');clearTimeout(toast.delay);toast.delay=setTimeout(()=>$('toast').classList.remove('visible'),4000);}
 async function boundedFetch(path,options){
@@ -60,7 +60,7 @@ async function boundedFetch(path,options){
  }
 }
 async function stepUp(){
- const code=prompt('برای تأیید مجدد، یک کد ورود تازه از ربات بگیرید و وارد کنید:');
+ const code=await window.SonarUI.ask('برای تأیید مجدد، یک کد ورود تازه از ربات بگیرید و وارد کنید:');
  if(!code)throw Error('تأیید مجدد لغو شد');
  await jsonPost('/api/control/step-up',{code:code.trim()});
 }
@@ -68,7 +68,7 @@ window.SonarStepUp=async()=>{const result=await request('/api/control/step-up');
 async function request(path,options={}){
   // Use signed Telegram initData until it is exchanged for an HttpOnly cookie session.
   const method=String(options.method||'GET').toUpperCase();
-  const response=await boundedFetch(path,{...options,credentials:'same-origin',cache:'no-store',headers:{...(Date.now()-lastInteraction<60000?{'X-User-Activity':'1'}:{}),...(activeWorkspace&&!path.startsWith('/api/billing')&&!['/api/me','/api/control/workspaces','/api/control/sessions'].some(p=>path.startsWith(p))?{'X-Workspace-Id':activeWorkspace}:{}),...(auth&&!cookieAuth?{Authorization:'tma '+auth}:{}),...((!auth||cookieAuth)&&method!=='GET'&&method!=='HEAD'?{'X-CSRF-Token':csrfToken}:{}),...options.headers}});
+  const response=await boundedFetch(path,{...options,credentials:'same-origin',cache:'no-store',headers:{...(Date.now()-lastInteraction<60000?{'X-User-Activity':'1'}:{}),...(activeWorkspace&&!path.startsWith('/api/billing')&&(!path.startsWith('/api/product')||path.startsWith('/api/product/search'))&&!['/api/me','/api/control/workspaces','/api/control/sessions'].some(p=>path.startsWith(p))?{'X-Workspace-Id':activeWorkspace}:{}),...(auth&&!cookieAuth?{Authorization:'tma '+auth}:{}),...((!auth||cookieAuth)&&method!=='GET'&&method!=='HEAD'?{'X-CSRF-Token':csrfToken}:{}),...options.headers}});
   if(response.status===401){if(document.body?.dataset)delete document.body.dataset.authenticated;if(!isMiniApp()){$('web-auth').hidden=false;if(location.pathname!=='/login')history.replaceState({},'','/login?next='+encodeURIComponent(panelRoutes[state.tab]||'/dashboard'));}else{const banner=$('session-warning');if(banner)banner.hidden=false;}}
   if(!response.ok){let message=`خطای ارتباط (${response.status})`;try{const d=await response.json();message=d.detail||message;}catch{}if(message==='STEP_UP_REQUIRED'&&!options.stepUpRetried){await stepUp();return request(path,{...options,stepUpRetried:true});}throw Error(message);}
   if(options.raw)return response;
@@ -122,7 +122,8 @@ const panelRoutes={overview:'/dashboard',servers:'/servers',configs:'/configs',s
 let restoringRoute=false;
 function updateRoute(replace=false){
  if(!panelAuthenticated)return;
- let path=panelRoutes[state.tab];if(state.tab==='server-detail')path='/servers/'+window.SonarConsole?.currentServerId?.();if(state.tab==='config-detail')path='/configs/'+window.SonarConsole?.currentConfigId?.();if(!path)return;
+ if(state.tab==='users'&&location.pathname.startsWith('/admin/'))return;
+ let path=state.tab==='users'&&location.pathname.startsWith('/admin/')?location.pathname:panelRoutes[state.tab];if(state.tab==='server-detail')path='/servers/'+window.SonarConsole?.currentServerId?.();if(state.tab==='config-detail')path='/configs/'+window.SonarConsole?.currentConfigId?.();if(!path)return;
  const url=new URL(path,location.origin);
  if(state.search)url.searchParams.set('q',state.search);
  if(state.index>1)url.searchParams.set('page',String(state.index));
@@ -132,10 +133,11 @@ function updateRoute(replace=false){
  if(location.pathname+location.search!==target)history[replace?'replaceState':'pushState']({tab:state.tab},'',target+(cookieAuth?'':location.hash));
 }
 function routeFromLocation(){
+ if(location.pathname.startsWith('/admin/'))return 'users';
  const detail=location.pathname.match(/^\/(servers|configs)\/([1-9][0-9]*)$/);if(detail)return detail[1]==='servers'?'server-detail':'config-detail';
  const query=new URLSearchParams(location.search),path=Object.keys(panelRoutes).find(key=>panelRoutes[key]===location.pathname);
  const fallback=query.get('view');
- const next=query.get('next');if(next){try{const url=new URL(next,location.origin);if(url.origin===location.origin){const match=url.pathname.match(/^\/(servers|configs)\/([1-9][0-9]*)$/);if(match){window.SonarConsole?.setActive(match[1]==='servers'?'server':'config',Number(match[2]));return match[1]==='servers'?'server-detail':'config-detail';}const view=Object.keys(panelRoutes).find(k=>panelRoutes[k]===url.pathname);if(view)return view;}}catch{}}
+ const next=query.get('next');if(next){try{const url=new URL(next,location.origin);if(url.origin===location.origin){if(/^\/admin\/(overview|users|plans|payments|discounts|messages|staff|reports|activity|settings)$/.test(url.pathname)){history.replaceState({},'',url.pathname+url.search);return 'users';}const match=url.pathname.match(/^\/(servers|configs)\/([1-9][0-9]*)$/);if(match){window.SonarConsole?.setActive(match[1]==='servers'?'server':'config',Number(match[2]));return match[1]==='servers'?'server-detail':'config-detail';}const view=Object.keys(panelRoutes).find(k=>panelRoutes[k]===url.pathname);if(view)return view;}}catch{}}
  return (['/','/login','/dashboard'].includes(location.pathname)&&Object.prototype.hasOwnProperty.call(titles,fallback)?fallback:null)||path||(Object.prototype.hasOwnProperty.call(titles,fallback)?fallback:'overview');
 }
 function restoreRoute(){
@@ -186,7 +188,7 @@ function rowItem(item){const root=elem('article',null,'item'),detail=elem('div')
  const controls=elem('div',null,'tools');
  if(state.tab==='configs'&&item.type!=='sub_source'){const select=elem('input');select.type='checkbox';select.setAttribute('aria-label','انتخاب برای آزمون گروهی');select.checked=state.selectedConfigs.has(item.id);select.onchange=()=>{if(select.checked)state.selectedConfigs.add(item.id);else state.selectedConfigs.delete(item.id);};controls.append(select);}
  if(['servers','configs'].includes(state.tab)){const b=elem('button',item.favorite?'★':'☆');b.setAttribute('aria-label','تغییر علاقه‌مندی');b.onclick=async()=>{try{const v=await jsonPost('/api/favorites',{kind:state.tab==='servers'?'server':'config',rid:item.id});item.favorite=v.favorite;b.textContent=v.favorite?'★':'☆';toast('علاقه‌مندی ذخیره شد');}catch(e){toast(e.message);}};controls.append(b);}
- if(['servers','configs'].includes(state.tab)){const tag=elem('button','🏷 برچسب');tag.setAttribute('aria-label','افزودن برچسب');tag.onclick=async()=>{const value=prompt('برچسب کوتاه بنویسید (حداکثر ۳۲ کاراکتر):');if(!value)return;try{await jsonPost('/api/console/tags',{kind:state.tab==='servers'?'server':'config',rid:item.id,tag:value.trim()});toast('برچسب ذخیره شد');}catch(e){toast(e.message);}};controls.append(tag);const details=elem('button','جزئیات');details.className='primary';details.onclick=()=>window.SonarConsole?.openDetails(state.tab==='servers'?'server':'config',item.id);controls.append(details);}
+ if(['servers','configs'].includes(state.tab)){const tag=elem('button','🏷 برچسب');tag.setAttribute('aria-label','افزودن برچسب');tag.onclick=async()=>{const value=await window.SonarUI.ask('برچسب کوتاه بنویسید (حداکثر ۳۲ کاراکتر):');if(!value)return;try{await jsonPost('/api/console/tags',{kind:state.tab==='servers'?'server':'config',rid:item.id,tag:value.trim()});toast('برچسب ذخیره شد');}catch(e){toast(e.message);}};controls.append(tag);const details=elem('button','جزئیات');details.className='primary';details.onclick=()=>window.SonarConsole?.openDetails(state.tab==='servers'?'server':'config',item.id);controls.append(details);}
  if(state.tab==='rankings'){controls.append(elem('strong',`${item.score??0}/100`,'score'));const b=elem('button','📈 نمودار');b.onclick=()=>drawTrend(item);controls.append(b);}
  if(state.tab==='incidents'&&item.status==='open'){const b=elem('button','تأیید مشاهده');b.onclick=async()=>{try{await jsonPost('/api/incidents/ack',{incident_id:item.id});await loadList();}catch(e){toast(e.message);}};controls.append(b);}
  root.append(controls);return root;
@@ -395,7 +397,7 @@ async function loadServices(){
      try{await jsonPost('/api/services/'+x.id+'/enabled',{enabled:!x.enabled});await loadServices();toast('وضعیت ذخیره شد');}catch(err){toast(err.message);}
    };buttons.append(pause);
    const del=elem('button','حذف');del.classList.add('destructive');del.onclick=async()=>{
-    if(!confirm('مانیتور «'+x.name+'» و تاریخچه آن حذف شود؟'))return;
+    if(!await window.SonarUI.confirm('مانیتور «'+x.name+'» و تاریخچه آن حذف شود؟'))return;
     try{await request('/api/services/'+x.id,{method:'DELETE'});await loadServices();toast('مانیتور حذف شد');}
     catch(err){toast(err.message);}
    };buttons.append(del);card.append(buttons);host.append(card);

@@ -384,7 +384,7 @@ async def probe(update,context):
     for monitor in monitors:
         label=f"{monitor.get('location_type') or 'unknown'}:{monitor.get('name') or monitor['id']}:{monitor['id']}"[:80]
         try:
-            ok,data=await asyncio.wait_for(tunnel_manager._test_via_ws(monitor,cfg['link'],size=.25,timeout=35),timeout=42)
+            ok,data=await asyncio.wait_for(tunnel_manager._test_via_ws(monitor,cfg['link'],size=.25,timeout=35,owner_id=owner),timeout=42)
             result=data if ok and isinstance(data,dict) else {'status':'Unknown'}
         except Exception:
             result={'status':'Unknown'}

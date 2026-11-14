@@ -43,8 +43,8 @@ window.SonarLogs=(()=>{
  el('managed-log-prev')?.addEventListener('click',()=>{if(page>1){page--;void load();}});
  el('managed-log-next')?.addEventListener('click',()=>{page++;void load();});
  el('managed-log-delete')?.addEventListener('click',async()=>{
-  if(!confirm('تمام لاگ‌های پایگاه داده و تاریخچه فعالیت همه کاربران برای همیشه پاک شوند؟ این عملیات بازگشت ندارد.'))return;
-  const confirmation=prompt('برای تأیید نهایی عبارت DELETE ALL LOGS را دقیق وارد کنید.');
+  if(!await window.SonarUI.confirm('تمام لاگ‌های پایگاه داده و تاریخچه فعالیت همه کاربران برای همیشه پاک شوند؟ این عملیات بازگشت ندارد.'))return;
+  const confirmation=await window.SonarUI.ask('برای تأیید نهایی عبارت DELETE ALL LOGS را دقیق وارد کنید.');
   if(confirmation!=='DELETE ALL LOGS')return;
   const button=el('managed-log-delete');button.disabled=true;
   try{
@@ -74,8 +74,8 @@ window.SonarLogs=(()=>{
  }
  el('managed-log-purge-all')?.addEventListener('click',async()=>{
   const remote=el('managed-log-remote').checked;
-  if(!confirm(`لاگ‌های دیتابیس، فایل‌ها، نصب و journal اختصاصی Sonar${remote?' و Agentهای همه نودهای ذخیره‌شده':''} حذف شوند؟ حذف میان چند منبع تراکنش مشترک ندارد؛ journal مشترک سرویس‌های دیگر پاک نمی‌شود.`))return;
-  if(prompt('برای تأیید نهایی DELETE ALL LOGS را وارد کنید.')!=='DELETE ALL LOGS')return;
+  if(!await window.SonarUI.confirm(`لاگ‌های دیتابیس، فایل‌ها، نصب و journal اختصاصی Sonar${remote?' و Agentهای همه نودهای ذخیره‌شده':''} حذف شوند؟ حذف میان چند منبع تراکنش مشترک ندارد؛ journal مشترک سرویس‌های دیگر پاک نمی‌شود.`))return;
+  if(await window.SonarUI.ask('برای تأیید نهایی DELETE ALL LOGS را وارد کنید.')!=='DELETE ALL LOGS')return;
   const button=el('managed-log-purge-all');button.disabled=true;
   try{
    const created=await window.SonarWebRequest('/api/admin/logs/purge',{method:'POST',headers:{'Content-Type':'application/json'},

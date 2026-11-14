@@ -85,7 +85,7 @@ def build():
                 if fn in ('B','InlineKeyboardButton') and node.args:
                     label=literal(node.args[0]).strip()
                     callback=next((literal(kw.value) for kw in node.keywords if kw.arg=='callback_data'),'')
-                    admin=self.admin or callback.startswith(('admin_','v6_admin','v6_diag','fleet_','enterprise_','ent_','balancer_','bill_admin','bill_review','bill_approve','bill_reject'))
+                    admin=self.admin or callback.startswith(('admin_','v6_admin','v6_diag','fleet_','enterprise_','ent_','balancer_','bill_admin','bill_review','bill_approve','bill_reject','bill_console','bill_customer','bill_action'))
                     if label.strip(' …'):
                         group=('مدیریت' if admin else 'اعلان‌ها' if name=='config_alert_bot.py' or 'cron' in self.function or 'alert' in self.function
                                else 'همکاری' if name=='workspace_ui.py' else 'سرویس‌ها' if name=='service_bot.py'

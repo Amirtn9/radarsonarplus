@@ -19,4 +19,7 @@ def sweep(db):
                 JOIN sonar_hosting_agents a ON a.id=h.agent_id WHERE a.owner_id=%s AND h.created_at<NOW()-(%s*INTERVAL '1 day') LIMIT 10000)''',(uid,days));removed+=cur.rowcount
             cur.execute("DELETE FROM sonar_config_probes WHERE owner_id=%s AND state IN ('succeeded','failed') AND completed_at<NOW()-(%s*INTERVAL '1 day')",(uid,days))
         cur.execute("UPDATE pro_job_cursors SET last_id=%s,updated_at=NOW() WHERE name='plan_retention'",(owners[-1]['user_id'] if owners else 0,))
+        for table,condition in (('sonar_consumption_events',"period<(NOW() AT TIME ZONE 'Asia/Tehran')::date-2"),('sonar_daily_usage',"period<(NOW() AT TIME ZONE 'Asia/Tehran')::date-366"),('sonar_probe_slots','expires_at<NOW()')):
+            cur.execute(f'DELETE FROM {table} WHERE ctid IN(SELECT ctid FROM {table} WHERE {condition} LIMIT 10000)')
+            removed+=cur.rowcount
         conn.commit();return removed

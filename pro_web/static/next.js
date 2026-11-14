@@ -123,7 +123,7 @@
       const status=node.last_probe_ok===true?'🟢 WSS تأییدشده':(node.last_probe_ok===false?'🔴 ناموفق':'⚪️ بررسی نشده');
       card.append(title,safeNode('p',`شناسه ${node.id} • پورت ${node.port} • ${status}`,'muted'),
                 safeNode('p',`RTT: ${node.latency_ms==null?'—':node.latency_ms+' ms'} • CPU: ${node.cpu==null?'—':node.cpu+'٪'}`,'muted'));
-      if(fleetAdmin){const disable=safeNode('button','⛔ غیرفعال‌سازی','fleet-disable');disable.onclick=async()=>{if(!confirm('این Agent از استخر خارج شود؟'))return;try{await jsonPost('/api/fleet/approve',{server_ids:[node.id],enabled:false});await loadFleet();}catch(e){toast(e.message);}};card.append(disable);}
+      if(fleetAdmin){const disable=safeNode('button','⛔ غیرفعال‌سازی','fleet-disable');disable.onclick=async()=>{if(!await window.SonarUI.confirm('این Agent از استخر خارج شود؟'))return;try{await jsonPost('/api/fleet/approve',{server_ids:[node.id],enabled:false});await loadFleet();}catch(e){toast(e.message);}};card.append(disable);}
       fleetList.append(card);
     });
     const target=el('fleet-target'),selected=target.value;target.replaceChildren();
@@ -137,7 +137,7 @@
       if(offered.has(s.id))continue;
       const region=s.location_type==='ir'?'ایران':'خارج';
       const btn=safeNode('button',`🤝 پیشنهاد سرور ${region} «${s.name}» برای Agent`,`fleet-offer`);
-      btn.onclick=async()=>{if(!confirm('با اشتراک منابع فنی این سرور با استخر مانیتورینگ موافقید؟'))return;try{await jsonPost('/api/fleet/offer',{server_id:s.id,enabled:true});await loadFleet();}catch(e){toast(e.message);}};
+      btn.onclick=async()=>{if(!await window.SonarUI.confirm('با اشتراک منابع فنی این سرور با استخر مانیتورینگ موافقید؟'))return;try{await jsonPost('/api/fleet/offer',{server_id:s.id,enabled:true});await loadFleet();}catch(e){toast(e.message);}};
       fleetList.append(btn);
     }
    }catch(e){fleetList.replaceChildren(safeNode('p',e.message,'bad'));}
@@ -147,7 +147,7 @@
  el('fleet-approve')?.addEventListener('click',async()=>{
    const ids=Array.from(fleetList.querySelectorAll('.fleet-check:checked')).map(x=>Number(x.value));
    if(!ids.length){toast('ابتدا یک یا چند Agent را تیک بزنید.');return;}
-   if(!confirm(`تأیید و فعال‌سازی ${ids.length} Agent انتخاب‌شده؟`))return;
+   if(!await window.SonarUI.confirm(`تأیید و فعال‌سازی ${ids.length} Agent انتخاب‌شده؟`))return;
    try{await jsonPost('/api/fleet/approve',{server_ids:ids,enabled:true});toast('انتخاب ثبت شد');await loadFleet();}catch(e){toast(e.message);}
  });
  el('fleet-diagnose')?.addEventListener('click',async()=>{
@@ -182,7 +182,7 @@
    const ids=Array.from(document.querySelectorAll('#fleet-candidates input:checked')).map(x=>Number(x.value));
    if(!ids.length){toast('یک یا چند سرور را انتخاب کنید');return;}
    const mode=byId('fleet-port-mode').value;
-   if(!confirm(`برای ${ids.length} سرور نصب خودکار انجام شود؟ تغییرات روی سرور واقعی اجرا خواهد شد.`))return;
+   if(!await window.SonarUI.confirm(`برای ${ids.length} سرور نصب خودکار انجام شود؟ تغییرات روی سرور واقعی اجرا خواهد شد.`))return;
    try{await jsonPost('/api/fleet/install',{server_ids:ids,port_mode:mode,confirmed:true});toast('درخواست نصب در صف ثبت شد');await loadInstall();}catch(err){toast(err.message);}
  });
  const parent=window.SonarNext?.loadFleet;
@@ -208,7 +208,7 @@
          node('p',`کل از آخرین بازنشانی: ${gb(row.total)} | امروز: ${gb(row.today)} | ۷ روز: ${gb(row.week)} | ۳۰ روز: ${gb(row.month)}`),
          node('small',`آخرین نمونه: ${row.sampled_at||'داده‌ای موجود نیست'}`));
        if(row.sampled_at){const b=node('button','بازنشانی شمارنده');
-         b.onclick=async()=>{if(!confirm(`شمارنده Agent #${row.agent_id} ریست شود؟ تاریخچه قبلی حفظ می‌شود.`))return;
+         b.onclick=async()=>{if(!await window.SonarUI.confirm(`شمارنده Agent #${row.agent_id} ریست شود؟ تاریخچه قبلی حفظ می‌شود.`))return;
            try{await jsonPost(`/api/fleet/traffic/${row.agent_id}/reset`,{confirmed:true});toast('شمارنده بازنشانی شد');await loadTraffic();}
            catch(err){toast(err.message);}};card.append(b);}
        list.append(card);

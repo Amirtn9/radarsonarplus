@@ -359,7 +359,7 @@ class ServerMonitor:
                     successful=isinstance(result,dict) and not result.get('error')
                     if not successful:return False,json.dumps(result,ensure_ascii=False)
                     return True,json.dumps({'type':'sub','configs':result.get('links',[]),'sub_info':result.get('sub_info',{})},ensure_ascii=False)
-                ok,result=await ServerMonitor.ws_test_config(monitor['ip'],port,None,link,size=size,timeout=timeout)
+                ok,result=await ServerMonitor.ws_test_config(monitor['ip'],port,None,link,size=size,timeout=timeout,owner_id=uid)
                 successful=bool(ok and isinstance(result,dict) and result.get('status')=='OK')
                 return ok,json.dumps(result,ensure_ascii=False)
             finally:
@@ -385,7 +385,21 @@ class ServerMonitor:
         return await loop.run_in_executor(SHARED_EXECUTOR, _runner)
 
     @staticmethod
-    async def ws_test_config(ip, ws_port, token, link, size=0.5, timeout=60):
+    async def ws_test_config(ip,ws_port,token,link,size=0.5,timeout=60,owner_id=None):
+        from consumption import start_probe,finish_probe
+        from runtime import run_sync
+        from database import Database
+        from workspace_service import ACTOR_ID
+        db=Database();actor=ACTOR_ID.get()
+        if owner_id is None and actor:owner_id=await run_sync(db.workspace_owner,actor)
+        lease=await run_sync(start_probe,db,int(owner_id)) if owner_id is not None else None
+        try:
+            return await ServerMonitor._ws_test_config_unmetered(ip,ws_port,token,link,size=size,timeout=timeout)
+        finally:
+            if lease:await asyncio.shield(run_sync(finish_probe,db,lease))
+
+    @staticmethod
+    async def _ws_test_config_unmetered(ip, ws_port, token, link, size=0.5, timeout=60):
         """تست یک کانفیگ از طریق وب‌سوکت پایدار (نسخه ۴.۲).
 
         روش قدیمی: باز کردن یک سشن SSH جدید + اجرای `python3 monitor_agent.py`

@@ -55,6 +55,9 @@ async def send_notification(context, owner, text, usage, *, parse_mode=None, db=
     failed = False
     durable=callable(getattr(db,'get_connection',None))
     event_key=event_key or ('direct:'+uuid.uuid4().hex)
+    if durable:
+        from consumption import consume
+        await run_sync(consume,db,owner,'notifications_daily',event_key)
     for chat, topic in sorted(targets):
         for start in range(0, max(1, len(text)), 3800):
             kwargs = {'chat_id': chat, 'text': text[start:start + 3800], 'parse_mode': parse_mode}

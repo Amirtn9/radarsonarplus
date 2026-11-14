@@ -662,7 +662,7 @@ async def test_single_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # تا یک کاربر نتواند کل ظرفیت نود مانیتورینگ را بگیرد.
         async with tunnel_manager._user_sem(shared_uid(update)), tunnel_manager.global_sem:
             ok, res = await ServerMonitor.ws_test_config(
-                ip, ws_port, token, cfg['link'], size=10.0, timeout=90
+                ip, ws_port, token, cfg['link'], size=10.0, timeout=90,owner_id=uid
             )
         if not ok or not isinstance(res, dict):
             res = {"status": "Error", "msg": "Agent unreachable / Invalid response"}
@@ -1286,7 +1286,7 @@ async def run_quick_ping_check(context, uid, configs, monitor):
         async with tunnel_manager.global_sem, tunnel_manager._user_sem(uid):
             try:
                 ok, data = await ServerMonitor.ws_test_config(
-                    ip, ws_port, token, cfg['link'], size=0.2, timeout=35
+                    ip, ws_port, token, cfg['link'], size=0.2, timeout=35,owner_id=uid
                 )
             except Exception as e:
                 logger.warning("quick ping failed for %s: %s", cfg.get('id'), e)

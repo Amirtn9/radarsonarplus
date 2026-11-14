@@ -159,7 +159,7 @@ async def _do_probe(uid,cfg,monitor,sem,user_sem,context=None):
     async with user_sem:
         async with sem:
             try:
-                ok,data=await asyncio.wait_for(tunnel_manager._test_via_ws(monitor,cfg['link'],size=.25,timeout=35),timeout=42)
+                ok,data=await asyncio.wait_for(tunnel_manager._test_via_ws(monitor,cfg['link'],size=.25,timeout=35,owner_id=uid),timeout=42)
                 result=data if ok and isinstance(data,dict) else {'status':'Unknown'}
             except Exception:
                 result={'status':'Unknown'}

@@ -40,7 +40,7 @@ def main():
                 except (OSError,urllib.error.URLError):pass
                 if time.monotonic()>=deadline:raise TimeoutError('Browser fixture readiness timed out')
                 time.sleep(.1)
-            for name in ('browser_guide_layout.cjs','browser_feature_smoke.cjs','browser_telemetry_smoke.cjs','browser_log_management.cjs','browser_billing_control.cjs'):
+            for name in ('browser_guide_layout.cjs','browser_feature_smoke.cjs','browser_telemetry_smoke.cjs','browser_log_management.cjs','browser_billing_control.cjs','browser_product_workflows.cjs'):
                 print('Running '+name,flush=True)
                 subprocess.run(['node',str(ROOT/'scripts'/name)],cwd=ROOT,env=env,check=True,timeout=180)
         finally:

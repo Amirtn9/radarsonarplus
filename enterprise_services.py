@@ -170,6 +170,8 @@ class EnterpriseStore:
         # Ensure every target belongs to this workspace before creating any work.
         found=self.db.execute('SELECT id FROM servers WHERE owner_id=%s AND id=ANY(%s)',(owner,ids),fetch='all')
         if {int(x['id']) for x in found} != set(ids): raise ValueError('One or more servers are outside this workspace')
+        from consumption import consume
+        consume(self.db,owner,'operations_daily',idempotency_key)
         opid=self.db.execute("""INSERT INTO rs_operations(id,owner_id,actor_id,kind,idempotency_key,payload,total)
           VALUES(gen_random_uuid(),%s,%s,%s,%s,%s::jsonb,%s)
           ON CONFLICT(owner_id,idempotency_key) DO NOTHING RETURNING id,status,total""",

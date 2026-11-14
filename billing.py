@@ -88,8 +88,8 @@ def limits_valid(limits):
 def _audit(cur,actor,uid,event,before,after,reason):
     if not isinstance(reason,str) or not reason.strip():raise UserError('دلیل عملیات الزامی است')
     cur.execute('''INSERT INTO sonar_billing_audit(actor_id,user_id,event,before_data,after_data,reason)
-        VALUES(%s,%s,%s,%s,%s,%s)''',(actor,uid,event,Json(before) if before is not None else None,
-                                    Json(after) if after is not None else None,reason[:1000]))
+        VALUES(%s,%s,%s,%s,%s,%s)''',(actor,uid,event,Json(before,dumps=_json) if before is not None else None,
+                                    Json(after,dumps=_json) if after is not None else None,reason[:1000]))
 
 
 def _lock(cur,uid):
@@ -131,7 +131,7 @@ class Billing:
         """Only new accounts opt into the commercial plan; never rewrite legacy data."""
         with self.db.get_connection() as (conn,cur):
             _lock(cur,uid)
-            cur.execute('SELECT * FROM sonar_plans WHERE enabled=TRUE AND price=0 ORDER BY priority,id LIMIT 1')
+            cur.execute('SELECT * FROM sonar_plans WHERE enabled=TRUE AND archived_at IS NULL AND (publish_at IS NULL OR publish_at<=NOW()) AND price=0 ORDER BY priority,id LIMIT 1')
             plan=cur.fetchone()
             if plan:
                 cur.execute('''INSERT INTO sonar_subscriptions(user_id,plan_id,snapshot,expires_at)
@@ -142,17 +142,25 @@ class Billing:
 
     def plans(self,actor=None,all_plans=False):
         if all_plans:self.admin(actor)
-        rows=[dict(r) for r in self.db.execute('SELECT * FROM sonar_plans '+('' if all_plans else 'WHERE enabled=TRUE ')+'ORDER BY priority,id',fetch='all')]
+        rows=[dict(r) for r in self.db.execute('SELECT * FROM sonar_plans '+('' if all_plans else 'WHERE enabled=TRUE AND archived_at IS NULL AND (publish_at IS NULL OR publish_at<=NOW()) ')+'ORDER BY priority,id',fetch='all')]
         subscription=self.subscription(actor) if actor and not all_plans else None
         if subscription:
             for row in rows:
                 if row['id']==subscription['plan_id'] and row['change_policy']=='new':
                     for key in ('name','description','price','days','limits','features','policy'):row[key]=subscription['snapshot'][key]
+                    row['consumption']=subscription['snapshot'].get('consumption',{})
                     row['legacy_terms']=True
         return rows
 
     def save_plan(self,actor,data,ident=None,apply='new',reason=''):
         self.admin(actor,'plans')
+        from consumption import validate
+        supplied_consumption='consumption' in data
+        supplied_publication='publish_at' in data
+        data.setdefault('consumption',{})
+        validate(data['consumption'])
+        data.setdefault('publish_at',None)
+        if data['publish_at'] is not None and (not isinstance(data['publish_at'],datetime) or not data['publish_at'].tzinfo):raise UserError('زمان انتشار باید منطقه زمانی داشته باشد')
         data.setdefault('policy',{'min_interval_seconds':60,'retention_days':30})
         if set(data['policy'])!={'min_interval_seconds','retention_days'} or type(data['policy']['min_interval_seconds']) is not int or not 60<=data['policy']['min_interval_seconds']<=3600 or type(data['policy']['retention_days']) is not int or not 1<=data['policy']['retention_days']<=30:raise UserError('حداقل فاصله پایش ۶۰ تا ۳۶۰۰ ثانیه و نگهداری تاریخچه ۱ تا ۳۰ روز است')
         limits_valid(data['limits'])
@@ -164,6 +172,8 @@ class Billing:
             if ident:
                 cur.execute('SELECT * FROM sonar_plans WHERE id=%s FOR UPDATE',(ident,));before=cur.fetchone()
                 if not before:raise UserError('پلن یافت نشد')
+                if not supplied_consumption:data['consumption']=before['consumption']
+                if not supplied_publication:data['publish_at']=before['publish_at']
                 cur.execute('''UPDATE sonar_plans SET name=%s,description=%s,price=%s,days=%s,limits=%s,
                     features=%s,enabled=%s,priority=%s,change_policy=%s,policy=%s WHERE id=%s''',
                     (data['name'],data['description'],data['price'],data['days'],Json(data['limits']),
@@ -174,11 +184,12 @@ class Billing:
                     (data['name'],data['description'],data['price'],data['days'],Json(data['limits']),
                      Json(data['features']),data['enabled'],data['priority'],apply,Json(data['policy'])))
                 ident=cur.fetchone()['id']
+            cur.execute('UPDATE sonar_plans SET publish_at=%s,consumption=%s,archived_at=NULL,updated_at=NOW() WHERE id=%s',(data['publish_at'],Json(data['consumption']),ident))
             if apply=='current':
                 # Existing purchased price/duration stay immutable; only capacities/features change.
-                cur.execute('''UPDATE sonar_subscriptions SET snapshot=jsonb_set(jsonb_set(jsonb_set(snapshot,
-                    '{limits}',%s::jsonb),'{features}',%s::jsonb),'{policy}',%s::jsonb),updated_at=NOW() WHERE plan_id=%s''',
-                    (Json(data['limits']),Json(data['features']),Json(data['policy']),ident))
+                cur.execute('''UPDATE sonar_subscriptions SET snapshot=jsonb_set(jsonb_set(jsonb_set(jsonb_set(snapshot,
+                    '{limits}',%s::jsonb),'{features}',%s::jsonb),'{policy}',%s::jsonb),'{consumption}',%s::jsonb),updated_at=NOW() WHERE plan_id=%s''',
+                    (Json(data['limits']),Json(data['features']),Json(data['policy']),Json(data['consumption']),ident))
             _audit(cur,actor,None,'plan.save',_safe(before),{'id':ident,**data,'apply':apply},reason)
             conn.commit();return ident
 
@@ -212,10 +223,12 @@ class Billing:
           (SELECT COUNT(*) FROM channels WHERE owner_id=%s) destinations''',tuple([uid]*7),fetch='one')
 
     def account(self,uid):
+        from consumption import usage
         user=self.db.get_user(uid)
         if not user:raise UserError('کاربر یافت نشد')
         return {'user':{k:user.get(k) for k in ('user_id','full_name','added_date','registered_at','last_active_at','is_banned','wallet_balance')},
                 'subscription':self.subscription(uid),'usage':self.usage(uid),
+                'consumption':usage(self.db,uid),
                 'orders':self.db.execute('SELECT id,plan_id,amount,method,status,created_at FROM sonar_orders WHERE user_id=%s ORDER BY created_at DESC LIMIT 100',(uid,),fetch='all'),
                 'wallet':self.db.execute('SELECT id,amount,balance,reason,created_at FROM sonar_wallet_ledger WHERE user_id=%s ORDER BY id DESC LIMIT 100',(uid,),fetch='all')}
 
@@ -280,12 +293,13 @@ class Billing:
                 return dict(old)
             cur.execute('SELECT is_banned FROM users WHERE user_id=%s FOR UPDATE',(uid,));user=cur.fetchone()
             if not user or user['is_banned']:raise PermissionError('حساب غیرفعال است')
-            cur.execute('SELECT * FROM sonar_plans WHERE id=%s AND enabled=TRUE FOR SHARE',(plan_id,));plan=cur.fetchone()
+            cur.execute('SELECT * FROM sonar_plans WHERE id=%s AND enabled=TRUE AND archived_at IS NULL AND (publish_at IS NULL OR publish_at<=NOW()) FOR SHARE',(plan_id,));plan=cur.fetchone()
             if not plan:raise UserError('پلن فعال یافت نشد')
             cur.execute('SELECT snapshot,plan_id FROM sonar_subscriptions WHERE user_id=%s',(uid,));current=cur.fetchone()
             if current and current['plan_id']==plan_id and plan['change_policy']=='new':
                 plan=dict(plan)
                 for field in ('name','description','price','days','limits','features','policy'):plan[field]=current['snapshot'][field]
+                plan['consumption']=current['snapshot'].get('consumption',{})
             amount=int(plan['price']);code=discount_code.upper() if discount_code else None
             if code:
                 cur.execute('SELECT * FROM sonar_discounts WHERE code=%s FOR UPDATE',(code,));discount=cur.fetchone();now=datetime.now(timezone.utc)

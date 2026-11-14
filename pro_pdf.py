@@ -70,6 +70,8 @@ def generate_pdf(actor,owner=None,store=None):
     from billing import Billing
     subscription=Billing(store.db).subscription(owner)
     if subscription and subscription['snapshot'].get('features',{}).get('advanced_reports') is False:raise PermissionError('Advanced reports are disabled for this plan')
+    from consumption import consume
+    consume(store.db,owner,'reports_daily')
     summary=store.summary(actor,owner)
     rankings=store.rankings(actor,owner,20)
     incidents=store.incidents(actor,owner,'unresolved',20)

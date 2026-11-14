@@ -194,7 +194,7 @@
       await navigator.clipboard.writeText(value);
       setStatus('Selection copied.', 'online');
     } catch (_) {
-      window.prompt('Copy the selected text:', value);
+      await window.SonarUI.ask('Copy the selected text:', value);
     }
   }
 
@@ -204,7 +204,7 @@
       if (value) send({ type: 'input', data: value });
       terminal?.focus?.();
     } catch (_) {
-      const value = window.prompt('Enter text to paste:');
+      const value = await window.SonarUI.ask('Enter text to paste:');
       if (value) send({ type: 'input', data: value });
     }
   }
@@ -212,7 +212,7 @@
   openButton.addEventListener('click', async () => {
     const id = Number(window.SonarConsole?.currentServerId?.());
     if (!Number.isSafeInteger(id) || id < 1) {
-      window.alert('Select a server from the server list first.');
+      toast('Select a server from the server list first.');
       return;
     }
     serverId = id;
@@ -220,6 +220,7 @@
     try {
       if (window.SonarStepUp) await window.SonarStepUp();
       if (!isDialogOpen()) showDialog();
+      await window.SonarUI.terminal();
       createTerminal();
       if (!resizeObserver && typeof ResizeObserver === 'function') {
         resizeObserver = new ResizeObserver(() => fitTerminal());

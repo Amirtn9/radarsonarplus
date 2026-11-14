@@ -34,6 +34,7 @@ def _registry():
     from control_store import install_schema as control_schema
     from billing import install_schema as billing_schema
     from quota_policy import install_schema as quota_schema
+    from product_admin import install_schema as product_schema
 
     return (
         (2, "pro_store", pro_store_schema),
@@ -53,6 +54,7 @@ def _registry():
         (16, "billing", billing_schema),
         (17, "independent_quotas", quota_schema),
         (18, "account_controls", control_schema),
+        (19, "product_workflows", product_schema),
     )
 
 

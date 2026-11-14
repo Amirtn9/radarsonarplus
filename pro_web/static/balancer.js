@@ -62,7 +62,7 @@
           const priority = node('button', 'تنظیم اولویت');
           priority.type = 'button';
           priority.onclick = async () => {
-            const raw = prompt(`اولویت مسیر برای ${item.name || item.id} (۰ تا ۱۰۰۰؛ عدد کمتر یعنی اولویت بالاتر):`, String(item.route_priority ?? 100));
+            const raw = await window.SonarUI.ask(`اولویت مسیر برای ${item.name || item.id} (۰ تا ۱۰۰۰؛ عدد کمتر یعنی اولویت بالاتر):`, String(item.route_priority ?? 100));
             if (raw === null) return;
             if (!/^\d{1,4}$/.test(raw.trim()) || Number(raw) > 1000) { toast('اولویت باید عددی بین ۰ تا ۱۰۰۰ باشد.'); return; }
             try { await jsonPost(`/api/fleet/relays/${item.id}/priority`, {priority: Number(raw)}); toast('اولویت ذخیره شد.'); await load(); }
@@ -90,7 +90,7 @@
   byId('relay-approve-selected')?.addEventListener('click', async () => {
     const ids = Array.from(document.querySelectorAll('#relay-candidates .relay-check:checked')).map(input => Number(input.value));
     if (!ids.length) { toast('ابتدا Agentهای موردنظر را انتخاب کنید.'); return; }
-    if (!confirm(`تأیید و فعال‌سازی ${ids.length} Agent انتخاب‌شده برای مسیرهای پشتیبان؟`)) return;
+    if (!await window.SonarUI.confirm(`تأیید و فعال‌سازی ${ids.length} Agent انتخاب‌شده برای مسیرهای پشتیبان؟`)) return;
     try {
       await jsonPost('/api/fleet/approve', {server_ids: ids, enabled: true});
       toast('تأیید ثبت شد؛ Agentها پس از heartbeat موفق وارد استخر می‌شوند.'); await load();
@@ -99,7 +99,7 @@
   byId('relay-disable-selected')?.addEventListener('click', async () => {
     const ids = Array.from(document.querySelectorAll('#relay-candidates .relay-check:checked')).map(input => Number(input.value));
     if (!ids.length) { toast('ابتدا Agentهای موردنظر را انتخاب کنید.'); return; }
-    if (!confirm(`مسیر جایگزین ${ids.length} Agent انتخاب‌شده غیرفعال شود؟ نصب Agent حذف نمی‌شود.`)) return;
+    if (!await window.SonarUI.confirm(`مسیر جایگزین ${ids.length} Agent انتخاب‌شده غیرفعال شود؟ نصب Agent حذف نمی‌شود.`)) return;
     try {
       await jsonPost('/api/fleet/approve', {server_ids: ids, enabled: false});
       toast('Agentهای انتخاب‌شده از استخر مسیرها خارج شدند.'); await load();

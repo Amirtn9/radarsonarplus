@@ -62,6 +62,8 @@ def router(store,actor,guarded):
     async def export(uid:int=Depends(actor)):
         def build():
             owner=store.workspace(uid)
+            from consumption import consume
+            consume(store.db,owner,'reports_daily')
             rows=store.db.execute('''SELECT name,ip,last_status,last_cpu,last_ram,last_disk,last_checked_at FROM servers WHERE owner_id=%s ORDER BY id''',(owner,),fetch='all')
             stream=io.StringIO();writer=csv.writer(stream);writer.writerow(['نام','IP','وضعیت','CPU','RAM','Disk','زمان آخرین سنجش'])
             for row in rows:
@@ -78,6 +80,9 @@ def router(store,actor,guarded):
     async def json_export(uid:int=Depends(actor)):
         from fastapi.encoders import jsonable_encoder
         from fastapi.responses import JSONResponse
+        from consumption import consume
+        owner=await guarded(store.workspace,uid)
+        await guarded(consume,store.db,owner,'reports_daily')
         data=await overview(uid)
         return JSONResponse(jsonable_encoder(data),headers={'Content-Disposition':'attachment; filename="sonar-report.json"'})
     @api.get('/report.pdf')

@@ -21,8 +21,15 @@ class Plan(Reason):
     days:int=Field(ge=1,le=3660)
     limits:dict[str,int]
     features:dict[str,bool]=Field(default_factory=dict)
+    consumption:dict[str,int]=Field(default_factory=dict)
     policy:PlanPolicy=Field(default_factory=PlanPolicy)
     enabled:bool=True
+    publish_at:datetime|None=None
+    @field_validator('publish_at')
+    @classmethod
+    def publish_aware(cls,value):
+        if value is not None and value.tzinfo is None:raise ValueError('Timezone required')
+        return value
     priority:int=Field(default=0,ge=-10000,le=10000)
     apply:Literal['new','current','renewal']='new'
 class Purchase(Strict):
@@ -107,7 +114,10 @@ def router(store,actor,guarded,admin_id):
         return {'id':await guarded(service().save_plan,uid,body.model_dump(exclude={'reason','apply'}),None,body.apply,body.reason)}
     @api.put('/plans/{ident}')
     async def plan_update(ident:int,body:Plan,uid:int=Depends(actor)):
-        return {'id':await guarded(service().save_plan,uid,body.model_dump(exclude={'reason','apply'}),ident,body.apply,body.reason)}
+        data=body.model_dump(exclude={'reason','apply'})
+        for optional in ('consumption','publish_at'):
+            if optional not in body.model_fields_set:data.pop(optional,None)
+        return {'id':await guarded(service().save_plan,uid,data,ident,body.apply,body.reason)}
     @api.delete('/plans/{ident}')
     async def plan_delete(ident:int,body:Reason,uid:int=Depends(actor)):
         await guarded(service().delete_plan,uid,ident,body.reason);return {'ok':True}

@@ -161,6 +161,11 @@ async def actor(request:Request,authorization:str=Header(default='')):
             subscription=await asyncio.to_thread(Billing(store.db,SUPER_ADMIN_ID).subscription,owner)
             if subscription and subscription['snapshot'].get('features',{}).get(feature) is False:
                 raise HTTPException(status_code=403,detail='این قابلیت در پلن فضای کاری فعال نیست')
+        if token_scopes is not None:
+            from consumption import consume
+            from user_errors import UserError
+            try:await asyncio.to_thread(consume,store.db,request.state.api_token_owner,'api_daily')
+            except UserError as error:raise HTTPException(status_code=429,detail=str(error))
         yield uid
     finally:
         ACTOR_ID.reset(token)
@@ -244,6 +249,9 @@ async def panel_page(request:Request):
 
 for detail_path in ('/servers/{resource_id:int}','/configs/{resource_id:int}'):
     app.add_api_route(detail_path,panel_page,methods=['GET'],include_in_schema=False)
+
+for management_area in ('overview','users','plans','payments','discounts','messages','staff','reports','activity','settings'):
+    app.add_api_route('/admin/'+management_area,panel_page,methods=['GET'],include_in_schema=False)
 
 for panel_path in PANEL_PATHS:
     app.add_api_route(panel_path,panel_page,methods=['GET'],include_in_schema=False)
@@ -764,3 +772,6 @@ app.include_router(policy_router(store,actor,guarded))
 
 from config_probe_jobs import router as config_probe_router
 app.include_router(config_probe_router(store,actor,guarded))
+
+from product_api import router as product_router
+app.include_router(product_router(store,actor,guarded,SUPER_ADMIN_ID))
