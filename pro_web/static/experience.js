@@ -28,6 +28,31 @@
   }
  }
  let capabilities=null,permissionRequest=0;
+ function navigationGroups(){
+  const nav=byId('navigation');if(!nav)return;
+  const definitions=[['account','خانه و حساب',['overview','billing','users']],['resources','منابع',['servers','configs','web-create']],
+   ['monitoring','پایش و گزارش',['services','incidents','rankings','reports']],['agents','Agentها و مسیرها',['fleet','balancer']],
+   ['team','همکاری و مدیریت',['enterprise','team','audit','channels']],['settings','تنظیمات و راهنما',['settings','support']]];
+  nav.querySelectorAll(':scope > .nav-group-label').forEach(label=>label.remove());
+  const groups=[];
+  for(const [id,title,tabs]of definitions){
+   const section=document.createElement('details'),heading=document.createElement('summary'),body=document.createElement('div');
+   section.className='nav-section';section.dataset.group=id;heading.textContent=title;body.className='nav-section-body';
+   let saved=null;try{saved=localStorage.getItem('sonar.nav.group.'+id);}catch{}
+   section.open=saved!=='closed';
+   for(const tab of tabs){const button=nav.querySelector(`[data-tab="${tab}"]`);if(button)body.append(button);}
+   if(id==='settings'){const guide=nav.querySelector('a[href="/guide"]');if(guide)body.append(guide);}
+   section.append(heading,body);nav.append(section);groups.push(section);
+   section.addEventListener('toggle',()=>{try{localStorage.setItem('sonar.nav.group.'+id,section.open?'open':'closed');}catch{}});
+  }
+  function sync(reveal=false){for(const section of groups){
+   const hidden=![...section.querySelector('.nav-section-body').children].some(item=>!item.hidden);
+   if(section.hidden!==hidden)section.hidden=hidden;
+   if(reveal&&section.querySelector('[aria-current="page"]'))section.open=true;
+  }}
+  sync(true);window.addEventListener('sonar:view-change',()=>sync(true));
+  new MutationObserver(()=>sync()).observe(nav,{subtree:true,attributes:true,attributeFilter:['hidden']});
+ }
  const requirements={
   technical:'#web-ssh-check,#web-existing-ssh-probe,#web-agent-install,#web-ssh-terminal,#web-agent-port-update,#web-existing-ssh-confirm-form,#control-server>button:first-of-type',
   server:'#web-server-rename,#web-server-group,#web-server-delete,#web-server-form,#web-show-server,#web-group-form,#control-server>button:not(:first-of-type)',
@@ -43,7 +68,7 @@
  }
  async function permissions(){const serial=++permissionRequest;capabilities=null;applyPermissions();try{const result=await window.SonarWebRequest('/api/control/capabilities');if(serial!==permissionRequest)return;capabilities=result;applyPermissions();}catch{if(serial===permissionRequest){capabilities=null;applyPermissions();}}}
  function boot(){
-  decorate();safeAreas();if(document.body.dataset.authenticated==='true')permissions();
+  decorate();navigationGroups();safeAreas();if(document.body.dataset.authenticated==='true')permissions();
   if(window.ResizeObserver&&document.querySelector('.topbar'))new ResizeObserver(safeAreas).observe(document.querySelector('.topbar'));
   for(const id of ['new-server-ip','new-server-user','new-server-password','new-config-link','service-target','login-code']){const input=byId(id);if(input){input.autocapitalize='none';input.spellcheck=false;}}const toast=byId('toast');if(toast){toast.setAttribute('role','status');toast.setAttribute('aria-live','polite');toast.setAttribute('aria-atomic','true');}
   byId('main')?.setAttribute('tabindex','-1');byId('menu-trigger')?.setAttribute('aria-haspopup','dialog');byId('quick-menu')?.setAttribute('role','dialog');byId('quick-menu')?.setAttribute('aria-modal','true');

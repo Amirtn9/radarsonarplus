@@ -693,6 +693,7 @@ def test_resource_totals_survive_empty_pages_with_identical_filters(isolated_dat
         ids.append(row['id'])
     if kind=='server':
         db.execute("INSERT INTO servers(owner_id,name,ip) VALUES(902,'alpha other','192.0.2.99')")
+        db.execute("UPDATE servers SET last_cpu=0,last_ram=34.5,last_disk=90,last_agent_status='Online',last_checked_at=NOW() WHERE id=%s",(ids[0],))
     else:
         db.execute("INSERT INTO tunnel_configs(owner_id,name,type,link) VALUES(902,'alpha other','single','synthetic'),(901,'alpha excluded','unsupported','synthetic')")
     for index in (0,1,3):
@@ -723,5 +724,16 @@ def test_resource_totals_survive_empty_pages_with_identical_filters(isolated_dat
         response=client.get('/api/resources/'+kind,params={'q':'#blue','page':10000})
         assert response.json()==[] and response.headers['X-Total-Count']=='3'
         assert client.get('/api/resources/'+kind,params={'owner':902}).status_code==403
+        if kind=='server':
+            listing=client.get('/api/resources/server',params={'per_page':50})
+            card=next(row for row in listing.json() if row['id']==ids[0])
+            assert card['last_cpu']==0 and card['last_ram']==34.5 and card['last_disk']==90
+            assert card['last_agent_status']=='Online' and card['last_checked_at']
+            assert not {'password','ssh_key','agent_token','telemetry'} & card.keys()
+            db.execute("UPDATE servers SET last_cpu='NaN'::real,last_ram='Infinity'::real,last_disk=-1 WHERE id=%s",(ids[0],))
+            listing=client.get('/api/resources/server',params={'per_page':50})
+            assert listing.status_code==200
+            card=next(row for row in listing.json() if row['id']==ids[0])
+            assert all(card[key] is None for key in ('last_cpu','last_ram','last_disk'))
     finally:
         client.close()

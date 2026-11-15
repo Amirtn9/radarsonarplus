@@ -48,3 +48,36 @@ body::before{display:none}html{scroll-padding-block:110px 100px;scrollbar-gutter
 :root[data-theme] input::placeholder,:root[data-theme] textarea::placeholder{opacity:1}
 
 @media(max-width:850px){main{padding-left:max(14px,env(safe-area-inset-left,0px));padding-right:max(14px,env(safe-area-inset-right,0px))}:root[data-theme] .bottom-nav{left:max(12px,env(safe-area-inset-left,0px));right:max(12px,env(safe-area-inset-right,0px))}}
+
+/* Product UX, stage 1: overview actions, observed server health and navigation. */
+.metric-link{display:flex;flex-direction:column;align-items:stretch;text-align:right;cursor:pointer;gap:8px;font:inherit;width:100%;position:relative}
+.metric-link::after{content:'←';position:absolute;left:16px;bottom:14px;color:var(--accent);font-size:20px}
+.metric-link small{padding-inline-end:24px}
+.metric-link:focus-visible{outline:3px solid var(--focus)!important;outline-offset:4px}
+.server-card.item{display:grid;grid-template-columns:minmax(0,1fr);justify-content:stretch;align-items:stretch;gap:14px;padding:18px;border-radius:22px;border:1px solid var(--outline);background:var(--surface);min-width:0}
+.server-card>div:first-child{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}
+.server-card>div:first-child>a{min-width:0;overflow-wrap:anywhere}
+.server-card>div:first-child>small,.server-card .live-label{grid-column:1/-1}
+.server-state{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 10px;background:var(--surface2);font-size:12px;color:var(--sub);white-space:nowrap}
+.server-state::before{content:'';width:7px;height:7px;border-radius:50%;background:currentColor}
+.server-state[data-state=online]{color:var(--accent)}
+.server-state[data-state=offline]{color:var(--red)}
+.server-card-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.server-card-metric{min-width:0;background:var(--surface2);padding:10px;border-radius:12px}
+.server-card-metric>div:first-child{display:flex;justify-content:space-between;gap:4px;font-size:12px;flex-wrap:wrap}
+.server-card-metric meter{display:block;width:100%;height:10px;margin-top:6px}
+.server-card-metric[data-fresh=false] meter{filter:grayscale(1);opacity:.6}
+.server-meter-empty{height:5px;background:var(--outline);border-radius:6px;margin-top:9px}
+.server-card-connection{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;font-size:12px;color:var(--sub);overflow-wrap:anywhere}
+.server-card-note{grid-column:1/-1}
+.server-card>.tools{justify-content:flex-end;border-top:1px solid var(--outline);padding-top:10px}
+#navigation .nav-section{border:0;background:transparent;padding:0;min-width:0}
+#navigation .nav-section>summary{list-style:none;min-height:44px;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;cursor:pointer;color:var(--sub);font-size:12px;font-weight:650;border-radius:10px}
+#navigation .nav-section>summary::-webkit-details-marker{display:none}
+#navigation .nav-section>summary::after{content:'⌄';font-size:18px;transform:rotate(90deg)}
+#navigation .nav-section[open]>summary::after{transform:none}
+#navigation .nav-section-body{display:grid;gap:4px;padding-bottom:8px}
+.sidebar .nav-section .nav-label{display:block}
+.sidebar .nav-section .navbtn{justify-content:flex-start;font-size:14px;gap:10px}
+@media(max-width:380px){.server-card.item{padding:12px}.server-card-metrics{gap:6px}.server-card-metric{padding:8px}.server-card-connection{grid-template-columns:1fr}.server-state{padding:5px 7px}}
+.sidebar{overflow-y:auto;overscroll-behavior:contain}

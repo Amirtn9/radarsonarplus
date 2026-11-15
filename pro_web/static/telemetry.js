@@ -101,6 +101,13 @@
   const checkedAge=Date.now()-time(server?.last_checked_at);
   const hasMetrics=!server||!Object.prototype.hasOwnProperty.call(server,'last_cpu')||['last_cpu','last_ram','last_disk'].some(key=>number(server[key])!==null);
   const online=navigator.onLine!==false&&server?.last_status==='Online'&&hasMetrics&&Number.isFinite(age)&&age>=-30000&&age<=180000&&checkedAge>=-30000&&checkedAge<=180000;
+  const badge=host.closest('.server-card')?.querySelector('.server-state');
+  if(badge){
+   const fresh=navigator.onLine!==false&&Number.isFinite(checkedAge)&&checkedAge>=-30000&&checkedAge<=180000;
+   const status=!server?.is_active?'paused':!fresh?'unknown':server.last_status==='Online'?'online':server.last_status==='Offline'?'offline':'unknown';
+   badge.dataset.state=status;badge.textContent={online:'آنلاین',offline:'آفلاین',unknown:'نیازمند بررسی',paused:'پایش متوقف'}[status];
+   for(const cell of host.closest('.server-card').querySelectorAll('.server-card-metric'))cell.dataset.fresh=String(fresh&&server.last_status==='Online');
+  }
   host.classList.toggle('is-live',online);host.classList.toggle('stale',!online);
   host.textContent=online?'LIVE · '+new Date(stamp).toLocaleTimeString('fa-IR'):'○ '+(Number.isFinite(stamp)?'آخرین نمونه: '+new Date(stamp).toLocaleString('fa-IR'):'در انتظار نمونه');
   host.title=online?'سرور آنلاین است؛ داده‌های واقعی هر ۱۵ ثانیه بررسی می‌شوند.':'داده زنده در دسترس نیست؛ آخرین نمونه ذخیره‌شده نمایش داده می‌شود.';

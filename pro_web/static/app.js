@@ -196,6 +196,33 @@ function tabClick(name){if(!Object.prototype.hasOwnProperty.call(titles,name)||(
   if(name==='config-detail')window.SonarConsole?.loadConfig().then(()=>window.SonarControl?.configActions()).catch(e=>toast(e.message));
 }
 function statusText(item){const raw=String(item.last_status||'Unknown');return ({Online:'آنلاین',Offline:'آفلاین',Unknown:'نامشخص',OK:'سالم',Fail:'سنجش ناموفق',Error:'خطای سنجش',Pending:'در انتظار سنجش'})[raw]||(raw.length<70?raw:raw.slice(0,67)+'…');}
+function serverCardDetails(root,item){
+ root.classList.add('server-card');
+ const stamp=window.SonarTelemetry.time(item.last_checked_at),age=Date.now()-stamp;
+ const fresh=navigator.onLine!==false&&Number.isFinite(age)&&age>=-30000&&age<=180000;
+ const status=!item.is_active?'paused':!fresh?'unknown':item.last_status==='Online'?'online':item.last_status==='Offline'?'offline':'unknown';
+ const labels={online:'آنلاین',offline:'آفلاین',unknown:'نیازمند بررسی',paused:'پایش متوقف'};
+ const badge=elem('span',labels[status],'server-state');badge.dataset.state=status;root.firstChild.append(badge);
+ const metrics=elem('div',null,'server-card-metrics');
+ for(const [key,title]of [['last_cpu','CPU'],['last_ram','RAM'],['last_disk','Disk']]){
+  const raw=item[key],value=raw==null||raw===''?NaN:Number(raw),valid=Number.isFinite(value)&&value>=0&&value<=100;
+  const cell=elem('div',null,'server-card-metric'),heading=elem('div');
+  heading.append(elem('span',title),elem('strong',valid?value.toLocaleString('fa-IR',{maximumFractionDigits:1})+'٪':'—'));
+  cell.append(heading);cell.dataset.fresh=String(fresh&&item.last_status==='Online');
+  if(valid){const meter=document.createElement('meter');meter.min=0;meter.max=100;meter.value=value;meter.low=70;meter.high=90;meter.optimum=20;meter.setAttribute('aria-label',title);cell.append(meter);}
+  else cell.append(elem('div',null,'server-meter-empty'));
+  metrics.append(cell);
+ }
+ root.append(metrics);
+ const connection=elem('div',null,'server-card-connection');
+ connection.append(elem('span',`WSS: ${{Online:'آخرین وضعیت آنلاین',Offline:'آخرین وضعیت آفلاین'}[item.last_agent_status]||'بررسی‌نشده'}`));
+ connection.append(elem('span',`SSH: بررسی‌نشده · درگاه ${item.port||'—'}`));
+ const checked=Number.isFinite(stamp)?new Date(stamp).toLocaleString('fa-IR'):'ثبت نشده';
+ connection.append(elem('span','آخرین بررسی: '+checked));
+ connection.append(elem('span','آخرین ارتباط ثبت‌شده: '+(item.agent_last_seen||'ثبت نشده')));
+ if(!fresh)connection.append(elem('span','داده زنده در دسترس نیست؛ مقادیر، آخرین نمونه ثبت‌شده‌اند.','server-card-note'));
+ root.append(connection);
+}
 function rowItem(item){const root=elem('article',null,'item'),detail=elem('div'),name=elem('strong',item.name||item.title||item.kind||'بدون نام');if(['servers','configs'].includes(state.tab)){const link=elem('a');link.href=(state.tab==='servers'?'/servers/':'/configs/')+item.id;link.append(name);const kind=state.tab==='servers'?'server':'config';link.onclick=event=>{if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;event.preventDefault();window.SonarConsole?.openDetails(kind,item.id);};detail.append(link);}else detail.append(name);
  let subtitle='';
  if(state.tab==='servers')subtitle=`سرور #${item.id} | ${statusText(item)} | ${({ir:'ایران',ext:'خارج'})[item.location_type]||'موقعیت نامشخص'}`;
@@ -203,7 +230,7 @@ function rowItem(item){const root=elem('article',null,'item'),detail=elem('div')
  if(state.tab==='rankings')subtitle=`پینگ: ${item.ping??'—'} ms | جیتر: ${item.jitter??'—'} ms`;
  if(state.tab==='incidents')subtitle=`${({warning:'هشدار',critical:'بحرانی',info:'اطلاع'})[item.severity]||'هشدار'} • ${({open:'باز',acknowledged:'دیده‌شده',resolved:'رفع‌شده'})[item.status]||'نامشخص'} • ${item.occurrences||0} مرتبه`;
  detail.append(elem('small',subtitle));root.append(detail);
- if(state.tab==='servers'){const live=elem('span','','live-label');window.SonarTelemetry?.live(live,item);detail.append(live);}
+ if(state.tab==='servers'){serverCardDetails(root,item);const live=elem('span','','live-label');window.SonarTelemetry?.live(live,item);detail.append(live);}
  const controls=elem('div',null,'tools');
  if(state.tab==='configs'&&item.type!=='sub_source'){const select=elem('input');select.type='checkbox';select.setAttribute('aria-label','انتخاب برای آزمون گروهی');select.checked=state.selectedConfigs.has(item.id);select.onchange=()=>{if(select.checked)state.selectedConfigs.add(item.id);else state.selectedConfigs.delete(item.id);};controls.append(select);}
  if(['servers','configs'].includes(state.tab)){const b=elem('button',item.favorite?'★':'☆');b.setAttribute('aria-label','تغییر علاقه‌مندی');b.onclick=async()=>{try{const v=await jsonPost('/api/favorites',{kind:state.tab==='servers'?'server':'config',rid:item.id});item.favorite=v.favorite;b.textContent=v.favorite?'★':'☆';toast('علاقه‌مندی ذخیره شد');}catch(e){toast(e.message);}};controls.append(b);}
