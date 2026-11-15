@@ -67,7 +67,14 @@ def make_router(store, actor, guarded):
     from enterprise_services import EnterpriseStore
     svc=EnterpriseStore(store)
     router=APIRouter(prefix='/api/enterprise',tags=['enterprise'])
-    def own(uid, requested): return int(requested) if requested is not None else int(uid)
+    def own(uid, requested):
+        from workspace_service import API_TOKEN_WORKSPACE
+        bound=API_TOKEN_WORKSPACE.get()
+        if bound:
+            if requested is not None and int(requested)!=bound:
+                raise HTTPException(status_code=403,detail='API token is restricted to its workspace')
+            return bound
+        return int(requested) if requested is not None else int(uid)
     def require_scope(scope):
         async def check(request: Request):
             scopes=getattr(request.state,'api_scopes',None)
@@ -112,7 +119,10 @@ def make_router(store, actor, guarded):
         return await guarded(svc.create_automation_rule,uid,own(uid,body.owner),body.event,body.action,body.max_attempts)
 
     @router.post('/tokens')
-    async def api_token(body:TokenCreate,uid:int=Depends(actor),_scope=Depends(require_scope('tokens:write'))):
+    async def api_token(body:TokenCreate,request:Request,uid:int=Depends(actor),_scope=Depends(require_scope('tokens:write'))):
+        scopes=getattr(request.state,'api_scopes',None)
+        if scopes is not None and not set(body.scopes)<=scopes:
+            raise HTTPException(status_code=403,detail='A child API token cannot exceed the parent token scopes')
         return await guarded(svc.create_api_token,uid,own(uid,body.owner),body.label,body.scopes,body.expires_in_days)
 
     class WebhookCreate(BaseModel):

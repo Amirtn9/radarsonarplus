@@ -165,12 +165,23 @@ class ProStore:
         if tag:
             sql+=' AND EXISTS (SELECT 1 FROM pro_tags t WHERE t.owner_id=r.owner_id AND t.resource_type=%s AND t.resource_id=r.id AND t.tag=%s)'
             params.extend([kind,tag[:40]])
-        if include_total:sql=sql.replace('SELECT r.id,','SELECT COUNT(*) OVER() AS _total,r.id,',1)
-        sql+=' ORDER BY favorite DESC,r.id DESC LIMIT %s OFFSET %s'
+        if include_total:
+            # The count always contributes a row, even when OFFSET empties
+            # the requested page. Both reads share one PostgreSQL snapshot.
+            sql=f'''WITH matched AS ({sql})
+                SELECT page_rows.*,counts._total
+                FROM (SELECT COUNT(*) AS _total FROM matched) counts
+                LEFT JOIN LATERAL (
+                    SELECT * FROM matched ORDER BY favorite DESC,id DESC LIMIT %s OFFSET %s
+                ) page_rows ON TRUE
+                ORDER BY page_rows.favorite DESC,page_rows.id DESC'''
+        else:
+            sql+=' ORDER BY favorite DESC,r.id DESC LIMIT %s OFFSET %s'
         params.extend([per_page,(page-1)*per_page])
         rows=[dict(r) for r in self.db.execute(sql,params,fetch='all')]
         if include_total:
-            total=rows[0]['_total'] if rows else 0
+            total=rows[0]['_total']
+            rows=[row for row in rows if row['id'] is not None]
             for row in rows:row.pop('_total',None)
             return rows,int(total)
         return rows

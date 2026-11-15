@@ -166,7 +166,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent
                 rollback_files = ("python3 - " + shlex.quote(backup_path) + " <<'SONAR_ROLLBACK'\n" +
                     "import pathlib,shutil,sys,subprocess\n" +
                     "folder=pathlib.Path(sys.argv[1])\n" +
-                    "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/service_probes.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service','/usr/local/sbin/sonar-diagnostic-read','/etc/sudoers.d/sonar-agent-diagnostics','/etc/systemd/journald@sonar.conf.d/retention.conf']\n" +
+                    "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/service_probes.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service','/usr/local/sbin/sonar-diagnostic-read','/etc/sudoers.d/sonar-agent-diagnostics','/etc/systemd/journald@sonar.conf.d/retention.conf','/opt/sonar-agent/pro_scoring.py','/opt/sonar-agent/agent_inventory.py']\n" +
                     "for ix,path in enumerate(paths):\n" +
                     " source=folder/str(ix); target=pathlib.Path(path)\n" +
                     " if source.is_file():\n  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)\n" +
@@ -207,7 +207,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent
             "import pathlib,shutil,sys,os\n" +
             "folder=pathlib.Path(sys.argv[1]);folder.mkdir(mode=0o700)\n" +
             "os.chmod(folder,0o700)\n" +
-            "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/service_probes.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service','/usr/local/sbin/sonar-diagnostic-read','/etc/sudoers.d/sonar-agent-diagnostics','/etc/systemd/journald@sonar.conf.d/retention.conf']\n" +
+            "paths=['/opt/sonar-agent/monitor_agent.py','/opt/sonar-agent/agent_metering.py','/opt/sonar-agent/service_probes.py','/opt/sonar-agent/ssh_relay.py','/opt/sonar-agent/agent_runtime.lock.json','/etc/sonar-agent.env','/etc/sonar-agent/tls.key','/etc/sonar-agent/tls.crt','/etc/systemd/system/sonar-agent.service','/usr/local/sbin/sonar-diagnostic-read','/etc/sudoers.d/sonar-agent-diagnostics','/etc/systemd/journald@sonar.conf.d/retention.conf','/opt/sonar-agent/pro_scoring.py','/opt/sonar-agent/agent_inventory.py']\n" +
             "for i,path in enumerate(paths):\n" +
             " source=pathlib.Path(path)\n" +
             " if source.is_symlink():raise SystemExit('REFUSING_SYMLINKED_IDENTITY')\n" +
@@ -242,6 +242,8 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent
             ('monitor_agent.py',script.encode('utf-8')),
             ('agent_metering.py',meter_script.encode('utf-8')),
             ('service_probes.py',(root/'service_probes.py').read_bytes()),
+            ('pro_scoring.py',(root/'pro_scoring.py').read_bytes()),
+            ('agent_inventory.py',(root/'agent_inventory.py').read_bytes()),
             ('ssh_relay.py',relay_script.encode('utf-8')),
             ('agent_runtime.lock.json',json.dumps(runtime_lock).encode('utf-8')),
             ('sonar-diagnostic-read.sh',diagnostic_helper.encode('utf-8'))):
@@ -252,6 +254,8 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent
         upload=(f'install -d -m 0755 /opt/sonar-agent\n'
                 f'install -m 0644 {destination}/monitor_agent.py /opt/sonar-agent/monitor_agent.py\n'
                 f'install -m 0644 {destination}/service_probes.py /opt/sonar-agent/service_probes.py\n'
+                f'install -m 0644 {destination}/pro_scoring.py /opt/sonar-agent/pro_scoring.py\n'
+                f'install -m 0644 {destination}/agent_inventory.py /opt/sonar-agent/agent_inventory.py\n'
                 f'install -m 0644 {destination}/agent_metering.py /opt/sonar-agent/agent_metering.py\n'
                 f'install -m 0644 {destination}/ssh_relay.py /opt/sonar-agent/ssh_relay.py\n'
                 f'install -m 0644 {destination}/agent_runtime.lock.json /opt/sonar-agent/agent_runtime.lock.json\n'
@@ -270,7 +274,7 @@ def _deploy(monitor, db, ip, port, user, password, ws_port, progress=None, agent
         if ssh:
             try:
                 if remote_dir:
-                    for name in ('monitor_agent.py','agent_metering.py','service_probes.py','ssh_relay.py','agent_runtime.lock.json','sonar-diagnostic-read.sh'):
+                    for name in ('monitor_agent.py','agent_metering.py','service_probes.py','pro_scoring.py','agent_inventory.py','ssh_relay.py','agent_runtime.lock.json','sonar-diagnostic-read.sh'):
                         try:sftp.remove(remote_dir+'/'+name)
                         except OSError:pass
                     sftp.rmdir(remote_dir)

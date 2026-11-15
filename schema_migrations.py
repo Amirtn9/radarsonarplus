@@ -27,6 +27,7 @@ def _registry():
     from subscription_health import install_schema as subscription_health_schema
     from web_agent_jobs import install_schema as web_agent_jobs_schema
     from web_login import install_schema as web_login_schema, install_security_schema as web_security_schema
+    from web_login import install_session_schema
     from config_alerts import install_schema as config_alert_schema
     from log_management import install_schema as log_schema
     from log_management import install_reliability_schema as log_reliability_schema
@@ -55,6 +56,7 @@ def _registry():
         (17, "independent_quotas", quota_schema),
         (18, "account_controls", control_schema),
         (19, "product_workflows", product_schema),
+        (20, "web_session_columns", install_session_schema),
     )
 
 

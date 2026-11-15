@@ -187,6 +187,7 @@ class WorkspaceService:
 import contextvars
 ACTOR_ID = contextvars.ContextVar('sonar_authenticated_actor', default=0)
 ACTIVE_WORKSPACE = contextvars.ContextVar('sonar_active_workspace', default=0)
+API_TOKEN_WORKSPACE = contextvars.ContextVar('sonar_api_token_workspace', default=0)
 
 AUDIT_SCHEMA = '''
 CREATE TABLE IF NOT EXISTS sonar_workspace_events (

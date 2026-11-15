@@ -110,7 +110,7 @@ def test_parallel_startup_and_upgrade_preserve_existing_rows(isolated_database):
     from schema_migrations import run_startup_migrations
     assert run_startup_migrations(db) == []
     assert db.execute('SELECT full_name FROM users WHERE user_id=901', fetch='one')['full_name'] == 'preserve me'
-    assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 19
+    assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 20
 
 
 def test_upgrade_from_695_schema_and_failed_migration_preserve_credentials(isolated_database,monkeypatch,tmp_path):
@@ -149,7 +149,7 @@ def test_upgrade_from_695_schema_and_failed_migration_preserve_credentials(isola
         with pytest.raises(psycopg2.errors.DivisionByZero):schema_migrations.run_startup_migrations(db)
     assert db.execute("SELECT COUNT(*) n FROM information_schema.columns WHERE table_name='pro_application_logs' AND column_name='event_id'",fetch='one')['n']==0
     assert db.execute('SELECT COUNT(*) n FROM sonar_schema_migrations WHERE version=14',fetch='one')['n']==0
-    assert schema_migrations.run_startup_migrations(db)==['log_reliability','web_login_security','billing','independent_quotas','account_controls','product_workflows']
+    assert schema_migrations.run_startup_migrations(db)==['log_reliability','web_login_security','billing','independent_quotas','account_controls','product_workflows','web_session_columns']
     assert db.execute('SELECT full_name FROM users WHERE user_id=901',fetch='one')['full_name']=='upgrade owner'
     saved=db.execute('SELECT password FROM servers WHERE id=%s',(server,),fetch='one')['password']
     assert saved==credential and security.decrypt(saved)=='synthetic-preserved-password'
@@ -612,3 +612,116 @@ def test_statistics_tehran_labels_do_not_depend_on_database_timezone(isolated_da
     expected = moment.astimezone(ZoneInfo('Asia/Tehran')).strftime('%H:%M')
     assert in_timezone('UTC') == expected
     assert in_timezone('America/New_York') == expected
+
+
+@pytest.mark.parametrize('full_startup',[False,True],ids=['web-login-only','full-startup'])
+def test_web_sessions_from_completely_empty_database(isolated_database,full_startup):
+    from web_login import install_schema,create_session,issue_code,redeem,identify,touch_session,logout,digest
+    from schema_migrations import run_startup_migrations
+    db,config=isolated_database
+    # This fixture created a random disposable DB. Remove even the automatic
+    # core schema so neither case can inherit columns from account controls.
+    assert config['dbname'].startswith('sonar_review_')
+    db.execute('DROP SCHEMA public CASCADE; CREATE SCHEMA public')
+    assert db.execute("SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_schema='public'",fetch='one')['n']==0
+    if full_startup:
+        db.init_db()
+        assert 'web_session_columns' in run_startup_migrations(db)
+        assert run_startup_migrations(db)==[]
+    else:
+        install_schema(db)
+        install_schema(db)
+        assert db.execute("SELECT to_regclass('sonar_schema_migrations') AS ledger",fetch='one')['ledger'] is None
+    session,csrf=create_session(db,901)
+    assert identify(db,session)=={'user_id':901,'csrf_hash':digest(csrf)}
+    before=db.execute('SELECT elevated_at,last_seen_at FROM sonar_web_sessions WHERE token_hash=%s',(digest(session),),fetch='one')
+    assert before['elevated_at'] is not None and before['last_seen_at'] is not None
+    db.execute("UPDATE sonar_web_sessions SET last_seen_at=NOW()-INTERVAL '2 minutes' WHERE token_hash=%s",(digest(session),))
+    touch_session(db,session)
+    after=db.execute('SELECT last_seen_at FROM sonar_web_sessions WHERE token_hash=%s',(digest(session),),fetch='one')
+    assert after['last_seen_at']>=before['last_seen_at']
+    code=issue_code(db,902)
+    uid,second,second_csrf=redeem(db,code)
+    assert uid==902 and identify(db,second)['csrf_hash']==digest(second_csrf)
+    assert redeem(db,code) is None
+    logout(db,session)
+    assert identify(db,session) is None
+    db.execute("UPDATE sonar_web_sessions SET last_seen_at=NOW()-INTERVAL '31 minutes' WHERE token_hash=%s",(digest(second),))
+    touch_session(db,second)
+    assert identify(db,second) is None
+
+
+def test_session_column_migration_repairs_legacy_table_without_elevating_sessions(isolated_database):
+    from schema_migrations import run_startup_migrations
+    from web_login import create_session,digest,identify,install_session_schema
+    db,_=isolated_database
+    run_startup_migrations(db)
+    session,_=create_session(db,901)
+    before=db.execute('SELECT token_hash,user_id,csrf_hash,created_at,expires_at,revoked_at FROM sonar_web_sessions',fetch='one')
+    # Reproduce a deployed table missing the columns, with earlier ledger
+    # entries already applied: only the new migration can repair this state.
+    db.execute('ALTER TABLE sonar_web_sessions DROP COLUMN elevated_at, DROP COLUMN last_seen_at')
+    db.execute('DELETE FROM sonar_schema_migrations WHERE version=20')
+    assert run_startup_migrations(db)==['web_session_columns']
+    after=db.execute('SELECT token_hash,user_id,csrf_hash,created_at,expires_at,revoked_at FROM sonar_web_sessions',fetch='one')
+    assert after==before
+    row=db.execute('SELECT elevated_at,last_seen_at FROM sonar_web_sessions WHERE token_hash=%s',(digest(session),),fetch='one')
+    assert row['elevated_at'] is None and row['last_seen_at'] is not None
+    assert identify(db,session)['user_id']==901
+    install_session_schema(db)
+    assert run_startup_migrations(db)==[]
+    assert db.execute('SELECT elevated_at,last_seen_at FROM sonar_web_sessions WHERE token_hash=%s',(digest(session),),fetch='one')==row
+
+
+@pytest.mark.parametrize('kind',['server','config'])
+def test_resource_totals_survive_empty_pages_with_identical_filters(isolated_database,monkeypatch,kind):
+    from fastapi.testclient import TestClient
+    from schema_migrations import run_startup_migrations
+    from pro_store import ProStore
+    from web_login import create_session
+    import pro_portal
+    db,_=isolated_database
+    run_startup_migrations(db)
+    db.execute("INSERT INTO users(user_id,full_name) VALUES(901,'Owner'),(902,'Other workspace')")
+    ids=[]
+    for name in ('alpha1','alpha2','beta3','beta4','literal%_5','plain6'):
+        if kind=='server':
+            row=db.execute('INSERT INTO servers(owner_id,name,ip) VALUES(901,%s,%s) RETURNING id',
+                (name,'192.0.2.'+str(len(ids)+1)),fetch='one')
+        else:
+            row=db.execute("INSERT INTO tunnel_configs(owner_id,name,type,link) VALUES(901,%s,'single',%s) RETURNING id",(name,'synthetic:'+name),fetch='one')
+        ids.append(row['id'])
+    if kind=='server':
+        db.execute("INSERT INTO servers(owner_id,name,ip) VALUES(902,'alpha other','192.0.2.99')")
+    else:
+        db.execute("INSERT INTO tunnel_configs(owner_id,name,type,link) VALUES(902,'alpha other','single','synthetic'),(901,'alpha excluded','unsupported','synthetic')")
+    for index in (0,1,3):
+        db.execute('INSERT INTO pro_favorites(owner_id,resource_type,resource_id) VALUES(901,%s,%s)',(kind,ids[index]))
+    for index in (0,1,2):
+        db.execute("INSERT INTO pro_tags(owner_id,resource_type,resource_id,tag) VALUES(901,%s,%s,'blue')",(kind,ids[index]))
+    pro=ProStore(db)
+    cases=[({},6),({'term':'alpha'},2),({'favorites':True},3),({'tag':'blue'},3),
+           ({'term':'alpha','favorites':True,'tag':'blue'},2),({'term':'literal%_'},1),({'tag':'missing'},0)]
+    monkeypatch.setattr(pro_portal.store,'db',db)
+    session,_=create_session(db,901)
+    client=TestClient(pro_portal.app,base_url='https://testserver')
+    client.cookies.set('sonar_web_session',session)
+    try:
+        for filters,expected in cases:
+            first,total=pro.list_resources(901,kind,page=1,per_page=2,include_total=True,**filters)
+            assert total==expected
+            assert len(first)==min(2,expected)
+            assert all('_total' not in row for row in first)
+            assert pro.list_resources(901,kind,page=1,per_page=2,**filters)==first
+            empty,total=pro.list_resources(901,kind,page=10000,per_page=2,include_total=True,**filters)
+            assert empty==[] and total==expected
+            params={'page':10000,'per_page':2,**filters}
+            if 'term' in params:params['q']=params.pop('term')
+            response=client.get('/api/resources/'+kind,params=params)
+            assert response.status_code==200,response.text
+            assert response.json()==[] and response.headers['X-Total-Count']==str(expected)
+        response=client.get('/api/resources/'+kind,params={'q':'#blue','page':10000})
+        assert response.json()==[] and response.headers['X-Total-Count']=='3'
+        assert client.get('/api/resources/'+kind,params={'owner':902}).status_code==403
+    finally:
+        client.close()

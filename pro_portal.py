@@ -138,16 +138,19 @@ async def actor(request:Request,authorization:str=Header(default='')):
         else:elevated=False
         if not elevated:raise HTTPException(status_code=403,detail='STEP_UP_REQUIRED')
     request.state.session_authenticated=cookie_auth
-    from workspace_service import ACTOR_ID,ACTIVE_WORKSPACE
+    from workspace_service import ACTOR_ID,ACTIVE_WORKSPACE,API_TOKEN_WORKSPACE
     selected=request.headers.get('x-workspace-id','')
     workspace_token=None
     if selected:
         try:selected=int(selected)
         except ValueError:raise HTTPException(status_code=400,detail='Invalid workspace')
+        if token_scopes is not None and selected!=request.state.api_token_owner:
+            raise HTTPException(status_code=403,detail='API token is restricted to its workspace')
         if selected!=uid:
             await guarded(store.require,uid,selected)
         workspace_token=ACTIVE_WORKSPACE.set(selected)
     token=ACTOR_ID.set(uid)
+    api_workspace_token=API_TOKEN_WORKSPACE.set(request.state.api_token_owner if token_scopes is not None else 0)
     try:
         path=request.url.path
         feature=('api' if token_scopes is not None else
@@ -168,6 +171,7 @@ async def actor(request:Request,authorization:str=Header(default='')):
             except UserError as error:raise HTTPException(status_code=429,detail=str(error))
         yield uid
     finally:
+        API_TOKEN_WORKSPACE.reset(api_workspace_token)
         ACTOR_ID.reset(token)
         if workspace_token is not None:ACTIVE_WORKSPACE.reset(workspace_token)
 

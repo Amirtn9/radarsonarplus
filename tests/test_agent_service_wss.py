@@ -36,6 +36,10 @@ def test_agent_service_probe_self_check_and_telemetry_over_verified_wss(tmp_path
                 assert stats['capabilities']['service_probe'] and stats['memory_total_bytes']>0 and stats['disk_free_bytes']>=0
                 await ws.send(json.dumps({'action':'self_check'}));check=json.loads(await ws.recv())
                 assert check['tls_configured'] and check['uptime_sec']>=0
+                assert check['version']==check['agent_version']==agent.AGENT_VERSION
+                assert check['agent_protocol']==stats['agent_protocol']
+                assert {key:value for key,value in check.items() if key.startswith('xray_')} == {
+                    key:value for key,value in stats.items() if key.startswith('xray_')}
                 await ws.send(json.dumps({'action':'run_cmd','cmd':'touch forbidden'}))
                 assert json.loads(await ws.recv())['error']=='remote_shell_disabled'
     asyncio.run(run())

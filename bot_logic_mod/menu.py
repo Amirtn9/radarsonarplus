@@ -68,6 +68,8 @@ async def register_user_logic(update: Update, context: ContextTypes.DEFAULT_TYPE
             detail=(f"پلن: {escape(sub['snapshot']['name'])}\n"
                     f"مدت اولیه: {sub['snapshot']['days']} روز\n"
                     f"ظرفیت سرور: {sub['limits']['servers']}" if sub else 'ظرفیت و اعتبار را از بخش «اشتراک و خرید» ببینید.')
+            if sub and sub['plan_id'] is None:
+                detail='پلن رایگان فعالی برای ثبت‌نام وجود ندارد. حساب شما برای مشاهده و خرید ساخته شد؛ برای شروع پایش، از «اشتراک و خرید» یک پلن تهیه کنید.'
             await update.message.reply_text(
                 f"سلام {escape(full_name)}، خوش آمدید.\n\nحساب شما ساخته شد.\n{detail}\n\nاز «سرورهای من» یا «کانفیگ‌ها» شروع کنید؛ راهنمای هر بخش همراه شماست.",
                 parse_mode='HTML'
@@ -89,6 +91,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sub=await loop.run_in_executor(EXECUTOR,Billing(db).subscription,user_id)
     if sub:
         status={'active':'فعال','expired':'پایان اعتبار','suspended':'معلق','cancelled':'لغوشده'}[sub['effective_status']]
+        if sub['plan_id'] is None and sub['effective_status']!='active':status='در انتظار انتخاب پلن'
         expiry=sub.get('expires_at')
         remaining=(f"{max(0,ceil((expiry-datetime.now(timezone.utc)).total_seconds()/86400))} روز تا پایان" if expiry else 'بدون پایان زمانی')
         plan=sub['snapshot']['name']
@@ -100,7 +103,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Local DB reads only; opening the menu never waits for an Agent/network probe.
     reply_markup=keyboard.main_menu_kb(user_id,False,SUPER_ADMIN_ID) if has_access else keyboard.renewal_menu_kb()
     txt=(f"🛰 SONAR RADAR · {PROJECT_VERSION}\n\n"
-         f"وضعیت حساب: {status}\nپلن: {plan}\n{remaining}\n\n"
+         f"{'✅' if has_access else '⚠️'} وضعیت حساب: {status}\n💎 پلن: {plan}\n⏳ {remaining}\n\n"
          +('برای شروع، بخش موردنظر را انتخاب کنید.' if has_access else 'برای ادامهٔ پایش، اشتراک را تمدید یا وضعیت حساب را بررسی کنید. اطلاعات قبلی شما حفظ شده‌اند.'))
 
     if update.callback_query:

@@ -72,10 +72,12 @@ async def execute(pro,job):
         if not cfg:raise UserError('QUOTA_OR_RESOURCE_UNAVAILABLE')
         monitor=await asyncio.to_thread(select_monitor_row,pro.db,job['owner_id'],SUPER_ADMIN_ID)
         if not monitor:raise UserError('MONITOR_NODE_UNAVAILABLE')
-        ok,data=await asyncio.wait_for(tunnel_manager._test_via_ws(monitor,cfg['link'],size=0,timeout=30,owner_id=job['owner_id']),timeout=35)
+        ok,data=await asyncio.wait_for(tunnel_manager._test_via_ws(monitor,cfg['link'],size=0,timeout=65,owner_id=job['owner_id']),timeout=85)
         if not ok or not isinstance(data,dict) or data.get('status') not in ('OK','Fail'):raise UserError('PROBE_UNAVAILABLE')
         if data['status']=='OK' and any(type(data.get(k)) not in (int,float) or not math.isfinite(data[k]) or data[k]<(0 if k=='jitter' else .000001) for k in ('ping','jitter')):raise UserError('INVALID_PROBE_RESULT')
-        result={k:data[k] for k in ('status','ping','jitter') if k in data}
+        result={k:data[k] for k in ('status','ping','jitter','score','sample_count','attempt_count',
+            'success_rate','latency_statistic','latency_target','stability','measurement_confidence',
+            'measurement_scope','core_mode','core_version') if k in data}
         region=f"{monitor.get('location_type','unknown')}:{monitor['id']}"
         await asyncio.to_thread(_record,job['owner_id'],job['config_id'],region,data,pro,cfg['config_revision'])
     except asyncio.CancelledError:raise

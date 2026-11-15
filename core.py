@@ -410,10 +410,24 @@ class ServerMonitor:
         خودش در یک ترد جدا اجرا می‌کند، پس وب‌سوکت آزاد می‌ماند.
         """
         payload = {"action": "test_config", "link": link, "size": float(size)}
-        res = await ServerMonitor.ws_send_command(ip, ws_port, token, payload, timeout=timeout)
+        # Core startup + a 36s health budget + optional 12s download and a
+        # bounded Agent queue can exceed the old 30/35/45-second callers.
+        res = await ServerMonitor.ws_send_command(ip, ws_port, token, payload, timeout=max(65,float(timeout)))
 
         if isinstance(res,dict):
             res={**res,'measurement_node':{'ip':str(ip),'port':int(ws_port)}}
+            if res.get('status')=='OK':
+                import math
+                from pro_scoring import score_config
+                try:
+                    ping=float(res['ping']);jitter=float(res['jitter'])
+                    valid=math.isfinite(ping) and math.isfinite(jitter) and ping>0 and jitter>=0
+                except (KeyError,TypeError,ValueError,OverflowError):valid=False
+                if valid:
+                    res['score']=round(score_config(ping,jitter,True,
+                        success_rate=res.get('success_rate'),sample_count=res.get('sample_count'))/10)
+                else:
+                    res.update(status='Unknown',error_code='INVALID_PROBE_MEASUREMENT',score=0,ping=None,jitter=None)
 
         if isinstance(res, dict) and "error" in res:
             return False, res

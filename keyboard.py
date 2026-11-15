@@ -43,14 +43,14 @@ def ws_port_confirm_kb() -> InlineKeyboardMarkup:
 def main_menu_kb(user_id, is_monitor_ready, admin_id):
     """Beginner-first home: short labels, no duplicate actions."""
     kb = [
-        [InlineKeyboardButton('سرورهای من',callback_data='v6_servers'),InlineKeyboardButton('کانفیگ‌ها',callback_data='v6_configs')],
-        [InlineKeyboardButton('وضعیت و هشدارها',callback_data='v6_monitor'),InlineKeyboardButton('گزارش و ابزارها',callback_data='v6_tools')],
-        [InlineKeyboardButton('اشتراک و خرید',callback_data='bill_home'),InlineKeyboardButton('حساب و تیم',callback_data='v6_account')],
-        [InlineKeyboardButton('تنظیمات',callback_data='v6_settings'),InlineKeyboardButton('راهنما',callback_data='v6_guide')],
+        [InlineKeyboardButton('🖥 سرورهای من',callback_data='v6_servers'),InlineKeyboardButton('🔗 کانفیگ‌ها',callback_data='v6_configs')],
+        [InlineKeyboardButton('🔔 وضعیت و هشدارها',callback_data='v6_monitor'),InlineKeyboardButton('📊 گزارش و ابزارها',callback_data='v6_tools')],
+        [InlineKeyboardButton('💳 اشتراک و خرید',callback_data='bill_home'),InlineKeyboardButton('👥 حساب و تیم',callback_data='v6_account')],
+        [InlineKeyboardButton('⚙️ تنظیمات',callback_data='v6_settings'),InlineKeyboardButton('📚 راهنما',callback_data='v6_guide')],
     ]
     webapp=_webapp_button()
     if webapp:kb.insert(0,[webapp])
-    if user_id==admin_id and admin_id:kb.append([InlineKeyboardButton('مدیریت سامانه',callback_data='v6_admin')])
+    if user_id==admin_id and admin_id:kb.append([InlineKeyboardButton('👑 مدیریت سامانه',callback_data='v6_admin')])
     return InlineKeyboardMarkup(kb)
 
 
@@ -117,6 +117,7 @@ def admin_main_kb():
          InlineKeyboardButton("🗝 بازیابی کلید (Restore Key)", callback_data='admin_key_restore_start')],
         [InlineKeyboardButton("📜 لیست کل سرورهای کاربران (Full Report)", callback_data='admin_all_servers_1')],
         [InlineKeyboardButton("💳 تنظیمات پرداخت و ولت", callback_data='admin_pay_settings')],
+        [InlineKeyboardButton("🎨 ایموجی‌های ربات", callback_data='admin_emoji_settings')],
         [InlineKeyboardButton("📡 تنظیمات مانیتورینگ تانل", callback_data='monitor_settings_panel')],
         [InlineKeyboardButton("🛠 تنظیمات و وضعیت ایجنت‌ها", callback_data='admin_agent_dashboard')],
         [InlineKeyboardButton("🏢 مدیریت سازمانی 6.9.10", callback_data='admin_enterprise_dashboard')],

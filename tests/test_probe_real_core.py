@@ -21,7 +21,7 @@ UUID='00000000-0000-4000-8000-000000000001'
 
 @pytest.mark.parametrize('tls,routed,compat',[(False,False,False),(True,False,False),
     (False,True,False),(True,True,False),(False,False,True)])
-@pytest.mark.parametrize("transport", ["ws", "xhttp"])
+@pytest.mark.parametrize("transport", ["ws", "xhttp", "httpupgrade", "grpc", "tcp"])
 def test_real_proxy_traffic_with_tls_plaintext_and_profile_routing(tmp_path,monkeypatch,tls,routed,compat,transport):
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes,serialization
@@ -38,8 +38,11 @@ def test_real_proxy_traffic_with_tls_plaintext_and_profile_routing(tmp_path,monk
     with socket.socket() as sock:
         sock.bind(('127.0.0.1',0));server_port=sock.getsockname()[1]
     protocol='vmess' if transport=='xhttp' else 'vless'
-    stream={'network':transport,'security':'tls' if tls else 'none',
-            'wsSettings' if transport=='ws' else 'xhttpSettings':{'path':'/fixture'}}
+    stream={'network':transport,'security':'tls' if tls else 'none'}
+    if transport in ('ws','xhttp','httpupgrade'):
+        stream[transport+'Settings']={'path':'/fixture'}
+    elif transport=='grpc':
+        stream['grpcSettings']={'serviceName':'fixture-service'}
     if tls:
         key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
         subject=x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,'cdn.fixture.test')])
@@ -74,12 +77,13 @@ def test_real_proxy_traffic_with_tls_plaintext_and_profile_routing(tmp_path,monk
     monkeypatch.setattr(agent,'build_probe_config',diagnostic_builder)
     if compat:monkeypatch.setattr(agent,'needs_compatibility_core',lambda profile:True)
     values={'type':transport,'security':'tls' if tls else 'none','host':'cdn.fixture.test','path':'/fixture'}
+    if transport=='grpc':values['serviceName']='fixture-service'
     if transport=='xhttp':
         import base64
         values.update(add='127.0.0.1',port=str(server_port),id=UUID,aid='0',net='xhttp',tls='tls' if tls else '')
         outbound=agent.parse_xray_config('vmess://'+base64.b64encode(json.dumps(values).encode()).decode().rstrip('='))
     else:
-        values['path']='/fixture?ed=2048'
+        if transport=='ws':values['path']='/fixture?ed=2048'
         outbound=agent.parse_xray_config(f'vless://{UUID}@127.0.0.1:{server_port}?'+urlencode(values))
     if tls:
         assert outbound['streamSettings']['tlsSettings']['serverName']=='cdn.fixture.test'
@@ -105,3 +109,75 @@ def test_real_proxy_traffic_with_tls_plaintext_and_profile_routing(tmp_path,monk
     finally:
         server.terminate();server.wait(timeout=5)
         health.shutdown();health.server_close();worker.join(timeout=2)
+
+
+@pytest.mark.parametrize('protocol',['trojan','shadowsocks','reality'])
+def test_real_trojan_password_shadowsocks_and_reality_vision(tmp_path,monkeypatch,protocol):
+    import base64
+    import ssl
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes,serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa,x25519
+    from cryptography.x509.oid import NameOID
+    calls=[]
+    class Health(BaseHTTPRequestHandler):
+        def do_GET(self):
+            calls.append(self.path);self.send_response(204);self.end_headers()
+        def log_message(self,*args):pass
+    health=ThreadingHTTPServer(('127.0.0.1',0),Health)
+    thread=threading.Thread(target=health.serve_forever,daemon=True);thread.start()
+    key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
+    subject=x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,'cdn.fixture.test')])
+    now=datetime.now(timezone.utc)
+    certificate=(x509.CertificateBuilder().subject_name(subject).issuer_name(subject).public_key(key.public_key())
+                 .serial_number(x509.random_serial_number()).not_valid_before(now-timedelta(minutes=1))
+                 .not_valid_after(now+timedelta(days=1)).add_extension(x509.SubjectAlternativeName([x509.DNSName('cdn.fixture.test')]),False)
+                 .add_extension(x509.BasicConstraints(ca=True,path_length=None),True).sign(key,hashes.SHA256()))
+    cert_path=tmp_path/'cert.pem';cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_path=tmp_path/'key.pem';key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
+    decoy=ThreadingHTTPServer(('127.0.0.1',0),Health)
+    context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.minimum_version=ssl.TLSVersion.TLSv1_3
+    context.set_alpn_protocols(['h2','http/1.1']);context.load_cert_chain(cert_path,key_path)
+    decoy.socket=context.wrap_socket(decoy.socket,server_side=True)
+    decoy_thread=threading.Thread(target=decoy.serve_forever,daemon=True);decoy_thread.start()
+    with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
+    stream={'network':'tcp','security':'tls','tlsSettings':{'certificates':[{'certificateFile':str(cert_path),'keyFile':str(key_path)}]}}
+    if protocol=='trojan':
+        settings={'clients':[{'password':'part:two:three'}]}
+        link=f'trojan://part:two:three@127.0.0.1:{port}?security=tls&sni=cdn.fixture.test'
+        inbound_protocol='trojan'
+    elif protocol=='shadowsocks':
+        settings={'method':'aes-128-gcm','password':'synthetic-password','network':'tcp'}
+        stream={'network':'tcp','security':'none'}
+        auth=base64.urlsafe_b64encode(b'aes-128-gcm:synthetic-password').decode().rstrip('=')
+        link=f'ss://{auth}@127.0.0.1:{port}'
+        inbound_protocol='shadowsocks'
+    else:
+        private=x25519.X25519PrivateKey.generate()
+        encode=lambda value:base64.urlsafe_b64encode(value).decode().rstrip('=')
+        stream={'network':'tcp','security':'reality','realitySettings':{
+            'target':f'127.0.0.1:{decoy.server_port}','serverNames':['cdn.fixture.test'],
+            'privateKey':encode(private.private_bytes_raw()),'shortIds':['0123456789abcdef']}}
+        settings={'clients':[{'id':UUID,'flow':'xtls-rprx-vision'}],'decryption':'none'}
+        link=f'vless://{UUID}@127.0.0.1:{port}?'+urlencode(dict(type='tcp',security='reality',flow='xtls-rprx-vision',sni='cdn.fixture.test',sid='0123456789abcdef',pbk=encode(private.public_key().public_bytes_raw())))
+        inbound_protocol='vless'
+    config={'log':{'loglevel':'debug','error':str(tmp_path/'server.log')},'inbounds':[{
+        'listen':'127.0.0.1','port':port,'protocol':inbound_protocol,'settings':settings,'streamSettings':stream}],
+        'outbounds':[{'protocol':'freedom','settings':{'finalRules':[{
+            'action':'allow','network':'tcp','ip':['127.0.0.1/32'],'port':str(health.server_port)}]}}]}
+    path=tmp_path/'server.json';path.write_text(json.dumps(config))
+    (tmp_path/'xray').symlink_to(LATEST);(tmp_path/'geoip.dat').touch()
+    monkeypatch.setattr(agent,'WORK_DIR',str(tmp_path));monkeypatch.setattr(agent,'XRAY_BIN',str(tmp_path/'xray'))
+    monkeypatch.setattr(agent,'_health_urls',lambda:(f'http://127.0.0.1:{health.server_port}/health',))
+    profile=agent.parse_xray_config(link)
+    if protocol=='trojan':profile['streamSettings']['tlsSettings']['certificates']=[{'certificateFile':str(cert_path),'usage':'verify'}]
+    server=subprocess.Popen([LATEST,'run','-config',str(path)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    try:
+        assert agent.check_port_open(port),(tmp_path/'server.log').read_text()
+        result=agent.test_config_logic(profile,0)
+        assert result['status']=='OK',result
+        assert result['ping']>0 and len(calls)==3
+    finally:
+        server.terminate();server.wait(timeout=5)
+        health.shutdown();health.server_close();thread.join(timeout=2)
+        decoy.shutdown();decoy.server_close();decoy_thread.join(timeout=2)

@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/static/ssh-terminal.css">
   <link rel="stylesheet" href="/static/premium.css">
   <script defer src="/static/ui.js"></script>
+  <script defer src="/static/modules.js"></script>
 
   <script defer src="/static/web_ops.js"></script>
   <!-- Telegram WebApp SDK is loaded asynchronously by app.js with a bounded timeout. -->
@@ -24,9 +25,9 @@
 
   <script defer src="/static/subscriptions.js"></script>
   <link rel="stylesheet" href="/static/config_alerts.css">
-<link rel="stylesheet" href="/static/workspace.css?v=6.9.10"><script defer src="/static/reports.js?v=6.9.10"></script><script defer src="/static/server-help.js?v=6.9.10"></script><script defer src="/static/log-management.js"></script>
-<link rel="stylesheet" href="/static/product.css"><script defer src="/static/product.js"></script>
-<link rel="stylesheet" href="/static/control.css"><script defer src="/static/billing.js"></script><script defer src="/static/control.js"></script>
+<link rel="stylesheet" href="/static/workspace.css?v=6.9.10"><script defer src="/static/server-help.js?v=6.9.10"></script>
+<link rel="stylesheet" href="/static/product.css">
+<link rel="stylesheet" href="/static/control.css"><script defer src="/static/control.js"></script>
 <link rel="preload" as="font" href="/static/fonts/Vazirmatn-Regular.woff2" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/liquid.css">
 <script defer src="/static/experience.js"></script>
@@ -216,6 +217,8 @@
     <h3>مدیریت Agentهای ایران و خارج</h3><p class="muted">برای فعال شدن در بالانسر، Agent باید نصب شده، دارای گواهی TLS و توکن معتبر، تأییدشده توسط مدیر و دارای heartbeat موفق در پنج دقیقه اخیر باشد.</p>
     <div id="relay-candidates" class="fleet-list"><p class="muted">در حال دریافت سرورها…</p></div>
     <div class="quicklinks"><button type="button" id="relay-approve-selected" class="primary">تأیید/فعال‌سازی انتخاب‌شده‌ها</button><button type="button" id="relay-disable-selected" class="destructive">غیرفعال‌کردن انتخاب‌شده‌ها</button></div>
+    <button type="button" id="relay-version-check">بررسی نسخه Agentها و Xray</button>
+    <div id="relay-versions" class="fleet-list" aria-live="polite"></div>
     <p id="relay-status" class="muted" role="status"></p>
   </section>
 </section>

@@ -210,6 +210,6 @@ class ServiceStore:
         return event
 
     def cleanup(self,days=None):
-        if days is None: days=int(os.getenv('SONAR_SERVICE_HISTORY_DAYS','14'))
+        if days is None: days=int(os.getenv('SONAR_SERVICE_HISTORY_DAYS','30'))
         self.db.execute('DELETE FROM pro_service_history WHERE checked_at<NOW()-(%s*INTERVAL \'1 day\')',
                         (max(1,min(365,int(days))),))

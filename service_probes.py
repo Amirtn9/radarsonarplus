@@ -34,7 +34,7 @@ def normalize_target(kind: str, target: str) -> str:
         if u.scheme not in ('http', 'https') or not u.hostname or u.username or u.password or u.fragment:
             raise ValueError('Use an http(s) URL without credentials or fragments')
         try:
-            port = u.port or (443 if u.scheme == 'https' else 80)
+            port = u.port if u.port is not None else (443 if u.scheme == 'https' else 80)
         except ValueError as ex:
             raise ValueError('Invalid port') from ex
         host = u.hostname
@@ -117,7 +117,8 @@ class _PinnedHTTPS(http.client.HTTPSConnection):
 def check(kind: str, target: str, timeout: int = 5, expected_status: int | None = None,
           *, allow_private: bool | None = None) -> ProbeResult:
     """Probe one target. Failures are deliberately sanitized for UI/Telegram."""
-    normalize_target(kind, target)
+    kind = str(kind).lower().strip()
+    target = normalize_target(kind, target)
     if not 1 <= int(timeout) <= 15: raise ValueError('Timeout must be 1-15 seconds')
     if expected_status is not None and not 200 <= int(expected_status) <= 599:
         raise ValueError('Expected HTTP status must be 200-599')

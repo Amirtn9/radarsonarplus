@@ -37,12 +37,22 @@ def install_schema(db):
         cur.execute('''CREATE TABLE IF NOT EXISTS sonar_web_sessions(
           token_hash CHAR(64) PRIMARY KEY, user_id BIGINT NOT NULL,
           csrf_hash CHAR(64) NOT NULL, expires_at TIMESTAMPTZ NOT NULL,
-          revoked_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
+          revoked_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          elevated_at TIMESTAMPTZ,
+          last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
         cur.execute('CREATE INDEX IF NOT EXISTS sonar_web_sessions_user_idx ON sonar_web_sessions(user_id)')
         cur.execute('''CREATE TABLE IF NOT EXISTS sonar_web_login_attempts (
             client_hash CHAR(64) PRIMARY KEY,
             attempts INTEGER NOT NULL DEFAULT 0,
             window_started TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
+        conn.commit()
+
+
+def install_session_schema(db):
+    """Repair legacy session tables without granting existing sessions elevation."""
+    with db.get_connection() as (conn,cur):
+        cur.execute('ALTER TABLE sonar_web_sessions ADD COLUMN IF NOT EXISTS elevated_at TIMESTAMPTZ')
+        cur.execute('ALTER TABLE sonar_web_sessions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()')
         conn.commit()
 
 

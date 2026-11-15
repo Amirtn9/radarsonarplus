@@ -118,14 +118,14 @@ async def service_check_job(context,db=None):
 
 async def web_worker(db,stop,get_token):
     from types import SimpleNamespace
-    from telegram import Bot
+    from bot_emoji import themed_bot
     while not stop.is_set():
         try:
             await service_check_job(None,db)
             token=get_token()
             pending=await asyncio.to_thread(db.execute,"SELECT 1 FROM pro_notification_outbox WHERE sent_at IS NULL AND skipped_at IS NULL AND dead_at IS NULL AND next_attempt_at<=NOW() LIMIT 1",None,'one')
             if token and pending:
-                async with Bot(token) as bot:await flush_notifications(SimpleNamespace(bot=bot),ProStore(db))
+                async with await themed_bot(token,db) as bot:await flush_notifications(SimpleNamespace(bot=bot),ProStore(db))
         except asyncio.CancelledError:raise
         except Exception:log.warning('Web service monitoring or delivery unavailable')
         try:await asyncio.wait_for(stop.wait(),timeout=15)

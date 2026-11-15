@@ -128,7 +128,8 @@ def _record(uid,cid,region,data,pro=None,expected_revision=None):
             return None
         cur.execute('''UPDATE tunnel_configs SET last_status=%s,last_ping=%s,last_jitter=%s,
             quality_score=%s,last_speed_down=%s,last_speed_up=%s WHERE id=%s AND owner_id=%s''',
-            ('OK' if ok else 'Fail',ping,jitter,round(score_config(ping,jitter,ok)/10),
+            ('OK' if ok else 'Fail',ping,jitter,round(score_config(ping,jitter,ok,
+             success_rate=data.get('success_rate'),sample_count=data.get('sample_count'))/10),
              (f"{data['down']} Mbps" if isinstance(data.get('down'),(int,float)) else str(data['down'])) if data.get('down') is not None else None,
              (f"{data['up']} Mbps" if isinstance(data.get('up'),(int,float)) else str(data['up'])) if data.get('up') is not None else None,cid,uid))
         conn.commit()
@@ -159,7 +160,7 @@ async def _do_probe(uid,cfg,monitor,sem,user_sem,context=None):
     async with user_sem:
         async with sem:
             try:
-                ok,data=await asyncio.wait_for(tunnel_manager._test_via_ws(monitor,cfg['link'],size=.25,timeout=35,owner_id=uid),timeout=42)
+                ok,data=await asyncio.wait_for(tunnel_manager._test_via_ws(monitor,cfg['link'],size=.25,timeout=65,owner_id=uid),timeout=85)
                 result=data if ok and isinstance(data,dict) else {'status':'Unknown'}
             except Exception:
                 result={'status':'Unknown'}

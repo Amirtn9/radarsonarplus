@@ -113,6 +113,39 @@ def test_capacity_reduction_stops_only_overflow_and_preserves_rows(service):
     service.manage(901,902,overrides={'servers':1},reason='reduced capacity')
     assert service.usage(902)['servers']==2 and len(service.db.get_active_servers())==1
 
+
+def test_current_plan_capacity_increase_is_used_by_server_creation(service):
+    ident=plan(service,0)
+    service.checkout(902,ident,'wallet','capacity-upgrade-01')
+    source=next(p for p in service.plans(901,True) if p['id']==ident)
+    data={k:source[k] for k in ('name','description','price','days','limits','features','enabled','priority','policy')}
+    data['limits']={**data['limits'],'servers':3}
+    service.save_plan(901,data,ident,'current','increase current server capacity')
+    assert service.db.workspace_server_limit(902)==3
+    for index in range(3):
+        result=service.db.add_server(902,0,dict(name=f'node {index}',ip=f'192.0.2.{index+1}',port=22,username='fixture',password=''))
+        assert result>0
+    assert service.db.add_server(902,0,dict(name='overflow',ip='192.0.2.4',port=22,username='fixture',password=''))==-1
+
+
+def test_service_cleanup_keeps_the_default_thirty_day_history(service,monkeypatch):
+    from service_monitor import ServiceStore
+    from pro_store import ProStore
+    monkeypatch.delenv('SONAR_SERVICE_HISTORY_DAYS',raising=False)
+    ident=plan(service,0)
+    service.checkout(902,ident,'wallet','history-retention-01')
+    monitors=ServiceStore(ProStore(service.db))
+    sid=monitors.create(902,902,'Retention monitor','http','https://example.com')
+    for age in (10,20,31):
+        service.db.execute("INSERT INTO pro_service_history(owner_id,service_id,ok,detail,checked_at) VALUES(902,%s,TRUE,%s,NOW()-(%s*INTERVAL '1 day'))",(sid,str(age),age))
+    monitors.cleanup()
+    rows=service.db.execute('SELECT detail FROM pro_service_history WHERE service_id=%s ORDER BY detail',(sid,),fetch='all')
+    assert [row['detail'] for row in rows]==['10','20']
+    # An explicit operator cap still applies when configured.
+    monkeypatch.setenv('SONAR_SERVICE_HISTORY_DAYS','14')
+    monitors.cleanup()
+    assert service.db.execute('SELECT COUNT(*) n FROM pro_service_history WHERE service_id=%s',(sid,),fetch='one')['n']==1
+
 def test_new_registration_uses_free_plan_without_rewriting_legacy_accounts(service):
     service.db.add_or_update_user(999,'new Telegram user')
     assert service.subscription(999)['limits']['configs']==5

@@ -117,6 +117,12 @@ def main():
         # advisory lock. Their independent systemd startup order is irrelevant.
         from schema_migrations import run_startup_migrations
         await _startup_step("schema_migrations", run_startup_migrations, db)
+        from bot_emoji import load_theme
+        from settings import SUPER_ADMIN_ID
+        try:
+            application.bot.set_emoji_theme(await asyncio.to_thread(load_theme,db,SUPER_ADMIN_ID))
+        except Exception:
+            logger.warning('Emoji settings unavailable; keeping Unicode emoji')
         from log_management import attach_logging
         from settings import SUPER_ADMIN_ID
         application.bot_data['database_logs']=attach_logging(db,SUPER_ADMIN_ID)
@@ -173,14 +179,10 @@ def main():
             logger.exception("Shared executor shutdown failed")
 
     logger.info("Building Telegram application")
+    from bot_emoji import build_bot
     app = (
         ApplicationBuilder()
-        .token(TOKEN)
-        .connect_timeout(60.0)
-        .read_timeout(60.0)
-        .write_timeout(60.0)
-        .pool_timeout(30.0)
-        .connection_pool_size(256)
+        .bot(build_bot(TOKEN))
         .concurrent_updates(OrderedUserProcessor(16))  # Same-user updates remain strictly ordered
         .post_init(_post_init)
         .post_stop(_post_stop)

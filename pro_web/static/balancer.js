@@ -81,6 +81,28 @@
   }
 
   byId('relay-pool-refresh')?.addEventListener('click', load);
+  byId('relay-version-check')?.addEventListener('click', async event => {
+    const button=event.currentTarget, output=byId('relay-versions');
+    const ids=current.map(item=>Number(item.id));
+    if(!ids.length){toast('ابتدا فهرست سرورها را دریافت کنید.');return;}
+    button.disabled=true;output.replaceChildren(node('p','در حال بررسی ارتباط و نسخه‌ها…','muted'));
+    const labels={current:'✅ مطابق نسخه مرکزی',different:'🟡 نسخه یا بیلد متفاوت',incompatible:'🔴 پروتکل ناسازگار',unknown:'⚪ نامشخص'};
+    try {
+      output.replaceChildren();
+      for(let offset=0;offset<ids.length;offset+=12){
+        const report=await jsonPost('/api/fleet/versions',{server_ids:ids.slice(offset,offset+12)});
+        for(const item of report.nodes){
+          const card=node('article',null,'relay-candidate');
+          card.append(node('strong',`${item.name} · ${labels[item.state]||labels.unknown}`));
+          card.append(node('p',`Agent: ${item.agent_version||'—'} · پروتکل: ${item.agent_protocol??'—'} · بیلد: ${item.agent_build?.slice(0,12)||'—'}`));
+          card.append(node('p',`Xray: ${item.xray_version||'—'} (${labels[item.xray_version_state]}) · سازگاری: ${item.xray_compat_version||'—'} (${labels[item.xray_compat_version_state]})`));
+          card.append(node('small',`بررسی: ${new Date(item.checked_at).toLocaleString('fa-IR')} · نسخه هدف Agent: ${report.expected_version}`));
+          output.append(card);
+        }
+      }
+    }catch(error){output.append(node('p',error.message,'bad'));}
+    finally{button.disabled=false;}
+  });
   byId('relay-policy-save')?.addEventListener('click', async () => {
     try {
       await jsonPost('/api/fleet/policy', {strategy: byId('relay-strategy').value});

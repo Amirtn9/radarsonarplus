@@ -67,6 +67,10 @@ jobs:
         run: python -m compileall -q .
       - name: Dependency consistency
         run: python -m pip check
+      - name: Release labels and generated repository map
+        run: |
+          python scripts/check_release.py
+          python scripts/update_project_structure.py --check
       - name: Regression tests with real PostgreSQL and Xray
         run: python -m pytest -q --disable-warnings --junitxml="$RUNNER_TEMP/pytest.xml"
       - name: Publish regression failure diagnostics

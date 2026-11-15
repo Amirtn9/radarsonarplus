@@ -2,7 +2,7 @@
   "name": "radarsonarplus-browser-tests",
   "version": "1.0.0",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "devDependencies": {
     "playwright": "1.65.0"
   }

@@ -276,7 +276,7 @@ async def get_sub_links_action(update: Update, context: ContextTypes.DEFAULT_TYP
             await safe_callback_answer(query, "❌ اشتراک یافت نشد.", show_alert=True)
             return
             
-        cur.execute("SELECT link, name FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (sub_id, shared_uid(update)))
+        cur.execute("SELECT link, name FROM tunnel_configs WHERE owner_id=%s AND parent_sub_id=%s AND type='sub_item'", (shared_uid(update), sub_id))
         items = cur.fetchall()
         
     if not items:
@@ -932,8 +932,10 @@ async def show_config_details(update: Update, context: ContextTypes.DEFAULT_TYPE
                 if parent:
                     parent_id = parent['id']
 
-    status_icon = "🟢" if cfg['last_status'] == 'OK' else "🔴"
-    ping_txt = f"{cfg['last_ping']} ms" if cfg['last_ping'] > 0 else "N/A"
+    status_icon = {'OK':'🟢','Fail':'🔴'}.get(cfg['last_status'],'⚪')
+    ping=cfg.get('last_ping')
+    ping_txt = f"{ping} ms" if isinstance(ping,(int,float)) and ping>0 else "اندازه‌گیری نشده"
+    score_txt=f"{cfg['quality_score']}/10" if cfg['last_status']=='OK' else 'اندازه‌گیری نشده'
     
     txt = (
         f"🏷 **جزئیات کانفیگ**\n"
@@ -941,7 +943,7 @@ async def show_config_details(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"📝 **نام:** `{cfg['name']}`\n"
         f"📡 **وضعیت:** {status_icon} `{cfg['last_status']}`\n"
         f"📶 **پینگ:** `{ping_txt}`\n"
-        f"🛡 **امتیاز کیفی:** `{cfg['quality_score']}/10`\n\n"
+        f"🛡 **امتیاز کیفی:** `{score_txt}`\n\n"
         f"📅 تاریخ ثبت: `{cfg['added_at']}`"
     )
 

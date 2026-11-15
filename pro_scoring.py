@@ -3,20 +3,37 @@ from math import isfinite
 
 def _clamp(n, low, high): return max(low,min(high,n))
 
-def score_config(ping, jitter, ok, uptime_percent=None, download_mbps=None):
+def _optional_number(value,maximum=None):
+    try: value=float(value)
+    except (TypeError,ValueError,OverflowError):return None
+    if not isfinite(value) or value<0:return None
+    return min(value,maximum) if maximum is not None else value
+
+def score_config(ping, jitter, ok, uptime_percent=None, download_mbps=None, success_rate=None, sample_count=None):
     if not ok:return 0
     try: p=float(ping); j=float(jitter)
-    except (ValueError,TypeError):return 0
+    except (ValueError,TypeError,OverflowError):return 0
     if not all(isfinite(n) for n in (p,j)) or p<=0 or j<0:return 0
     latency=_clamp(100-(p-30)*.18,0,100)
     stability=_clamp(100-j*1.5,0,100)
     parts=[(latency,.60),(stability,.40)]
-    if uptime_percent is not None:
-        up=_clamp(float(uptime_percent),0,100)
+    up=_optional_number(uptime_percent,100)
+    if up is not None:
         parts=[(latency,.45),(stability,.30),(up,.25)]
     score=sum(value*weight for value,weight in parts)
-    if download_mbps is not None and download_mbps>0:
-        score=.9*score+.1*_clamp(float(download_mbps)*5,0,100)
+    speed=_optional_number(download_mbps)
+    if speed is not None and speed>0:
+        score=.9*score+.1*_clamp(speed*5,0,100)
+    # A fast successful request must not hide failed attempts. Older Agents
+    # without sample metadata retain their existing score until upgraded.
+    reliability=_optional_number(success_rate)
+    if success_rate is not None:
+        if reliability is None or reliability>1:return 0
+        score*=reliability
+    if sample_count is not None:
+        count=_optional_number(sample_count)
+        if count is None or count<1:return 0
+        score*=min(1,count/3)
     return round(_clamp(score,0,100),1)
 
 

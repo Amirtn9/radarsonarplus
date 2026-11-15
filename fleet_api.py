@@ -35,6 +35,9 @@ class FleetInstall(BaseModel):
 class ResetTraffic(BaseModel):
     confirmed:bool=False
 
+class FleetVersions(BaseModel):
+    server_ids:list[int]=Field(min_length=1,max_length=30)
+
 class ScanPorts(BaseModel):
     server_id:int=Field(gt=0)
     # One short list, never a general-purpose TCP port scanner.
@@ -82,6 +85,15 @@ def make_router(store,actor,guarded,admin_id):
     def ensure_admin(uid):
         if not admin_id or int(uid)!=int(admin_id):
             raise HTTPException(status_code=403,detail='Only the main administrator may manage the shared fleet')
+
+    @r.post('/versions')
+    async def versions(body:FleetVersions,uid:int=Depends(actor)):
+        ensure_admin(uid)
+        from agent_inventory import check_versions
+        rows=await guarded(store.db.execute,
+            'SELECT id,name,ip,ws_port FROM servers WHERE is_active=1 AND id=ANY(%s) ORDER BY id',
+            (list(set(body.server_ids)),),fetch='all')
+        return await check_versions(rows)
 
     @r.get('/candidates')
     async def candidates(uid:int=Depends(actor)):

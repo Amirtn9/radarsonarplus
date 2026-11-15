@@ -48,8 +48,10 @@ def test_wireguard_egress_blocking_primary_target_uses_independent_https(tmp_pat
     monkeypatch.setattr(agent.subprocess,'run',request)
     result=agent.test_config_logic({'protocol':'vless','tag':'proxy','settings':{},'streamSettings':{'security':'tls'}},.25)
     assert result['status']=='OK' and result['ping']==80
-    assert len(calls)==4
-    assert all('cloudflare' in call[-1] for call in calls[1:])
+    assert len(calls)==5
+    assert all('gstatic' in call[-1] for call in calls[:2])
+    assert all('cloudflare' in call[-1] for call in calls[2:])
+    assert result['success_rate']==1  # blocked discovery target is separate
     assert not list(tmp_path.glob('config_*.json'))
 
 

@@ -382,7 +382,12 @@ class Database:
         return WorkspaceService(self).members(user_id)
 
     def workspace_server_limit(self, user_id):
-        """Member quotas are pooled, but each account subscription remains private."""
+        """Commercial workspaces use the owner's effective, independent quota."""
+        from billing import Billing
+        subscription = Billing(self).subscription(user_id)
+        if subscription:
+            return max(0, int(subscription['limits']['servers']))
+        # Preserve quota pooling only for legacy workspaces without a plan.
         ids = self.workspace_members(user_id)
         row = self.execute('SELECT COALESCE(SUM(server_limit),0) AS total FROM users WHERE user_id=ANY(%s)',
                            (ids,),fetch='one')
@@ -480,11 +485,14 @@ class Database:
             return cur.fetchone()
 
     def add_or_update_user(self, user_id, full_name=None, invited_by=0, days=None):
-        exist = self.get_user(user_id)
         now_str = self.get_tehran_datetime().strftime('%Y-%m-%d %H:%M:%S')
         default_days = days if days is not None else 60
 
         with self.get_connection() as (conn, cur):
+            from billing import Billing,_lock
+            _lock(cur,user_id)
+            cur.execute('SELECT * FROM users WHERE user_id=%s FOR UPDATE',(user_id,))
+            exist=cur.fetchone()
             if exist:
                 if full_name:
                     cur. execute('UPDATE users SET full_name = %s WHERE user_id = %s', (full_name, user_id))
@@ -509,12 +517,11 @@ class Database:
                     INSERT INTO users (user_id, full_name, added_date, expiry_date, server_limit, invited_by, wallet_balance, referral_count)
                     VALUES (%s, %s, %s, %s, 2, %s, 0, 0)
                 ''', (user_id, full_name, now_str, expiry, invited_by))
+                cur.execute("SELECT to_regclass('public.sonar_subscriptions') AS relation")
+                table=cur.fetchone()
+                if table and table['relation']:
+                    Billing(self).enroll_in_transaction(cur,user_id)
             conn.commit()
-        if not exist:
-            table=self.execute("SELECT to_regclass('public.sonar_subscriptions') AS relation",fetch='one')
-            if table and table['relation']:
-                from billing import Billing
-                Billing(self).enroll(user_id)
 
     def get_all_users(self):
         with self.get_connection() as (conn, cur):

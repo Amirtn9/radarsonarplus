@@ -68,6 +68,11 @@ def probe_note(data):
         'XRAY_CORE_START_FAILED':'هسته تست اجرا نشد؛ این نتیجه اثبات قطعی کانفیگ نیست.',
         'XRAY_COMPAT_NOT_READY':'این کانفیگ بدون TLS به هسته سازگار نیاز دارد؛ Agent را از بخش نصب/تعمیر به‌روز کنید.',
         'CONFIG_UNSUPPORTED':'Agent این قالب کانفیگ را نخواند؛ کانفیگ قطع‌شده تشخیص داده نشده است.',
+        'XRAY_CONFIG_INVALID':'هسته تنظیمات این کانفیگ را نپذیرفت؛ قالب لینک و نسخه Agent را بررسی کنید.',
+        'XRAY_ASSET_MISSING':'فایل‌های مورد نیاز هسته موجود نیستند؛ نصب/تعمیر Agent لازم است.',
+        'XRAY_LISTENER_FAILED':'درگاه محلی تست روی Agent باز نشد؛ تداخل درگاه یا مجوز اجرا را بررسی کنید.',
+        'AGENT_BUSY':'ظرفیت تست نود تکمیل است؛ کمی بعد دوباره تست کنید. سلامت کانفیگ تعیین نشده است.',
+        'INVALID_PROBE_MEASUREMENT':'Agent اندازه‌گیری معتبر برنگرداند؛ وضعیت قبلی کانفیگ حفظ شد.',
         'PROBE_ERROR':'اجرای سنجش کامل نشد؛ نتیجه قطعی درباره سلامت کانفیگ وجود ندارد.',
     }.get(str(code),'سنجش از این نود ناموفق بود؛ نتیجه گوشی را با مسیر و زمان همین نود مقایسه کنید.')
 
@@ -281,8 +286,9 @@ class TunnelLogic:
             try:
                 async with self._user_sem(uid):
                     async with self.global_sem:
-                        ok_t, data = await self._test_via_ws(monitor, item['link'], size=0.5, timeout=45,owner_id=uid)
-                    return (data if ok_t and isinstance(data,dict) else None)
+                        ok_t, data = await self._test_via_ws(monitor, item['link'], size=0.5, timeout=65,owner_id=uid)
+                    if not ok_t and isinstance(data,dict):data={**data,'status':'Unknown'}
+                    return data if isinstance(data,dict) else None
             except Exception as exc:
                 logger.warning('Subscription test failed (%s); membership unchanged',type(exc).__name__)
                 return None
@@ -336,7 +342,8 @@ class TunnelLogic:
             async with self._user_sem(uid or cfg.get('owner_id')):
                 async with self.global_sem:
                     ok, data = await self._test_via_ws(monitor,cfg['link'],size=float(size),timeout=60,owner_id=uid or cfg.get('owner_id'))
-                return cfg, (data if ok else None)
+                if not ok and isinstance(data,dict):data={**data,'status':'Unknown'}
+                return cfg, (data if isinstance(data,dict) else None)
 
         results = await asyncio.gather(*[_one(c) for c in singles], return_exceptions=True)
 
@@ -359,7 +366,7 @@ class TunnelLogic:
                 fail_ids.append(cfg['id'])
                 report_lines.append(f"❌ <b>{html.escape(cfg['name'][:180])}</b>\n{probe_note(data)}")
             else:
-                report_lines.append(f"⚪ {html.escape(cfg['name'])}: سنجش انجام نشد؛ وضعیت قبلی حفظ شد.")
+                report_lines.append(f"⚪ {html.escape(cfg['name'])}: سنجش انجام نشد؛ وضعیت قبلی حفظ شد.\n{probe_note(data)}")
 
         await run_sync(self._bulk_update_singles, ok_rows, fail_ids)
         return report_lines

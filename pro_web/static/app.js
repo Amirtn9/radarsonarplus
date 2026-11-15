@@ -228,6 +228,10 @@ async function loadList(){const requestId=++state.listingRequest,tab=state.tab,p
  else url=tab==='rankings'?'/api/rankings':`/api/incidents?status=${encodeURIComponent(state.incidentStatus)}`;
  if(!restoringRoute)updateRoute();
  const response=await request(url,{raw:true});const list=await response.json();const total=Number(response.headers.get('X-Total-Count'));if(requestId!==state.listingRequest||tab!==state.tab)return;if(!Array.isArray(list))throw Error('پاسخ نامعتبر از سرور');
+ if(resourceTab&&!list.length&&response.headers.has('X-Total-Count')&&Number.isSafeInteger(total)&&total>=0){
+  const lastPage=Math.max(1,Math.ceil(total/12));
+  if(page>lastPage){state.index=lastPage;updateRoute(true);return await loadList();}
+ }
  host.replaceChildren();if(!list.length){
   const filtered=resourceTab&&(search||state.onlyFavorites);
   host.append(elem('p',filtered?'نتیجه‌ای برای این جست‌وجو و فیلتر پیدا نشد.':resourceTab?(tab==='servers'?'هنوز سروری در این فضای کاری اضافه نشده است.':'هنوز کانفیگی در این فضای کاری اضافه نشده است.'):'موردی برای نمایش وجود ندارد.','empty-state'));

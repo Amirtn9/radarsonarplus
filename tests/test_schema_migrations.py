@@ -76,7 +76,8 @@ def install_modules(monkeypatch, events):
     ):
         module(name, **{fn: lambda db, name=name: events.append(name)})
     module("web_login",install_schema=lambda db:events.append("web_login"),
-           install_security_schema=lambda db:events.append("web_login_security"))
+           install_security_schema=lambda db:events.append("web_login_security"),
+           install_session_schema=lambda db:events.append("web_session_columns"))
     module("log_management",install_schema=lambda db:events.append("log_management"),
            install_reliability_schema=lambda db:events.append("log_reliability"))
     module("monitor_fleet", install_schema=lambda db: events.append("monitor_fleet"),
@@ -96,13 +97,13 @@ def test_bot_and_web_share_one_versioned_migration_ledger(monkeypatch):
     assert first == [
         "pro_store", "enterprise_services", "enterprise_runtime",
         "subscription_health", "web_login", "monitor_fleet",
-        "monitor_fleet_jobs", "agent_traffic", "service_monitor", "web_agent_jobs", "config_alerts", "log_management", "log_reliability", "web_login_security", "billing", "independent_quotas", "account_controls", "product_workflows",
+        "monitor_fleet_jobs", "agent_traffic", "service_monitor", "web_agent_jobs", "config_alerts", "log_management", "log_reliability", "web_login_security", "billing", "independent_quotas", "account_controls", "product_workflows", "web_session_columns",
     ]
     assert second == []
     assert events.count("recover_jobs") == 2
-    assert len([event for event in events if event != "recover_jobs"]) == 18
+    assert len([event for event in events if event != "recover_jobs"]) == 19
     assert db.applied[1] == "core_schema"
-    assert len(db.applied) == 19
+    assert len(db.applied) == 20
     assert db.locked is False
     assert any("pg_advisory_lock" in sql for sql, _ in db.sql)
     assert any("pg_advisory_unlock" in sql for sql, _ in db.sql)

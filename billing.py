@@ -130,15 +130,34 @@ class Billing:
     def enroll(self,uid):
         """Only new accounts opt into the commercial plan; never rewrite legacy data."""
         with self.db.get_connection() as (conn,cur):
-            _lock(cur,uid)
-            cur.execute('SELECT * FROM sonar_plans WHERE enabled=TRUE AND archived_at IS NULL AND (publish_at IS NULL OR publish_at<=NOW()) AND price=0 ORDER BY priority,id LIMIT 1')
-            plan=cur.fetchone()
-            if plan:
-                cur.execute('''INSERT INTO sonar_subscriptions(user_id,plan_id,snapshot,expires_at)
-                   VALUES(%s,%s,%s,NOW()+(%s*INTERVAL '1 day')) ON CONFLICT(user_id) DO NOTHING''',
-                   (uid,plan['id'],Json(dict(plan),dumps=_json),plan['days']))
-                cur.execute("UPDATE users SET expiry_date=to_char((SELECT expires_at FROM sonar_subscriptions WHERE user_id=%s) AT TIME ZONE 'Asia/Tehran','YYYY-MM-DD HH24:MI:SS'),server_limit=%s WHERE user_id=%s",(uid,plan['limits']['servers'],uid))
+            self.enroll_in_transaction(cur,uid)
             conn.commit()
+
+    def enroll_in_transaction(self,cur,uid):
+        """Commit account creation and its subscription as one atomic operation."""
+        if self.admin_id and int(uid)==self.admin_id:return
+        _lock(cur,uid)
+        cur.execute('SELECT 1 FROM sonar_subscriptions WHERE user_id=%s',(uid,))
+        if cur.fetchone():return
+        cur.execute('SELECT * FROM sonar_plans WHERE enabled=TRUE AND archived_at IS NULL AND (publish_at IS NULL OR publish_at<=NOW()) AND price=0 ORDER BY priority,id LIMIT 1 FOR SHARE')
+        plan=cur.fetchone()
+        if plan:
+            snapshot=dict(plan)
+            cur.execute('''INSERT INTO sonar_subscriptions(user_id,plan_id,snapshot,expires_at)
+                VALUES(%s,%s,%s,NOW()+(%s*INTERVAL '1 day'))''',
+                (uid,plan['id'],Json(snapshot,dumps=_json),plan['days']))
+        else:
+            # A missing free offer must not turn a new account into an
+            # unmetered legacy installation. Keep purchase/read access open.
+            snapshot={'name':'در انتظار انتخاب پلن','description':'برای شروع پایش یک پلن فعال تهیه کنید.',
+                'price':0,'days':0,'limits':dict.fromkeys(RESOURCES,0),
+                'features':dict.fromkeys(('advanced_reports','api','automation','backups','agents'),False),
+                'consumption':dict.fromkeys(('config_tests_daily','config_tests_concurrent','api_daily','reports_daily','notifications_daily','operations_daily'),0),
+                'policy':{'min_interval_seconds':60,'retention_days':1}}
+            cur.execute('''INSERT INTO sonar_subscriptions(user_id,plan_id,snapshot,status,expires_at)
+                VALUES(%s,NULL,%s,'suspended',NOW())''',(uid,Json(snapshot)))
+        cur.execute("UPDATE users SET expiry_date=to_char((SELECT expires_at FROM sonar_subscriptions WHERE user_id=%s) AT TIME ZONE 'Asia/Tehran','YYYY-MM-DD HH24:MI:SS'),server_limit=%s WHERE user_id=%s",
+                    (uid,snapshot['limits']['servers'],uid))
 
     def plans(self,actor=None,all_plans=False):
         if all_plans:self.admin(actor)
@@ -449,6 +468,7 @@ class Billing:
             cur.execute('SELECT user_id,full_name,is_banned FROM users WHERE user_id=%s FOR UPDATE',(uid,));before=cur.fetchone()
             cur.execute('''INSERT INTO users(user_id,full_name,is_banned) VALUES(%s,%s,%s)
                 ON CONFLICT(user_id) DO UPDATE SET full_name=EXCLUDED.full_name,is_banned=EXCLUDED.is_banned''',(uid,name,int(banned)))
+            if before is None:self.enroll_in_transaction(cur,uid)
             if banned:cur.execute('UPDATE sonar_web_sessions SET revoked_at=NOW() WHERE user_id=%s',(uid,))
             _audit(cur,actor,uid,'user.manage',_safe(before),{'full_name':name,'is_banned':banned},reason);conn.commit()
 

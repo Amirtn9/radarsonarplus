@@ -49,7 +49,8 @@ async def manage(update,context):
         region='IR' if item.get('location_type')=='ir' else 'EXT'
         state='TLS' if item.get('tls_enrolled') and item.get('token_configured') else 'NO-AGENT'
         buttons.append([Button(f'{prefix} [{region}/{state}] {item["name"][:20]} • {str(item.get("ip",""))[:18]}',callback_data=f'fleet_pick_{sid}')])
-    buttons.extend([[Button('✅ تأیید نودهای انتخاب‌شده',callback_data='fleet_apply')],
+    buttons.extend([[Button('🔎 بررسی نسخه Agentها',callback_data='fleet_versions')],
+                    [Button('✅ تأیید نودهای انتخاب‌شده',callback_data='fleet_apply')],
                     [Button('🧩 نصب Agent روی انتخاب‌ها',callback_data='fleet_install_prepare')],
                     [Button('🔙 بازگشت',callback_data='monitor_settings_panel')]])
     text=('🛰 **مدیریت Agentهای ایران و خارج**\n\n'
@@ -115,7 +116,37 @@ def register(app):
     app.add_handler(SecureCallbackQueryHandler(traffic_menu,pattern=r'^fleet_traffic$'))
     app.add_handler(SecureCallbackQueryHandler(traffic_reset,pattern=r'^fleet_meter_(?:reset|confirm)_\d+$'))
     app.add_handler(SecureCallbackQueryHandler(manage,pattern=r'^fleet_manage$'))
+    app.add_handler(SecureCallbackQueryHandler(versions_menu,pattern=r'^fleet_versions$'))
     app.add_handler(SecureCallbackQueryHandler(dispatch,pattern=r'^fleet_(?:pick_\d+|apply|install_prepare|install_(?:stored|automatic))$'))
+
+
+async def versions_menu(update,context):
+    q=update.callback_query
+    if not _allowed(update):
+        await safe_callback_answer(q,'فقط مدیر اصلی مجاز است',show_alert=True);return
+    await safe_callback_answer(q,'در حال بررسی نسخه‌ها…')
+    selected=context.user_data.get('fleet_checked') or []
+    ids=list(dict.fromkeys(int(value) for value in selected))[:12]
+    if not ids:
+        await q.edit_message_text('ابتدا Agentهای موردنظر را در فهرست انتخاب کنید.',
+            reply_markup=Markup([[Button('بازگشت',callback_data='fleet_manage')]]));return
+    from agent_inventory import check_versions
+    import html
+    rows=await run_sync(Database().execute,
+        'SELECT id,name,ip,ws_port FROM servers WHERE is_active=1 AND id=ANY(%s) ORDER BY id',(ids,),fetch='all')
+    report=await check_versions(rows)
+    labels={'current':'✅ مطابق نسخه مرکزی','different':'🟡 بیلد/نسخه متفاوت',
+            'incompatible':'🔴 پروتکل ناسازگار','unknown':'⚪ نامشخص'}
+    text=['🔎 <b>بررسی نسخه Agentها</b>',f'نسخه هدف: {html.escape(report["expected_version"])}',
+          'حداکثر ۱۲ Agent انتخاب‌شده در هر بررسی؛ گزارش کامل در پنل وب.']
+    for item in report['nodes']:
+        text.append(f'\n<b>{html.escape(item["name"][:60])}</b> — {labels[item["state"]]}\n'
+                    f'Agent: {html.escape(str(item.get("agent_version") or "—"))} | '
+                    f'بیلد: {html.escape(str(item.get("agent_build") or "—")[:12])}\n'
+                    f'Xray: {html.escape(str(item.get("xray_version") or "—")[:40])} | '
+                    f'Compat: {html.escape(str(item.get("xray_compat_version") or "—")[:40])}')
+    await q.edit_message_text('\n'.join(text),parse_mode='HTML',
+        reply_markup=Markup([[Button('بازگشت',callback_data='fleet_manage')]]))
 
 
 def _gb(value):

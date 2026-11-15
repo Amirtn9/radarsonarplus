@@ -94,7 +94,7 @@ def test_target_failures_do_not_claim_config_is_broken(tmp_path,monkeypatch,exit
     result=agent.test_config_logic(agent.parse_xray_config(vless(type='ws',security='tls')),0)
     assert result['status']=='Unknown'
     assert result['error_code']
-    assert len(result['probes'])==3
+    assert len(result['probes'])==6  # one bounded retry per independent target
     assert not agent._TEST_PORTS
     assert not list(tmp_path.glob('config_*.json'))
 

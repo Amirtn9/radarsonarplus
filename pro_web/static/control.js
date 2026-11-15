@@ -78,7 +78,19 @@
   const info=await request('/api/console/configs/'+cid);
   p.append(button('ویرایش نام کانفیگ',async()=>{const name=await window.SonarUI.ask('نام جدید کانفیگ:',info.name);if(!name)return;await request('/api/operations/config/'+cid,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});await window.SonarConsole.loadConfig();await configActions();}));
   p.append(button('اجرای تست اتصال از Agent مجاز',async()=>{await probe([cid]);await configActions();}),button(info.monitoring_enabled?'توقف پایش خودکار':'فعال‌سازی پایش خودکار',async()=>{await request('/api/config-probes/'+cid+'/enabled',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!info.monitoring_enabled})});await configActions();}));
-  const jobs=await request('/api/config-probes/'+cid);for(const job of jobs.slice(0,5))p.append(el('p',`آزمون ${job.id} · ${job.state==='pending'?'در صف':job.state==='running'?'در حال اجرا':job.state==='failed'?'اندازه‌گیری در دسترس نیست':job.result.status==='OK'?'اتصال موفق':'تست اتصال ناموفق'}${job.result.ping?' · '+job.result.ping+' ms':''}${job.error_code?' · '+job.error_code:''}`));
+  const jobs=await request('/api/config-probes/'+cid);
+  for(const job of jobs.slice(0,5)){
+   const result=job.result||{};
+   const label=job.state==='pending'?'در صف':job.state==='running'?'در حال اجرا':job.state==='failed'?'اندازه‌گیری در دسترس نیست':result.status==='OK'?'اتصال موفق':'تست اتصال ناموفق';
+   const details=[`آزمون ${job.id}`,label];
+   if(result.ping)details.push(`${result.latency_statistic==='median'?'میانه تأخیر: ':''}${result.ping} ms`);
+   if(Number.isInteger(result.sample_count)&&Number.isInteger(result.attempt_count))details.push(`${result.sample_count} موفق از ${result.attempt_count} تلاش`);
+   if(result.stability==='unstable')details.push('⚠️ اتصال ناپایدار');
+   if(result.measurement_confidence==='limited')details.push('نمونه ناکافی برای تأیید پایداری');
+   if(typeof result.score==='number')details.push(`امتیاز: ${result.score}/10`);
+   if(job.error_code)details.push(job.error_code);
+   p.append(el('p',details.join(' · ')));
+  }
   if(jobs.some(j=>['pending','running'].includes(j.state)))probeTimer=setTimeout(()=>{if(state.tab==='config-detail'&&window.SonarConsole?.currentConfigId?.()===cid)configActions().catch(e=>toast(e.message));},3000);
  }
  window.SonarControl={team,sessions,workspaces,notifications,regions,agents,policy,serverActions,configActions,probe};

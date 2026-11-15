@@ -22,11 +22,18 @@ import asyncio
 import hmac
 import copy
 import ssl
+import statistics
+from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 import logging
+from pro_scoring import score_config
 
 AGENT_VERSION = '6.9.10'
 AGENT_PROTOCOL = 2
+from agent_inventory import bundle_fingerprint
+# Capture identity once: replacing files on disk must not make an old process
+# advertise the new build before its service has actually restarted.
+AGENT_BUILD = bundle_fingerprint(os.path.dirname(os.path.abspath(__file__)))
 
 logger = logging.getLogger('sonar.agent')  # ✅ خودکار به سیستم متصل می‌شه
 
@@ -551,9 +558,18 @@ def _server_name(explicit, host, address):
     return str(explicit or host or address or '').split(',')[0].strip()
 
 
+def _share_port(value):
+    port=int(443 if value is None or value=='' else value)
+    if not 1<=port<=65535:raise ValueError('INVALID_CONFIG_PORT')
+    return port
+
+
 def _stream_transport(stream, values):
     """Apply shared URI/VMess transport options without removing TLS settings."""
     net=stream['network']
+    if net=='httpupgrade':
+        stream['httpupgradeSettings']={'host':values.get('host') or '',
+                                       'path':values.get('path') or '/'}
     if net=='tcp' and values.get('headerType',values.get('type'))=='http':
         hosts=[v.strip() for v in str(values.get('host') or '').split(',') if v.strip()]
         paths=[v.strip() for v in str(values.get('path') or '/').split(',') if v.strip()]
@@ -606,7 +622,7 @@ def parse_xray_config(link):
 
             if tls == 'tls':
                 stream["tlsSettings"] = {
-                    "serverName": (c.get('sni') or c.get('host') or c.get('add') or ""),
+                    "serverName": _server_name(c.get('sni'),c.get('host'),c.get('add')),
                     "allowInsecure": _enabled(c.get('allowInsecure',c.get('insecure',False))),
                     "alpn": [x for x in str(c.get("alpn", "")).split(",") if x],
                     "fingerprint": c.get("fp") or "chrome"
@@ -618,7 +634,7 @@ def parse_xray_config(link):
                 "settings": {
                     "vnext": [{
                         "address": c.get('add'),
-                        "port": int(c.get('port') or 443),
+                        "port": _share_port(c.get('port')),
                         "users": [{
                             "id": c.get('id'),
                             "alterId": int(c.get("aid") or 0),
@@ -674,7 +690,7 @@ def parse_xray_config(link):
                 "settings": {
                     "vnext": [{
                         "address": p.hostname,
-                        "port": int(p.port or 443),
+                        "port": _share_port(p.port),
                         "users": [{
                             "id": urllib.parse.unquote(p.username or ''),
                             "encryption": q.get('encryption', ['none'])[0] or 'none',
@@ -693,7 +709,9 @@ def parse_xray_config(link):
             p = urllib.parse.urlparse(link)
             q = urllib.parse.parse_qs(p.query)
 
-            password = urllib.parse.unquote(p.username or p.password or '')
+            # Trojan's entire userinfo is the password, not HTTP user:password.
+            password = urllib.parse.unquote(p.netloc.rsplit('@',1)[0]) if '@' in p.netloc else ''
+            if not password:return None
             net = q.get('type', ['tcp'])[0]
             sec = q.get('security', ['tls'])[0]  # trojan commonly uses tls
             stream = {"network": net, "security": sec or "tls"}
@@ -720,7 +738,7 @@ def parse_xray_config(link):
                 "settings": {
                     "servers": [{
                         "address": p.hostname,
-                        "port": int(p.port or 443),
+                        "port": _share_port(p.port),
                         "password": password
                     }]
                 },
@@ -778,7 +796,9 @@ def build_probe_config(profile, local_port):
     if profile.get('outbounds'):
         config=copy.deepcopy(profile)
         original=config.get('inbounds') or []
-        tag=next((i.get('tag') for i in original if isinstance(i,dict) and i.get('tag')), 'sonar-probe')
+        tag=next((i.get('tag') for i in original if isinstance(i,dict) and
+                  i.get('protocol') in ('socks','http','mixed') and i.get('tag')),None)
+        tag=tag or next((i.get('tag') for i in original if isinstance(i,dict) and i.get('tag')), 'sonar-probe')
         # User listeners/API must never be exposed on the monitoring host.
         for field in ('api','stats','reverse'):
             config.pop(field,None)
@@ -820,13 +840,29 @@ def needs_compatibility_core(profile):
     return False
 
 
+@lru_cache(maxsize=8)
+def _binary_version(path,mtime_ns,size):
+    try:
+        result=subprocess.run([path,'version'],capture_output=True,text=True,timeout=2,check=False)
+        match=re.match(r'^Xray\s+v?(\d+\.\d+\.\d+)\b',result.stdout)
+        return 'v'+match.group(1) if result.returncode==0 and match else None
+    except (OSError,subprocess.SubprocessError):return None
+
+
 def runtime_versions():
     """Read installed/expected versions, never claim that a lock is installed."""
     from pathlib import Path
     result={}
     for name,directory in (('xray',Path(WORK_DIR)),('xray_compat',Path(WORK_DIR)/'compat')):
-        try:result[name+'_version']=json.loads((directory/'runtime-installed.json').read_text())['version']
-        except (OSError,ValueError,KeyError,TypeError):result[name+'_version']=None
+        try:result[name+'_recorded_version']=json.loads((directory/'runtime-installed.json').read_text())['version']
+        except (OSError,ValueError,KeyError,TypeError):result[name+'_recorded_version']=None
+        executable=directory/'xray'
+        result[name+'_version']=None
+        try:
+            if executable.is_file() and os.access(executable,os.X_OK):
+                stat=executable.stat()
+                result[name+'_version']=_binary_version(str(executable),stat.st_mtime_ns,stat.st_size)
+        except OSError:pass
     try:
         lock=json.loads(Path(RUNTIME_LOCK_FILE).read_text())
         result['xray_expected_version']=lock['version']
@@ -834,6 +870,17 @@ def runtime_versions():
     except (OSError,ValueError,KeyError,TypeError):
         pass
     return result
+
+
+def _core_start_error(output):
+    """Return only a safe category; Xray output can contain profile credentials."""
+    output.seek(0)
+    message=output.read(8192).decode('utf-8','replace').lower()
+    if 'geoip.dat' in message or 'geosite.dat' in message:return 'XRAY_ASSET_MISSING'
+    if 'address already in use' in message or 'permission denied' in message:return 'XRAY_LISTENER_FAILED'
+    if any(value in message for value in ('failed to load config','failed to build','invalid','unknown transport')):
+        return 'XRAY_CONFIG_INVALID'
+    return 'XRAY_CORE_START_FAILED'
 
 
 def test_config_logic(outbound, dl_size_mb=0.5):
@@ -852,6 +899,7 @@ def test_config_logic(outbound, dl_size_mb=0.5):
                 "down":None,"up":None,"score":0}
     conf_file = os.path.join(WORK_DIR, f"config_{local_port}_{os.urandom(6).hex()}.json")
     proc = None
+    core_output = None
     try:
         full_conf=build_probe_config(outbound,local_port)
         fd=os.open(conf_file, os.O_CREAT|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -863,15 +911,20 @@ def test_config_logic(outbound, dl_size_mb=0.5):
         core_env=os.environ.copy()
         go_debug=[v for v in core_env.get('GODEBUG','').split(',') if v and not v.startswith('multipathtcp=')]
         core_env.update(XRAY_LOCATION_ASSET=os.path.dirname(binary),GODEBUG=','.join(go_debug+['multipathtcp=0']))
-        proc = subprocess.Popen(_lowprio_prefix() + [binary, "-c", conf_file], stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,env=core_env)
+        core_output=tempfile.TemporaryFile()
+        proc = subprocess.Popen(_lowprio_prefix() + [binary, "-c", conf_file], stdout=core_output,
+                                stderr=core_output,env=core_env)
         if not check_port_open(local_port):
-            return {"status": "Unknown", "msg": "XRAY_CORE_START_FAILED", "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
+            code=_core_start_error(core_output)
+            return {"status": "Unknown", "msg": code, 'error_code':code,"ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
 
         # socks5h delegates hostname resolution to Xray/remote egress.
         # socks5:// performed resolution locally, causing false failures.
         prox = f"socks5h://127.0.0.1:{local_port}"
         pings = []
+        target_samples={}
+        target_attempts={}
+        target_failures={}
         failure_codes=[]
         probes=[]
 
@@ -881,16 +934,17 @@ def test_config_logic(outbound, dl_size_mb=0.5):
         targets = list(_health_urls())
         successful_target = None
         deadline = time.monotonic() + 36
-        for attempt in range(6):
+        for attempt in range(8):
             remaining = deadline - time.monotonic()
             if remaining < 1 or len(pings) >= 3:
                 break
             target_url = successful_target or (targets.pop(0) if targets else None)
             if target_url is None:
                 break
+            target_attempts[target_url]=target_attempts.get(target_url,0)+1
             maximum = max(1, min(15, int(remaining)))
             try:
-                cmd = _lowprio_prefix() + ["curl", "--proxy", prox, "--noproxy", "",
+                cmd = _lowprio_prefix() + ["curl", "--disable", "--proxy", prox, "--noproxy", "",
                     "--silent", "--show-error", "--output", "/dev/null",
                     "--write-out", "%{http_code} %{time_total}", "--connect-timeout", str(min(12,maximum)),
                     "--max-time", str(maximum), target_url]
@@ -904,17 +958,23 @@ def test_config_logic(outbound, dl_size_mb=0.5):
                     latency = float(parts[1]) * 1000
                     if not math.isfinite(latency) or latency <= 0:
                         raise ValueError('Invalid measured latency')
-                    pings.append(latency)
+                    target_samples.setdefault(target_url,[]).append(latency)
+                    # A site's own response time is not network jitter. Keep
+                    # samples from one destination when failover is necessary.
+                    pings=max(target_samples.values(),key=len)
                     successful_target = target_url
                 else:
                     failure_codes.append(_curl_failure(res.returncode, parts[0] if parts else None))
-                    successful_target = None
+                    target_failures[target_url]=target_failures.get(target_url,0)+1
+                    successful_target = target_url if target_failures[target_url]<2 else None
             except subprocess.TimeoutExpired:
                 failure_codes.append('TIMEOUT')
-                successful_target = None
+                target_failures[target_url]=target_failures.get(target_url,0)+1
+                successful_target = target_url if target_failures[target_url]<2 else None
             except (ValueError, OSError):
                 failure_codes.append('HTTP_CONNECTION_ERROR')
-                successful_target = None
+                target_failures[target_url]=target_failures.get(target_url,0)+1
+                successful_target = target_url if target_failures[target_url]<2 else None
 
         if not pings:
             code=('XRAY_ERROR' if proc.poll() is not None else
@@ -930,7 +990,7 @@ def test_config_logic(outbound, dl_size_mb=0.5):
                     'probe_mode':'socks5h','mtu_override':None,
                     "ping": 0, "jitter": 0, "down": None, "up": None, "score": 0}
 
-        avg_ping = max(1, int(sum(pings) / len(pings)))
+        avg_ping = max(1, int(statistics.median(pings)))
         jitter = int(max(pings) - min(pings)) if len(pings) >= 2 else 0
 
         # Download Speed Test (Optional)
@@ -938,7 +998,8 @@ def test_config_logic(outbound, dl_size_mb=0.5):
         if dl_size_mb and dl_size_mb > 0.5:
             try:
                 url = f"https://speed.cloudflare.com/__down?bytes={int(dl_size_mb * 1024 * 1024)}"
-                cmd = _lowprio_prefix() + ["curl", "--proxy", prox, "--noproxy", "", "--fail", "--silent", "--show-error",
+                cmd = _lowprio_prefix() + ["curl", "--disable", "--proxy", prox, "--noproxy", "", "--fail", "--silent", "--show-error",
+                                            "--max-filesize",str(int(dl_size_mb * 1024 * 1024)),
                                             "--write-out", "%{speed_download} %{size_download}", "--output", "/dev/null",
                                             "--max-time", "12", url]
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=False)
@@ -950,23 +1011,22 @@ def test_config_logic(outbound, dl_size_mb=0.5):
             except Exception:
                 dl_spd = None
 
-        # Simple score
-        score = 10
-        if avg_ping > 1200:
-            score = 1
-        elif avg_ping > 800:
-            score = 3
-        elif avg_ping > 500:
-            score = 5
-        elif avg_ping > 300:
-            score = 7
-        elif avg_ping > 150:
-            score = 9
+        # Connectivity scores use the same measured latency/jitter everywhere.
+        # Download is optional and remains a separate measurement.
+        measured_target=next(url for url,samples in target_samples.items() if samples is pings)
+        attempts=target_attempts[measured_target]
+        success_rate=len(pings)/attempts
+        score = round(score_config(avg_ping,jitter,True,success_rate=success_rate,sample_count=len(pings))/10)
 
         versions=runtime_versions()
         return {"status": "OK", "ping": avg_ping, "jitter": jitter, "down": dl_spd, "up": None, "speed_unit": "Mbps", "score": score,
                 'probes':probes,'core_mode':'compatibility' if compat else 'latest',
                 'core_version':versions.get('xray_compat_version' if compat else 'xray_version'),
+                'sample_count':len(pings),'latency_metric':'http_total_ms',
+                'latency_statistic':'median','attempt_count':attempts,'success_rate':success_rate,
+                'measurement_confidence':'sufficient' if len(pings)>=3 else 'limited',
+                'stability':'stable' if len(pings)>=3 and success_rate==1 else 'unstable' if success_rate<1 else 'insufficient_samples',
+                'latency_target':urllib.parse.urlsplit(measured_target).hostname,
                 'measurement_scope':'profile_route' if outbound.get('outbounds') else 'proxy',
                 'probe_mode':'socks5h','mtu_override':None}
 
@@ -985,6 +1045,7 @@ def test_config_logic(outbound, dl_size_mb=0.5):
         except Exception:
             pass
         release_test_port(local_port)
+        if core_output is not None:core_output.close()
         try:
             if os.path.exists(conf_file):
                 os.remove(conf_file)
@@ -1046,6 +1107,7 @@ async def get_stats():
             'traffic_gb':round((net.bytes_sent+net.bytes_recv)/(1024**3),2),
             'agent_usage':agent_usage_snapshot(),
             'agent_version':AGENT_VERSION,'agent_protocol':AGENT_PROTOCOL,
+            'agent_build':AGENT_BUILD,
             **runtime_versions(),
             'uptime_sec':uptime,'uptime_str':str(timedelta(seconds=uptime)),
             'capabilities':{'ssh_relay':True,'service_probe':True,'self_check':True, 'xray_ready':os.path.isfile(XRAY_BIN) and os.path.isfile(os.path.join(WORK_DIR,'geoip.dat')),
@@ -1225,7 +1287,11 @@ Protocol:
                     await websocket.send(json.dumps({'error':'SERVICE_PROBE_UNAVAILABLE'}))
             elif action == 'self_check':
                 stats=await get_stats()
-                await websocket.send(json.dumps({'version':stats.get('version'),
+                await websocket.send(json.dumps({'version':stats.get('agent_version'),
+                    'agent_version':stats.get('agent_version'),
+                    'agent_protocol':stats.get('agent_protocol'),
+                    'agent_build':stats.get('agent_build'),
+                    **{key:value for key,value in stats.items() if key.startswith('xray_')},
                     'uptime_sec':stats.get('uptime_sec'),'cpu':stats.get('cpu'),'ram':stats.get('ram'),
                     'disk':stats.get('disk'),'capabilities':stats.get('capabilities'),
                     'tls_configured':bool(os.getenv('SONAR_AGENT_TLS_CERT'))}))
@@ -1246,10 +1312,16 @@ Protocol:
                     # اجرای تست در ترد جداگانه تا وب‌سوکت قفل نشود
                     # (🔧 v4.2: executor اختصاصی + سقف همزمانی)
                     loop = asyncio.get_running_loop()
-                    async with _get_test_semaphore():
+                    semaphore=_get_test_semaphore()
+                    try:await asyncio.wait_for(semaphore.acquire(),timeout=5)
+                    except asyncio.TimeoutError:
+                        await websocket.send(json.dumps({'error':'AGENT_BUSY','error_code':'AGENT_BUSY','status':'Unknown'}))
+                        continue
+                    try:
                         res = await loop.run_in_executor(
                             _get_test_executor(), test_config_logic, outbound, size
                         )
+                    finally:semaphore.release()
                     # attach extracted name if possible
                     try:
                         res['extracted_name'] = extract_name_from_link(link) or ''

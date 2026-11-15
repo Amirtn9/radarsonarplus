@@ -42,25 +42,10 @@ class ScoreEngine:
     def calculate_config_score(ping, jitter, download_speed=0, upload_speed=0):
         """
         محاسبه امتیاز کانفیگ (0 تا 10)
-        فرمول: بر اساس پینگ، جیتر و سرعت (اگر موجود باشد)
+        فرمول مشترک اتصال: پینگ و جیتر؛ سرعت جداگانه گزارش می‌شود.
         """
-        score = 10.0
-
-        # جریمه پینگ بالا
-        if ping > 1000: score -= 5
-        elif ping > 500: score -= 3
-        elif ping > 300: score -= 1
-
-        # جریمه جیتر بالا (نوسان)
-        if jitter > 200: score -= 2
-        elif jitter > 50: score -= 1
-
-        # جریمه سرعت پایین (اگر تست سرعت انجام شده باشد)
-        if download_speed > 0:
-            if download_speed < 0.5: score -= 3
-            elif download_speed < 2.0: score -= 1
-
-        final_score = round(max(0.0, min(10.0, score)), 1)
+        from pro_scoring import score_config
+        final_score = round(score_config(ping,jitter,True)/10)
 
         if final_score >= 8: icon = "💎"
         elif final_score >= 5: icon = "⚖️"

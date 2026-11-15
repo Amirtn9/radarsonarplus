@@ -35,6 +35,8 @@ async def _dev_feature_callback(update, context):
 
 def register_all_handlers(app:  Application):
     logger.debug("📝 Starting handler registration...")
+    from bot_emoji import register as register_emoji
+    register_emoji(app)
     from billing_bot import register as register_billing
     register_billing(app)
     from v6_ui import register as register_v6

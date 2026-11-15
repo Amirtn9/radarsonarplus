@@ -49,14 +49,14 @@ async def deliver(db,bot):
 
 
 async def worker(db,stop,get_token):
-    from telegram import Bot
+    from bot_emoji import themed_bot
     while not stop.is_set():
         try:
             await asyncio.to_thread(expire_unpaid,db)
             token=get_token()
             pending=await asyncio.to_thread(db.execute,"SELECT 1 FROM sonar_billing_messages WHERE state='pending' AND next_attempt_at<=NOW() LIMIT 1",None,'one')
             if token and pending:
-                async with Bot(token) as bot:await deliver(db,bot)
+                async with await themed_bot(token,db) as bot:await deliver(db,bot)
         except asyncio.CancelledError:raise
         except Exception:log.warning('Private billing message delivery unavailable')
         try:await asyncio.wait_for(stop.wait(),timeout=15)
