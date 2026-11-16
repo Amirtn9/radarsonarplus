@@ -737,3 +737,66 @@ def test_resource_totals_survive_empty_pages_with_identical_filters(isolated_dat
             assert all(card[key] is None for key in ('last_cpu','last_ram','last_disk'))
     finally:
         client.close()
+
+
+def test_relay_order_atomic_conflicts_permissions_and_safe_evidence(isolated_database):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from types import SimpleNamespace
+    from fleet_api import make_router
+    from schema_migrations import run_startup_migrations
+    from pro_portal import guarded
+    db,_=isolated_database
+    run_startup_migrations(db)
+    db.execute("INSERT INTO users(user_id,full_name) VALUES(901,'Admin'),(902,'Owner')")
+    ids=[]
+    for index in range(3):
+        row=db.execute("INSERT INTO servers(owner_id,name,ip,location_type) VALUES(901,%s,%s,'ir') RETURNING id",
+                       (f'Relay {index}',f'192.0.2.{index+10}'),fetch='one')
+        ids.append(row['id'])
+        db.execute('''INSERT INTO monitor_fleet_nodes(server_id,offered_by,approved_by,enabled,
+            route_priority,last_probe_ok,last_probe_at,relay_ready,cpu_pct,latency_ms)
+            VALUES(%s,901,901,TRUE,%s,FALSE,NOW()-INTERVAL '10 minutes',FALSE,%s,%s)''',
+                   (row['id'],100+index,float('nan'),float('inf')))
+    uid=901
+    async def actor():return uid
+    app=FastAPI();app.include_router(make_router(SimpleNamespace(db=db),actor,guarded,901))
+    client=TestClient(app)
+    payload={'server_ids':ids[::-1],'expected_priorities':[102,101,100]}
+    uid=902
+    assert client.post('/api/fleet/relays/order',json=payload).status_code==403
+    assert client.post(f'/api/fleet/relays/{ids[0]}/priority',json={'priority':0}).status_code==403
+    shared=client.get('/api/fleet/nodes').json()['nodes']
+    assert len(shared)==3
+    assert all(row['ip']=='shared agent' and row['owner_id'] is None
+               and row['name']=='نود عمومی تأییدشده' and not row['owned_by_workspace'] for row in shared)
+    assert all('agent_token' not in row and 'agent_cert_pem' not in row for row in shared)
+    uid=901
+    assert client.post('/api/fleet/relays/order',json={**payload,'server_ids':[ids[0]]*3}).status_code==422
+    assert client.post('/api/fleet/relays/order',json={**payload,'server_ids':[0,*ids[1:]]}).status_code==422
+    assert client.post('/api/fleet/relays/order',json={'server_ids':ids[:2],'expected_priorities':[100,101]}).status_code==409
+    # A failure on the second row must roll back the first update too.
+    db.execute('''CREATE FUNCTION reject_relay_priority() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.route_priority=1 THEN RAISE EXCEPTION 'injected ordering failure'; END IF;
+        RETURN NEW; END $$''')
+    db.execute('''CREATE TRIGGER reject_relay_priority BEFORE UPDATE ON monitor_fleet_nodes
+        FOR EACH ROW EXECUTE FUNCTION reject_relay_priority()''')
+    assert client.post('/api/fleet/relays/order',json=payload).status_code==500
+    assert [r['route_priority'] for r in db.execute('SELECT route_priority FROM monitor_fleet_nodes ORDER BY server_id',fetch='all')]==[100,101,102]
+    db.execute('DROP TRIGGER reject_relay_priority ON monitor_fleet_nodes')
+    assert client.post('/api/fleet/relays/order',json=payload).status_code==200
+    assert [r['server_id'] for r in db.execute('SELECT server_id FROM monitor_fleet_nodes ORDER BY route_priority',fetch='all')]==ids[::-1]
+    assert client.post('/api/fleet/relays/order',json=payload).status_code==409
+    from concurrent.futures import ThreadPoolExecutor
+    attempts=[{'server_ids':ids,'expected_priorities':[2,1,0]},
+              {'server_ids':[ids[1],ids[2],ids[0]],'expected_priorities':[1,0,2]}]
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        statuses=list(executor.map(lambda body:client.post('/api/fleet/relays/order',json=body).status_code,attempts))
+    assert sorted(statuses)==[200,409]
+    rows=client.get('/api/fleet/relays').json()
+    assert rows['primary']=='central' and rows['fallback_order']==[]  # Reorder does not heal or enroll.
+    assert rows['nodes'][0]['route_priority']==0
+    assert all(row['cpu_pct'] is None and row['latency_ms'] is None for row in rows['nodes'])
+    assert all('agent_token' not in row and 'agent_cert_pem' not in row for row in rows['nodes'])
+    assert client.post(f'/api/fleet/relays/{ids[0]}/priority',json={'priority':1001}).status_code==422
+    assert client.post(f'/api/fleet/relays/{ids[0]}/priority',json={'priority':0}).status_code==200

@@ -116,17 +116,17 @@
     fleetData=result.nodes||[];fleetAdmin=!!me.admin;
     el('fleet-strategy').value=result.strategy||'balanced';el('fleet-strategy').disabled=!fleetAdmin;
     el('fleet-save').hidden=!fleetAdmin;el('fleet-approve').hidden=!fleetAdmin;
+    let versions=el('fleet-version-link');if(!versions){versions=safeNode('button','نسخه Agentها و مدیریت مسیرها');versions.id='fleet-version-link';versions.type='button';versions.onclick=()=>tabClick('balancer');el('fleet-refresh').after(versions);}versions.hidden=!fleetAdmin;
     fleetList.replaceChildren();
     if(!fleetData.length)fleetList.append(safeNode('p','هنوز سروری برای همکاری به استخر Agent پیشنهاد نشده است.','muted'));
     fleetData.forEach(node=>{
       const card=safeNode('article',null,'fleet-node');
       const title=safeNode('div',null,'fleet-node-title');
-      const input=document.createElement('input');input.type='checkbox';input.className='fleet-check';input.value=String(node.id);input.checked=!!node.enabled;input.hidden=!fleetAdmin;title.append(input);
-      const region=node.location_type==='ir'?'ایران':'خارج';
+      const input=document.createElement('input');input.type='checkbox';input.className='fleet-check';input.value=String(node.id);input.checked=!!node.enabled;input.hidden=!fleetAdmin;input.setAttribute('aria-label',`انتخاب Agent ${node.name||node.id}`);title.append(input);
+      const region=node.location_type==='ir'?'ایران':node.location_type==='ext'?'خارج':'نامشخص';
       title.append(safeNode('strong',`${region} · ${node.name}`));
-      const status=node.last_probe_ok===true?'🟢 WSS تأییدشده':(node.last_probe_ok===false?'🔴 ناموفق':'⚪️ بررسی نشده');
-      card.append(title,safeNode('p',`شناسه ${node.id} • پورت ${node.port} • ${status}`,'muted'),
-                safeNode('p',`RTT: ${node.latency_ms==null?'—':node.latency_ms+' ms'} • CPU: ${node.cpu==null?'—':node.cpu+'٪'}`,'muted'));
+      card.append(title);
+      window.SonarAgentCards.attach(card,node);
       if(fleetAdmin){const disable=safeNode('button','⛔ غیرفعال‌سازی','fleet-disable');disable.onclick=async()=>{if(!await window.SonarUI.confirm('این Agent از استخر خارج شود؟'))return;try{await jsonPost('/api/fleet/approve',{server_ids:[node.id],enabled:false});await loadFleet();}catch(e){toast(e.message);}};card.append(disable);}
       fleetList.append(card);
     });

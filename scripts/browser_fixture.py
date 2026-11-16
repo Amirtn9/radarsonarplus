@@ -48,6 +48,30 @@ def main(port):
             (sec.encrypt('synthetic-ssh-fixture-only'),),fetch='one')['id']
         db.execute('''INSERT INTO server_stats(server_id,cpu,ram,disk,traffic_gb,created_at)
             SELECT %s,25,50,20,1,NOW()-(n*INTERVAL '15 minutes') FROM generate_series(0,192) n''',(server,))
+        fresh_relays=[]
+        def seed_fleet():
+            if fresh_relays:return
+            # Synthetic fleet evidence; no host is contacted by this fixture.
+            created=[]
+            with db.get_connection() as (conn,cursor):
+                cursor.execute("INSERT INTO users(user_id,full_name) VALUES(1902,'Synthetic relay owner')")
+                for index,(label,owner,age,ok) in enumerate((
+                        ('Relay Alpha',901,0,True),('Relay Beta',901,0,True),
+                        ('Relay Stale',901,600,True),('Relay Consent',1902,0,False))):
+                    ip=f'192.0.2.{index+20}'
+                    cursor.execute("""INSERT INTO agent_nodes(ip,ssh_port,ws_port,agent_token,agent_cert_pem)
+                        VALUES(%s,22,8443,'synthetic-agent-token','synthetic-enrollment-only') RETURNING id""",(ip,))
+                    agent=cursor.fetchone()['id']
+                    cursor.execute("""INSERT INTO servers(owner_id,name,ip,agent_id,ws_port,port,location_type)
+                        VALUES(%s,%s,%s,%s,8443,22,%s) RETURNING id""",(owner,label,ip,agent,'ir' if index%2==0 else 'ext'))
+                    relay=cursor.fetchone()['id']
+                    if index<2:created.append(relay)
+                    cursor.execute("""INSERT INTO monitor_fleet_nodes(server_id,offered_by,approved_by,enabled,
+                        relay_ready,last_probe_ok,last_probe_at,route_priority,cpu_pct,latency_ms)
+                        VALUES(%s,901,%s,%s,%s,%s,NOW()-(%s*INTERVAL '1 second'),%s,%s,%s)""",
+                        (relay,901 if index<3 else None,index<3,index<3,ok,age,10+index,0 if index==0 else 30,20))
+                conn.commit()
+            fresh_relays.extend(created)
         cid=db.execute('''INSERT INTO tunnel_configs(owner_id,type,name,link,last_status,quality_score,last_ping,last_jitter)
             VALUES(901,'single','Synthetic proxy','vless://00000000-0000-4000-8000-000000000001@192.0.2.2:443?security=tls','OK',9,80,3) RETURNING id''',fetch='one')['id']
         db.execute("INSERT INTO pro_metrics(owner_id,config_id,region,ok,ping,jitter) VALUES(901,%s,'fixture',true,80,3)",(cid,))
@@ -66,6 +90,7 @@ def main(port):
         async def synthetic_observations(db,stop):
             import asyncio
             while not stop.is_set():
+                await asyncio.to_thread(db.execute,'UPDATE monitor_fleet_nodes SET last_probe_at=NOW() WHERE server_id=ANY(%s)',(fresh_relays,))
                 await asyncio.to_thread(db.execute,'UPDATE servers SET last_checked_at=NOW() WHERE id=%s',(server,))
                 await asyncio.to_thread(db.execute,'INSERT INTO server_stats(server_id,cpu,ram,disk,traffic_gb) VALUES(%s,25,50,20,1)',(server,))
                 try:await asyncio.wait_for(stop.wait(),timeout=5)
@@ -94,6 +119,12 @@ def main(port):
         (state/'key.pem').write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
         (state/'key.pem').chmod(0o600)
         import pro_portal,uvicorn
+        from fastapi import Depends,HTTPException
+        @pro_portal.app.post('/__fixture/fleet')
+        def seed_fleet_endpoint(uid:int=Depends(pro_portal.actor)):
+            if uid!=901:raise HTTPException(status_code=403,detail='Synthetic administrator required')
+            seed_fleet()
+            return {'ok':True}
         uvicorn.run(pro_portal.app,host='127.0.0.1',port=port,ssl_keyfile=str(state/'key.pem'),
                     ssl_certfile=str(state/'cert.pem'),log_level='warning')
     finally:

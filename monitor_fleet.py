@@ -100,8 +100,11 @@ def available_workspace_nodes(db, admin_id, user_id=None):
         s.last_cpu,s.last_agent_status,s.last_checked_at,f.enabled,f.approved_by,
         f.latency_ms,f.cpu_pct,f.last_probe_ok,f.last_probe_at,f.error_code,
         (SELECT COUNT(*) FROM monitor_fleet_test_leases l WHERE l.server_id=f.server_id AND l.expires_at>NOW()) AS inflight,
-        f.completed_tests,f.successful_tests,f.consecutive_failures,f.admin_only,f.relay_ready,f.route_priority
+        f.completed_tests,f.successful_tests,f.consecutive_failures,f.admin_only,f.relay_ready,f.route_priority,
+        COALESCE(a.agent_cert_pem,'')<>'' AS tls_enrolled,
+        COALESCE(a.agent_token,'')<>'' AS token_configured
       FROM monitor_fleet_nodes f JOIN servers s ON s.id=f.server_id
+      LEFT JOIN agent_nodes a ON a.id=s.agent_id AND a.ip=s.ip AND a.ssh_port=s.port
       WHERE s.is_active=1 AND s.location_type IN ('ir','ext')
         AND (s.owner_id=%s OR (f.enabled=TRUE AND f.approved_by IS NOT NULL AND NOT f.admin_only))
       ORDER BY f.route_priority,s.id'''
@@ -185,7 +188,7 @@ def available_relay_nodes(db, admin_id, *, user_id=None, exclude_ip=None):
             continue
         items.append(item)
     # Priority is operator-controlled and stable; score balances nodes at the same priority.
-    items.sort(key=lambda item:(int(item.get('route_priority') or 100), score(item,strategy), int(item['id'])))
+    items.sort(key=lambda item:(int(item['route_priority'] if item.get('route_priority') is not None else 100), score(item,strategy), int(item['id'])))
     return items[:8]
 
 

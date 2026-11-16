@@ -21,6 +21,7 @@
   <script defer src="/static/console.js"></script>
   <script defer src="/static/ssh-terminal.js"></script>
   <script defer src="/static/config_alerts.js"></script>
+  <script defer src="/static/agent-cards.js"></script>
   <script defer src="/static/next.js"></script>
 
   <script defer src="/static/subscriptions.js"></script>
@@ -214,6 +215,7 @@
     <div class="route-primary"><div class="route-primary-mark">01</div><div><strong>مسیر اصلی: سرور مرکزی</strong><p>هر عملیات جدید ابتدا از سرور اصلی تلاش می‌شود. آخرین Agent موفق برای هر مقصد تا ۳۰ دقیقه ترجیح داده می‌شود تا تغییر مسیر بی‌دلیل رخ ندهد.</p></div><span class="route-status">اولویت اول</span></div>
     <div class="fleet-actions"><label>سیاست مرتب‌سازی مسیرهای پشتیبان<select id="relay-strategy"><option value="balanced">ترکیبی: تأخیر، بار و پایداری</option><option value="latency">کمترین تأخیر</option><option value="load">کمترین بار</option></select></label><button type="button" id="relay-pool-refresh">↻ تازه‌سازی وضعیت</button><button type="button" class="primary" id="relay-policy-save">ذخیره سیاست</button></div>
     <h3>مسیرهای جایگزین فعال</h3><div id="relay-fallback-order" class="relay-order"><p class="muted">در حال بارگذاری استخر مسیرها…</p></div>
+    <div class="relay-order-actions"><button type="button" id="relay-reorder">مرتب‌سازی مسیرها</button></div>
     <h3>مدیریت Agentهای ایران و خارج</h3><p class="muted">برای فعال شدن در بالانسر، Agent باید نصب شده، دارای گواهی TLS و توکن معتبر، تأییدشده توسط مدیر و دارای heartbeat موفق در پنج دقیقه اخیر باشد.</p>
     <div id="relay-candidates" class="fleet-list"><p class="muted">در حال دریافت سرورها…</p></div>
     <div class="quicklinks"><button type="button" id="relay-approve-selected" class="primary">تأیید/فعال‌سازی انتخاب‌شده‌ها</button><button type="button" id="relay-disable-selected" class="destructive">غیرفعال‌کردن انتخاب‌شده‌ها</button></div>

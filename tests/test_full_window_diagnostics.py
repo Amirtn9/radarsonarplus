@@ -83,7 +83,7 @@ def test_global_relay_pool_can_include_foreign_region_nodes():
                      'latency_ms':20,'cpu_pct':10,'last_probe_ok':True,'last_probe_at':now,'inflight':0,
                      'completed_tests':20,'successful_tests':19,'consecutive_failures':0},
                     {'id':1,'name':'iran','ip':'1.1.1.1','location_type':'ir','enabled':True,'approved_by':1,
-                     'relay_ready':True,'tls_enrolled':True,'token_configured':True,'route_priority':10,
+                     'relay_ready':True,'tls_enrolled':True,'token_configured':True,'route_priority':0,
                      'latency_ms':30,'cpu_pct':15,'last_probe_ok':True,'last_probe_at':now,'inflight':0,
                      'completed_tests':20,'successful_tests':19,'consecutive_failures':0},
                 ]

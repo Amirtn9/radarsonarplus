@@ -5,6 +5,7 @@ secrets, or scan arbitrary hosts and ports.
 from __future__ import annotations
 import asyncio
 import time
+import math
 import ipaddress
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -26,6 +27,18 @@ class PoolPolicy(BaseModel):
 
 class RelayPriority(BaseModel):
     priority:int=Field(ge=0,le=1000)
+
+class RelayOrder(BaseModel):
+    server_ids:list[int]=Field(min_length=1,max_length=1001)
+    expected_priorities:list[int]=Field(min_length=1,max_length=1001)
+
+
+def _metric(value, maximum):
+    try:
+        number=float(value)
+        return number if math.isfinite(number) and 0<=number<=maximum else None
+    except (ValueError,TypeError):return None
+
 
 class FleetInstall(BaseModel):
     server_ids:list[int]=Field(min_length=1,max_length=12)
@@ -120,20 +133,47 @@ def make_router(store,actor,guarded,admin_id):
                 COALESCE(f.relay_ready,FALSE) AS relay_ready,
                 f.route_priority,f.last_probe_ok,f.last_probe_at,f.latency_ms,f.cpu_pct,f.error_code
               FROM servers s
-              LEFT JOIN agent_nodes a ON a.ip=s.ip AND a.ssh_port=s.port
+              LEFT JOIN agent_nodes a ON a.id=s.agent_id AND a.ip=s.ip AND a.ssh_port=s.port
               LEFT JOIN monitor_fleet_nodes f ON f.server_id=s.id
               WHERE s.is_active=1 AND s.location_type IN ('ir','ext')
               ORDER BY COALESCE(f.route_priority,100),CASE WHEN s.location_type='ir' THEN 0 ELSE 1 END,s.id""",(int(admin_id),),fetch='all')
-            return [dict(row) for row in rows]
+            return [{**dict(row),'cpu_pct':_metric(row['cpu_pct'],100),
+                     'latency_ms':_metric(row['latency_ms'],60000)} for row in rows]
         rows=await guarded(read)
         eligible=await guarded(available_relay_nodes,store.db,admin_id)
         pool=[{'id':int(x['id']),'name':x['name'],'location_type':x['location_type'],
-               'priority':int(x.get('route_priority') or 100),'latency_ms':x.get('latency_ms'),
-               'cpu':x.get('cpu_pct'),'last_probe_at':str(x['last_probe_at']) if x.get('last_probe_at') else None}
+               'priority':int(x['route_priority'] if x.get('route_priority') is not None else 100),'latency_ms':_metric(x.get('latency_ms'),60000),
+               'cpu':_metric(x.get('cpu_pct'),100),'last_probe_at':str(x['last_probe_at']) if x.get('last_probe_at') else None}
               for x in eligible]
         return {'primary':'central','fallback_order':pool,'nodes':rows,
                 'policy':await guarded(policy,store.db),
                 'note':'Central route is always attempted first. Only approved, TLS-enrolled and freshly healthy agents are used for fallback.'}
+
+    @r.post('/relays/order')
+    async def relay_order(body:RelayOrder,uid:int=Depends(actor)):
+        ensure_admin(uid)
+        ids=body.server_ids
+        if (len(set(ids))!=len(ids) or any(x<1 for x in ids)
+                or len(ids)!=len(body.expected_priorities)
+                or any(x<0 or x>1000 for x in body.expected_priorities)):
+            raise HTTPException(status_code=422,detail='Invalid relay order')
+        def update():
+            with store.db.get_connection() as (conn,cur):
+                # Serialize ordering and single-priority updates; never enable a node.
+                cur.execute("""SELECT f.server_id,f.route_priority FROM monitor_fleet_nodes f
+                    JOIN servers s ON s.id=f.server_id
+                    WHERE f.enabled=TRUE AND f.approved_by IS NOT NULL
+                      AND s.is_active=1 AND s.location_type IN ('ir','ext')
+                    ORDER BY f.server_id FOR UPDATE OF f""")
+                current={int(row['server_id']):int(row['route_priority']) for row in cur.fetchall()}
+                if current!=dict(zip(ids,body.expected_priorities)):
+                    raise HTTPException(status_code=409,detail='ترتیب مسیرها تغییر کرده است؛ پنجره را ببندید، وضعیت را تازه‌سازی و دوباره تلاش کنید.')
+                for priority,sid in enumerate(ids):
+                    cur.execute('UPDATE monitor_fleet_nodes SET route_priority=%s,changed_at=NOW() WHERE server_id=%s',
+                                (priority,sid))
+                conn.commit()
+        await guarded(update)
+        return {'ok':True,'server_ids':ids}
 
     @r.post('/relays/{server_id}/priority')
     async def relay_priority(server_id:int,body:RelayPriority,uid:int=Depends(actor)):
@@ -166,12 +206,16 @@ def make_router(store,actor,guarded,admin_id):
     async def nodes(uid:int=Depends(actor)):
         def read():
             rows=available_workspace_nodes(store.db,admin_id,uid)
+            owner=int(store.db.workspace_owner(uid))
             for row in rows:
                 # Do not leak another tenant's IP even if offered without approval.
-                if int(uid)!=int(admin_id) and int(row['owner_id']) != int(store.db.workspace_owner(uid)):
+                if int(uid)!=int(admin_id) and int(row['owner_id']) != owner:
                     row['ip']='shared agent';row['name']='نود عمومی تأییدشده'
             return [{'id':x['id'],'name':x['name'],'ip':x['ip'],'owner_id':x['owner_id'] if uid==admin_id else None,
-                 'location_type':x.get('location_type','ir'),'port':x['ws_port'],'latency_ms':x['latency_ms'],'cpu':x['cpu_pct'],
+                 'location_type':x.get('location_type','ir'),'port':x['ws_port'],
+                 'owned_by_workspace':int(x['owner_id'])==owner,
+                 'tls_enrolled':bool(x.get('tls_enrolled')),'token_configured':bool(x.get('token_configured')),
+                 'latency_ms':_metric(x['latency_ms'],60000),'cpu':_metric(x['cpu_pct'],100),
                  'last_probe_ok':x['last_probe_ok'],'last_probe_at':str(x['last_probe_at']) if x['last_probe_at'] else None,
                  'enabled':x['enabled'],'approved':x['approved_by'] is not None,'relay_ready':x.get('relay_ready',False),
                  'route_priority':x.get('route_priority',100),'error_code':x['error_code']} for x in rows]
