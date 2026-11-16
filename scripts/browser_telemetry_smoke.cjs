@@ -17,6 +17,7 @@ function launch(id){const data={auth_date:String(Math.floor(Date.now()/1000)),us
   await page.waitForFunction(()=>Number(document.getElementById('resource-chart').dataset.sampleCount)>0);
   await page.locator('#menu-trigger').click();await page.locator('[data-quick-tab=servers]').click();
   await page.getByRole('button',{name:'جزئیات',exact:true}).first().click();
+  await page.getByRole('tab',{name:'منابع',exact:true}).click();
   await page.waitForFunction(()=>Number(document.getElementById('detail-chart').dataset.sampleCount)>0);
   await page.waitForFunction(()=>document.getElementById('detail-live').textContent.includes('LIVE'));
   // Losing the next API response must not leave a permanent LIVE badge.
@@ -48,9 +49,11 @@ function launch(id){const data={auth_date:String(Math.floor(Date.now()/1000)),us
    if(width===390||width===1440)await page.screenshot({path:`${output}/server-${theme}-${width}.png`,fullPage:true});
   }
   await page.setViewportSize({width:390,height:844});
+  await page.getByRole('tab',{name:'عملیات',exact:true}).click();
   await page.locator('#web-agent-install').locator('..').locator('.field-help summary').click();
   const help=await page.locator('#web-agent-install').locator('..').locator('.field-help p').boundingBox();assert.ok(help.x>=0&&help.x+help.width<=391);
   await page.keyboard.press('Escape');
+  await page.getByRole('tab',{name:'منابع',exact:true}).click();
   // The normal poll must apply new samples, rather than merely animate old data.
   let freshness='fresh',calls=0;
   await page.route('**/api/console/servers/'+sid,async route=>{const r=await route.fetch();const data=await r.json();data.last_cpu=77.7;data.last_ram=0;data.last_checked_at=new Date(Date.now()-(freshness==='stale'?720000:0)).toISOString();data.last_status=freshness==='offline'?'Offline':'Online';calls++;await route.fulfill({response:r,json:data});});

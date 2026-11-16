@@ -83,7 +83,7 @@
   if(needle)needle.style.transform=`translateX(-50%) rotate(${val===null?-90:(-90+180*val/100)}deg)`;
   host.classList.toggle('unavailable',val===null);
  }
- let lastId=0,lastConfigId=0,loading=false;
+ let loading=false;
  async function loadSensors(){
    if(document.hidden||state.tab!=='server-detail'||!window.SonarConsole)return;
    const id=Number(window.SonarConsole.currentServerId?.()||0);
@@ -103,8 +103,8 @@
  function resetSensors(){for(const key of ['cpu','ram','disk','swap'])dial(key,null);window.SonarTelemetry.live(el('sensor-freshness'),null);}
  const originalOpen=window.SonarConsole?.openDetails;
  if(originalOpen){window.SonarConsole.openDetails=(kind,id)=>{
-   originalOpen(kind,id);if(kind==='server'){lastId=id;loadSensors();window.SonarWebAgent?.watchInstall?.(id);}if(kind==='config'){lastConfigId=id;}
- };window.SonarConsole.currentServerId=()=>lastId;window.SonarConsole.currentConfigId=()=>lastConfigId;}
+   originalOpen(kind,id);if(kind==='server'){loadSensors();window.SonarWebAgent?.watchInstall?.(id);}
+ };}
  setInterval(loadSensors,15000);
  const fleetList=el('fleet-list');let fleetData=[];let fleetAdmin=false;
  async function loadFleet(){

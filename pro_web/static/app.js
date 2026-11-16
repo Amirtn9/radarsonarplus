@@ -45,7 +45,8 @@ function loadTelegramWebApp(timeoutMs=1800){
 let cookieAuth=false;
 let csrfToken='';
 const $=id=>document.getElementById(id);
-const state={tab:'overview',index:1,search:'',admin:false,listingRequest:0,resourceRequest:0,onlyFavorites:false,incidentStatus:'unresolved',selectedConfigs:new Set()};
+const incidentDefaults=()=>({severity:'',resource_type:'',resource_id:'',after:'',before:'',sort:'updated'});
+const state={incidentFilters:incidentDefaults(),tab:'overview',index:1,search:'',admin:false,listingRequest:0,resourceRequest:0,onlyFavorites:false,incidentStatus:'unresolved',selectedConfigs:new Set()};
 window.SonarWebAuth={getCsrf:()=>csrfToken,setCsrf:value=>{csrfToken=String(value||'');}};
 const titles={billing:'اشتراک و کیف پول',users:'مدیریت مرکزی',overview:'داشبورد',servers:'مدیریت سرورها',configs:'کانفیگ‌ها و اشتراک‌ها',rankings:'رتبه‌بندی کیفیت',incidents:'مرکز رخدادها',enterprise:'مرکز سازمانی',team:'اعضای تیم',audit:'فعالیت‌ها',settings:'تنظیمات',reports:'گزارش‌ها',support:'مرکز عیب‌یابی',fleet:'استخر Agentهای چندمنطقه‌ای',balancer:'بالانسر مسیرها',services:'مانیتورینگ سرویس‌ها',channels:'اطلاع‌رسانی', 'server-detail':'جزئیات سرور','config-detail':'جزئیات کانفیگ','web-create':'افزودن منبع جدید'};
 const elem=(tag,text,cl)=>{const el=document.createElement(tag);if(text!=null)el.textContent=String(text);if(cl)el.className=cl;return el;};
@@ -141,7 +142,8 @@ function updateRoute(replace=false){
  if(state.search)url.searchParams.set('q',state.search);
  if(state.index>1)url.searchParams.set('page',String(state.index));
  if(state.onlyFavorites)url.searchParams.set('favorites','1');
- if(state.tab==='incidents')url.searchParams.set('status',state.incidentStatus);
+ if(state.tab==='server-detail')url.searchParams.set('section',window.SonarServerTabs?.current()||'overview');
+ if(state.tab==='incidents'){url.searchParams.set('status',state.incidentStatus);for(const [key,value]of Object.entries(state.incidentFilters))if(value)url.searchParams.set(key,value);}
  const target=url.pathname+url.search;
  if(location.pathname+location.search!==target)history[replace?'replaceState':'pushState']({tab:state.tab},'',target+(cookieAuth?'':location.hash));
 }
@@ -158,16 +160,16 @@ function restoreRoute(){
  const detail=location.pathname.match(/^\/(servers|configs)\/([1-9][0-9]*)$/);if(detail)window.SonarConsole?.setActive(detail[1]==='servers'?'server':'config',Number(detail[2]));
  restoringRoute=true;tabClick(name);restoringRoute=false;
  state.search=params.get('q')||'';state.index=Math.max(1,Math.min(10000,Math.trunc(Number(params.get('page'))||1)));
- state.onlyFavorites=params.get('favorites')==='1';state.incidentStatus=params.get('status')||'unresolved';
+ state.onlyFavorites=params.get('favorites')==='1';state.incidentStatus=params.get('status')||'unresolved';state.incidentFilters=incidentDefaults();for(const key of Object.keys(state.incidentFilters))state.incidentFilters[key]=params.get(key)||state.incidentFilters[key];
  $('search').value=state.search;if($('only-favorites'))$('only-favorites').checked=state.onlyFavorites;
  if(listingViews.includes(name))loadList();updateRoute(true);
 }
 window.addEventListener('popstate',()=>{if(panelAuthenticated)restoreRoute();});
 function tabClick(name){if(!Object.prototype.hasOwnProperty.call(titles,name)||(['support','balancer'].includes(name)&&!state.admin))return;
  if(navigationWorkspace!==activeWorkspace){viewPositions.clear();navigationWorkspace=activeWorkspace;}
- else if(!restoringRoute&&listingViews.includes(state.tab))viewPositions.set(state.tab,{index:state.index,search:state.search,onlyFavorites:state.onlyFavorites,incidentStatus:state.incidentStatus});
+ else if(!restoringRoute&&listingViews.includes(state.tab))viewPositions.set(state.tab,{index:state.index,search:state.search,onlyFavorites:state.onlyFavorites,incidentStatus:state.incidentStatus,incidentFilters:{...state.incidentFilters}});
  const saved=!restoringRoute?viewPositions.get(name):null;
- state.listingRequest++;state.tab=name;state.index=saved?.index||1;state.search=saved?.search||'';state.onlyFavorites=saved?.onlyFavorites||false;state.incidentStatus=saved?.incidentStatus||'unresolved';$('search').value=state.search;if($('only-favorites'))$('only-favorites').checked=state.onlyFavorites;
+ state.listingRequest++;state.tab=name;state.index=saved?.index||1;state.search=saved?.search||'';state.onlyFavorites=saved?.onlyFavorites||false;state.incidentStatus=saved?.incidentStatus||'unresolved';state.incidentFilters={...incidentDefaults(),...saved?.incidentFilters};$('search').value=state.search;if($('only-favorites'))$('only-favorites').checked=state.onlyFavorites;
 
   $('page-title').textContent=titles[name]||name;
   document.title=(titles[name]||name)+' | SONAR RADAR PRO';
@@ -216,7 +218,8 @@ function serverCardDetails(root,item){
  root.append(metrics);
  const connection=elem('div',null,'server-card-connection');
  connection.append(elem('span',`WSS: ${{Online:'آخرین وضعیت آنلاین',Offline:'آخرین وضعیت آفلاین'}[item.last_agent_status]||'بررسی‌نشده'}`));
- connection.append(elem('span',`SSH: بررسی‌نشده · درگاه ${item.port||'—'}`));
+ connection.append(elem('span',`SSH: ${window.SonarSSH?.label(item.ssh)||'بررسی‌نشده'} · درگاه ${item.port||'—'}`));
+ connection.append(elem('span','آخرین SSH موفق: '+(item.ssh_last_success_at?new Date(window.SonarTelemetry.time(item.ssh_last_success_at)).toLocaleString('fa-IR'):'ثبت نشده')));
  const checked=Number.isFinite(stamp)?new Date(stamp).toLocaleString('fa-IR'):'ثبت نشده';
  connection.append(elem('span','آخرین بررسی: '+checked));
  connection.append(elem('span','آخرین ارتباط ثبت‌شده: '+(item.agent_last_seen||'ثبت نشده')));
@@ -228,7 +231,7 @@ function rowItem(item){const root=elem('article',null,'item'),detail=elem('div')
  if(state.tab==='servers')subtitle=`سرور #${item.id} | ${statusText(item)} | ${({ir:'ایران',ext:'خارج'})[item.location_type]||'موقعیت نامشخص'}`;
  if(state.tab==='configs')subtitle=`کانفیگ #${item.id} | ${statusText(item)} | ${item.last_ping??'?'} ms`;
  if(state.tab==='rankings')subtitle=`پینگ: ${item.ping??'—'} ms | جیتر: ${item.jitter??'—'} ms`;
- if(state.tab==='incidents')subtitle=`${({warning:'هشدار',critical:'بحرانی',info:'اطلاع'})[item.severity]||'هشدار'} • ${({open:'باز',acknowledged:'دیده‌شده',resolved:'رفع‌شده'})[item.status]||'نامشخص'} • ${item.occurrences||0} مرتبه`;
+ if(state.tab==='incidents')subtitle=`${({warning:'هشدار',critical:'بحرانی',info:'اطلاع'})[item.severity]||'هشدار'} • ${({open:'باز',acknowledged:'دیده‌شده',investigating:'در حال بررسی',resolved:'رفع‌شده'})[item.status]||'نامشخص'} • ${item.occurrences||0} مرتبه`;
  detail.append(elem('small',subtitle));root.append(detail);
  if(state.tab==='servers'){serverCardDetails(root,item);const live=elem('span','','live-label');window.SonarTelemetry?.live(live,item);detail.append(live);}
  const controls=elem('div',null,'tools');
@@ -236,26 +239,27 @@ function rowItem(item){const root=elem('article',null,'item'),detail=elem('div')
  if(['servers','configs'].includes(state.tab)){const b=elem('button',item.favorite?'★':'☆');b.setAttribute('aria-label','تغییر علاقه‌مندی');b.onclick=async()=>{try{const v=await jsonPost('/api/favorites',{kind:state.tab==='servers'?'server':'config',rid:item.id});item.favorite=v.favorite;b.textContent=v.favorite?'★':'☆';toast('علاقه‌مندی ذخیره شد');}catch(e){toast(e.message);}};controls.append(b);}
  if(['servers','configs'].includes(state.tab)){const tag=elem('button','🏷 برچسب');tag.setAttribute('aria-label','افزودن برچسب');tag.onclick=async()=>{const value=await window.SonarUI.ask('برچسب کوتاه بنویسید (حداکثر ۳۲ کاراکتر):');if(!value)return;try{await jsonPost('/api/console/tags',{kind:state.tab==='servers'?'server':'config',rid:item.id,tag:value.trim()});toast('برچسب ذخیره شد');}catch(e){toast(e.message);}};controls.append(tag);const details=elem('button','جزئیات');details.className='primary';details.onclick=()=>window.SonarConsole?.openDetails(state.tab==='servers'?'server':'config',item.id);controls.append(details);}
  if(state.tab==='rankings'){controls.append(elem('strong',`${item.score??0}/100`,'score'));const b=elem('button','📈 نمودار');b.onclick=()=>drawTrend(item);controls.append(b);}
- if(state.tab==='incidents'&&item.status==='open'){const b=elem('button','تأیید مشاهده');b.onclick=async()=>{try{await jsonPost('/api/incidents/ack',{incident_id:item.id});await loadList();}catch(e){toast(e.message);}};controls.append(b);}
+ if(state.tab==='incidents'){controls.append(Object.assign(elem('button','تاریخچه و جزئیات'),{type:'button',onclick:()=>window.SonarIncidents.open(item.id)}));detail.append(elem('small',`${({server:'سرور',config:'کانفیگ',service:'سرویس'})[item.resource_type]||'منبع'} #${item.resource_id} · شروع: ${new Date(window.SonarTelemetry.time(item.opened_at)).toLocaleString('fa-IR')}`));}
+ if(state.tab==='incidents'&&item.status==='open'){const b=elem('button','تأیید مشاهده');b.dataset.requires='monitor';b.onclick=async()=>{try{await jsonPost('/api/incidents/ack',{incident_id:item.id});await loadList();}catch(e){toast(e.message);}};controls.append(b);}
  root.append(controls);return root;
 }
 async function loadList(){const requestId=++state.listingRequest,tab=state.tab,page=state.index,search=state.search;const host=$('list-content');host.replaceChildren(elem('p','در حال دریافت اطلاعات…','route-loading'));host.setAttribute('aria-busy','true');
  const title=titles[tab];$('list-title').textContent=title;$('list-subtitle').textContent=tab==='incidents'?'رخدادهای فضای کاری؛ فیلتر بر اساس چرخه رسیدگی':'اطلاعات ثبت‌شده در فضای کاری';
  const resourceTab=['servers','configs'].includes(tab),incidentTab=tab==='incidents';
- $('search').hidden=!resourceTab;
+ $('search').hidden=!(resourceTab||incidentTab);
  let bulk=$('config-bulk-test');if(!bulk){bulk=elem('button','آزمون کانفیگ‌های انتخاب‌شده');bulk.type='button';bulk.id='config-bulk-test';$('list-title').after(bulk);bulk.onclick=async()=>{try{await window.SonarControl.probe([...state.selectedConfigs]);state.selectedConfigs.clear();await loadList();}catch(error){toast(error.message);}};}bulk.hidden=tab!=='configs';
  const ftools=document.querySelector?.('.filter-tools');if(ftools)ftools.hidden=!(resourceTab||incidentTab);
  const favoritesFilter=$('favorites-filter');if(favoritesFilter)favoritesFilter.hidden=!resourceTab;
  const hint=$('list-filter-hint');if(hint)hint.hidden=!resourceTab;
  const incidentFilter=$('incident-filter');if(incidentFilter)incidentFilter.hidden=!incidentTab;
- const incidentSelect=$('incident-status-filter');if(incidentSelect)incidentSelect.value=state.incidentStatus;
+ const incidentSelect=$('incident-status-filter');if(incidentSelect)incidentSelect.value=state.incidentStatus;window.SonarIncidents?.sync();
  $('prev').disabled=state.index===1;
  try{
  let url='';if(resourceTab){url=`/api/resources/${tab==='servers'?'server':'config'}?page=${page}&q=${encodeURIComponent(search)}&favorites=${state.onlyFavorites?'true':'false'}`;}
- else url=tab==='rankings'?'/api/rankings':`/api/incidents?status=${encodeURIComponent(state.incidentStatus)}`;
+ else{url=tab==='rankings'?'/api/rankings':`/api/incidents?status=${encodeURIComponent(state.incidentStatus)}&page=${page}&q=${encodeURIComponent(search)}`;if(incidentTab)for(const [key,value]of Object.entries(state.incidentFilters))if(value)url+='&'+key+'='+encodeURIComponent(value);}
  if(!restoringRoute)updateRoute();
  const response=await request(url,{raw:true});const list=await response.json();const total=Number(response.headers.get('X-Total-Count'));if(requestId!==state.listingRequest||tab!==state.tab)return;if(!Array.isArray(list))throw Error('پاسخ نامعتبر از سرور');
- if(resourceTab&&!list.length&&response.headers.has('X-Total-Count')&&Number.isSafeInteger(total)&&total>=0){
+ if((resourceTab||incidentTab)&&!list.length&&response.headers.has('X-Total-Count')&&Number.isSafeInteger(total)&&total>=0){
   const lastPage=Math.max(1,Math.ceil(total/12));
   if(page>lastPage){state.index=lastPage;updateRoute(true);return await loadList();}
  }
@@ -266,7 +270,7 @@ async function loadList(){const requestId=++state.listingRequest,tab=state.tab,p
   else if(resourceTab){const add=elem('button',tab==='servers'?'افزودن نخستین سرور':'افزودن نخستین کانفیگ','primary');add.type='button';add.dataset.requires=tab==='servers'?'server':'config';add.onclick=()=>{tabClick('web-create');$(tab==='servers'?'web-show-server':'web-show-config').click();};host.append(add);}
  }
  list.forEach(item=>host.append(rowItem(item)));
- $('next').disabled=!resourceTab||(response.headers.has('X-Total-Count')?page*12>=total:list.length<12);
+ $('next').disabled=!(resourceTab||incidentTab)||(response.headers.has('X-Total-Count')?page*12>=total:list.length<12);
  $('page-number').textContent=page.toLocaleString('fa-IR');setStatus('متصل');
  }catch(e){if(requestId!==state.listingRequest)return;host.replaceChildren(elem('p',e.message,'bad'));const retry=elem('button','تلاش دوباره');retry.type='button';retry.onclick=loadList;host.append(retry);setStatus('خطای ارتباط',false);}
  finally{if(requestId===state.listingRequest)host.removeAttribute('aria-busy');}

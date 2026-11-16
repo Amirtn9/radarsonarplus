@@ -107,3 +107,10 @@ body::before{display:none}html{scroll-padding-block:110px 100px;scrollbar-gutter
 @media(max-width:640px){.route-primary{grid-template-columns:48px minmax(0,1fr)}.route-primary .route-status{grid-column:2;margin:0;justify-self:start}}
 @media(max-width:620px){.agent-evidence{grid-template-columns:repeat(2,minmax(0,1fr))}.agent-evidence>div:nth-child(3),.agent-evidence>div:nth-child(4),.agent-evidence>div:last-child{grid-column:1/-1}}
 .agent-card .relay-candidate-head strong,.agent-card .fleet-node-title strong{color:var(--text)}
+
+#incident-filter{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;width:100%}
+#incident-filter label{display:grid;gap:8px;min-width:0;color:var(--text)}#incident-filter input,#incident-filter select{width:100%;min-width:0;min-height:46px;background:var(--surface2);color:var(--text);border:1px solid var(--outline);border-radius:12px;padding:10px;font:inherit}
+.server-tabs{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0}.server-tabs button{min-height:46px;flex:1 1 110px}.server-tabs [aria-selected=true]{border-color:var(--accent);color:var(--accent)}
+.connection-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.connection-facts>div{padding:12px;background:var(--surface2);border:1px solid var(--outline);border-radius:14px;min-width:0}.connection-facts dt{color:var(--sub)}.connection-facts dd{margin:8px 0 0;line-height:1.9;overflow-wrap:anywhere}
+.incident-timeline{padding-inline-start:24px}.incident-timeline li{padding:12px;border-inline-start:2px solid var(--accent);margin:12px 0;overflow-wrap:anywhere}.incident-dialog{width:min(720px,calc(100vw - 28px))}.incident-dialog h3{overflow-wrap:anywhere}#server-recorded-history li{margin-block:12px;overflow-wrap:anywhere}#server-recorded-history>button{display:block;max-width:100%;margin-block:12px;text-align:start;overflow-wrap:anywhere}
+@media(max-width:620px){#incident-filter,.connection-facts{grid-template-columns:minmax(0,1fr)}.server-tabs{gap:8px}.server-tabs button{flex:1 1 100px}}

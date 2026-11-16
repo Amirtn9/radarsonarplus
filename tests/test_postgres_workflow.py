@@ -110,7 +110,7 @@ def test_parallel_startup_and_upgrade_preserve_existing_rows(isolated_database):
     from schema_migrations import run_startup_migrations
     assert run_startup_migrations(db) == []
     assert db.execute('SELECT full_name FROM users WHERE user_id=901', fetch='one')['full_name'] == 'preserve me'
-    assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 20
+    assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 21
 
 
 def test_upgrade_from_695_schema_and_failed_migration_preserve_credentials(isolated_database,monkeypatch,tmp_path):
@@ -149,7 +149,7 @@ def test_upgrade_from_695_schema_and_failed_migration_preserve_credentials(isola
         with pytest.raises(psycopg2.errors.DivisionByZero):schema_migrations.run_startup_migrations(db)
     assert db.execute("SELECT COUNT(*) n FROM information_schema.columns WHERE table_name='pro_application_logs' AND column_name='event_id'",fetch='one')['n']==0
     assert db.execute('SELECT COUNT(*) n FROM sonar_schema_migrations WHERE version=14',fetch='one')['n']==0
-    assert schema_migrations.run_startup_migrations(db)==['log_reliability','web_login_security','billing','independent_quotas','account_controls','product_workflows','web_session_columns']
+    assert schema_migrations.run_startup_migrations(db)==['log_reliability','web_login_security','billing','independent_quotas','account_controls','product_workflows','web_session_columns','operational_history']
     assert db.execute('SELECT full_name FROM users WHERE user_id=901',fetch='one')['full_name']=='upgrade owner'
     saved=db.execute('SELECT password FROM servers WHERE id=%s',(server,),fetch='one')['password']
     assert saved==credential and security.decrypt(saved)=='synthetic-preserved-password'
@@ -800,3 +800,102 @@ def test_relay_order_atomic_conflicts_permissions_and_safe_evidence(isolated_dat
     assert all('agent_token' not in row and 'agent_cert_pem' not in row for row in rows['nodes'])
     assert client.post(f'/api/fleet/relays/{ids[0]}/priority',json={'priority':1001}).status_code==422
     assert client.post(f'/api/fleet/relays/{ids[0]}/priority',json={'priority':0}).status_code==200
+
+
+def test_operational_history_upgrade_and_recorded_incident_lifecycle(isolated_database,monkeypatch):
+    import schema_migrations
+    from pro_store import ProStore
+    from operational_history import incident_detail,incident_page
+    db,_=isolated_database
+    registry=schema_migrations._registry
+    monkeypatch.setattr(schema_migrations,'_registry',lambda:tuple(row for row in registry() if row[0]<21))
+    schema_migrations.run_startup_migrations(db)
+    db.execute("INSERT INTO users(user_id,full_name) VALUES(901,'Admin'),(902,'Other')")
+    sid=db.execute("INSERT INTO servers(owner_id,name,ip) VALUES(901,'History server','192.0.2.8') RETURNING id",fetch='one')['id']
+    legacy=db.execute("INSERT INTO pro_incidents(owner_id,resource_type,resource_id,kind,title) VALUES(901,'server',%s,'legacy','Legacy') RETURNING id",(sid,),fetch='one')['id']
+    monkeypatch.setattr(schema_migrations,'_registry',registry)
+    assert schema_migrations.run_startup_migrations(db)==['operational_history']
+    assert schema_migrations.run_startup_migrations(db)==[]
+    store=ProStore(db)
+    assert incident_detail(store,901,None,legacy)['events']==[]
+    opened=store.incident(901,'server',sid,'failure','Recorded incident','critical')['id']
+    store.incident(901,'server',sid,'failure','Recorded incident','critical')
+    assert store.acknowledge(901,901,opened)
+    store.incident(901,'server',sid,'failure','Recorded incident','critical',active=False)
+    detail=incident_detail(store,901,None,opened)
+    assert [row['event'] for row in detail['events']]==['opened','repeated','acknowledged','resolved']
+    assert detail['events'][2]['actor_id']==901
+    assert incident_detail(store,902,None,opened) is None
+    rows,total=incident_page(store,901,None,'all','critical','server',sid,sort='severity',page=999)
+    assert rows==[] and total==1
+    rows,total=incident_page(store,901,None,'resolved',resource_id=sid,sort='oldest')
+    assert total==1 and rows[0]['id']==opened
+    rows,total=incident_page(store,902,None,'all')
+    assert total==0 and rows==[]
+    # The monitor's separate transactional writer is covered by the same trigger.
+    store.record_server_observation(901,sid,False,1,'History server',notify=False)
+    store.record_server_observation(901,sid,True,1,'History server',notify=False)
+    observed=db.execute("SELECT id FROM pro_incidents WHERE kind='server_down'",fetch='one')['id']
+    assert [row['event'] for row in incident_detail(store,901,None,observed)['events']]==['opened','resolved']
+    # Log clearing must keep operational incidents and their lifecycle history.
+    from log_management import LogStore
+    LogStore(db,901).clear(901,'DELETE ALL LOGS')
+    assert incident_detail(store,901,None,opened)['total']==4
+    paged=store.incident(901,'server',sid,'paged','Paged history')['id']
+    for _ in range(21):store.incident(901,'server',sid,'paged','Paged history')
+    db.execute('INSERT INTO rs_incident_notes(incident_id,owner_id,actor_id,note) VALUES(%s,901,901,%s)',(paged,'password=never-disclose'))
+    db.execute('INSERT INTO rs_incident_notes(incident_id,owner_id,actor_id,note) VALUES(%s,902,902,%s)',(paged,'foreign private note'))
+    second=incident_detail(store,901,None,paged,page=2)
+    assert second['total']==23 and len(second['events'])==3
+    assert 'never-disclose' not in str(second) and 'foreign private note' not in str(second)
+
+
+def test_ssh_evidence_separate_from_wss_and_failure_categories(isolated_database):
+    from schema_migrations import run_startup_migrations
+    from operational_history import check_ssh,ssh_select
+    from pro_store import ProStore
+    db,_=isolated_database;run_startup_migrations(db)
+    db.execute("INSERT INTO users(user_id,full_name) VALUES(901,'Admin'),(902,'Other')")
+    server=dict(db.execute("INSERT INTO servers(owner_id,name,ip,last_agent_status) VALUES(901,'Independent SSH','192.0.2.9','Online') RETURNING *",fetch='one'))
+    read=lambda:db.execute(f"SELECT {ssh_select('s')} FROM servers s WHERE id=%s",(server['id'],),fetch='one')
+    assert read()['ssh'] is None and read()['ssh_last_success_at'] is None
+    assert check_ssh(db,server,901,lambda:{'status':'Online'})['state']=='success'
+    success=read()['ssh_last_success_at']
+    for code,state in [('AUTH_FAILED','auth_failed'),('HOST_KEY_UNKNOWN','host_key_unknown'),('HOST_KEY_CHANGED','host_key_changed'),('SSH_TIMEOUT','network_failed'),('UNSAFE secret=never-store-this','unknown')]:
+        result=check_ssh(db,server,901,lambda:{'status':'Offline','error':code+': private-detail'})
+        assert result['state']==state
+        assert read()['ssh']['state']==state and read()['ssh_last_success_at']==success
+    rows=ProStore(db).list_resources(901,'server')
+    assert rows[0]['ssh']['state']=='unknown' and rows[0]['last_agent_status']=='Online'
+    assert 'never-store-this' not in str(read())
+    assert not ProStore(db).list_resources(902,'server')
+    assert check_ssh(db,server,901,lambda:{'status':'Offline','error':'SUDO_REQUIRED: synthetic'})['state']=='sudo_required'
+    assert read()['ssh_last_success_at']>=success
+
+
+def test_ssh_check_requires_technical_role_before_probe(isolated_database,monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from pro_store import ProStore
+    from schema_migrations import run_startup_migrations
+    from web_operations import make_router
+    from pro_portal import guarded
+    import core,ssh_relay
+    db,_=isolated_database;run_startup_migrations(db)
+    db.execute("INSERT INTO users(user_id,full_name) VALUES(901,'Owner'),(903,'Viewer')")
+    db.execute("INSERT INTO pro_team(owner_id,member_id,role) VALUES(901,903,'viewer')")
+    server=dict(db.execute("INSERT INTO servers(owner_id,name,ip,port,username,password) VALUES(901,'Role check','192.0.2.7',22,'fixture','synthetic') RETURNING *",fetch='one'))
+    monkeypatch.setattr(db,'get_server_for_user',lambda *args:server)
+    monkeypatch.setattr(ssh_relay,'eligible_relay_nodes',lambda *args,**kwargs:[])
+    monkeypatch.setattr(core.sec,'decrypt',lambda value:'synthetic')
+    calls=[]
+    monkeypatch.setattr(core.ServerMonitor,'check_ssh_connection',lambda *args:calls.append(args) or {'status':'Online'})
+    uid=903
+    async def actor():return uid
+    app=FastAPI();app.include_router(make_router(ProStore(db),actor,guarded,901));client=TestClient(app)
+    assert client.post(f'/api/operations/server/{server["id"]}/check-ssh').status_code==403
+    assert calls==[]
+    assert db.execute('SELECT COUNT(*) n FROM server_ssh_checks',fetch='one')['n']==0
+    uid=901
+    assert client.post(f'/api/operations/server/{server["id"]}/check-ssh').status_code==200
+    assert len(calls)==1

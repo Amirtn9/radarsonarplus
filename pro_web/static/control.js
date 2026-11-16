@@ -23,7 +23,7 @@
  }
  async function serverActions(){
   const sid=window.SonarConsole?.currentServerId?.();if(!sid)return;
-  const p=panel(document.getElementById('server-detail'),'control-server','حالت تعمیرات سرور');
+  const p=panel(document.getElementById('server-pane-operations')||document.getElementById('server-detail'),'control-server','حالت تعمیرات سرور');
   p.append(el('p','در حالت تعمیرات، داده و تغییر وضعیت ثبت می‌شوند و هشدار منابع و قطعی ارسال نمی‌شود.'));
   p.append(button('چرخش توکن VPS و بازنصب امن Agent',async()=>{if(!await window.SonarUI.confirm('Agent با SSH تأییدشده بازنصب و دوباره راه‌اندازی می‌شود. توکن فقط پس از آزمون موفق WSS ثبت می‌شود. ادامه؟'))return;await jsonPost('/api/operations/server/'+sid+'/agent/rotate-token',{confirmed:true});toast('در صف بازنصب امن قرار گرفت؛ نتیجه را در سابقه نصب بررسی کنید.');}));
   for(const [minutes,title] of [[30,'توقف هشدار برای ۳۰ دقیقه'],[0,'پایان تعمیرات']])p.append(button(title,async()=>{const reason=await window.SonarUI.ask('دلیل تغییر حالت تعمیرات:');if(!reason)return;await jsonPost('/api/control/servers/'+sid+'/maintenance',{minutes,reason});toast('حالت تعمیرات ذخیره شد');}));

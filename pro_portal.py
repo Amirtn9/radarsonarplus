@@ -493,8 +493,31 @@ async def metrics(config_id:int,uid:int=Depends(actor),owner:int|None=None,days:
     return [dict(r) for r in rows]
 
 @app.get('/api/incidents')
-async def incidents(uid:int=Depends(actor),owner:int|None=None,status:Literal['unresolved','open','acknowledged','resolved','all']='unresolved'):
-    return await guarded(store.incidents,uid,owner,status)
+async def incidents(response:Response,uid:int=Depends(actor),owner:int|None=None,
+        status:Literal['unresolved','open','acknowledged','investigating','resolved','all']='unresolved',
+        severity:Literal['','info','warning','critical']='',resource_type:Literal['','server','config','service']='',
+        resource_id:int|None=Query(default=None,ge=1),after:str='',before:str='',
+        sort:Literal['updated','newest','oldest','severity']='updated',page:int=Query(default=1,ge=1,le=10000),q:str=''):
+    from operational_history import incident_page
+    from datetime import datetime,timezone
+    def parse(value):
+        if not value:return None
+        try:
+            result=datetime.fromisoformat(value.replace('Z','+00:00'))
+            return result if result.tzinfo else result.replace(tzinfo=timezone.utc)
+        except ValueError:raise HTTPException(status_code=422,detail='زمان نامعتبر است') from None
+    start,end=parse(after),parse(before)
+    if start and end and start>end:raise HTTPException(status_code=422,detail='بازه زمانی نامعتبر است')
+    rows,total=await guarded(incident_page,store,uid,owner,status,severity,resource_type,resource_id,start,end,sort,page,q)
+    response.headers['X-Total-Count']=str(total)
+    return rows
+
+@app.get('/api/incidents/{incident_id}')
+async def incident_history(incident_id:int,uid:int=Depends(actor),owner:int|None=None,page:int=Query(default=1,ge=1,le=10000)):
+    from operational_history import incident_detail
+    result=await guarded(incident_detail,store,uid,owner,incident_id,page)
+    if not result:raise HTTPException(status_code=404,detail='رخداد پیدا نشد')
+    return result
 
 @app.get('/api/notifications/delivery')
 async def notification_delivery(uid:int=Depends(actor)):

@@ -19,6 +19,8 @@
   <script defer src="/static/app.js"></script>
 
   <script defer src="/static/console.js"></script>
+  <script defer src="/static/incident-center.js"></script>
+  <script defer src="/static/server-tabs.js"></script>
   <script defer src="/static/ssh-terminal.js"></script>
   <script defer src="/static/config_alerts.js"></script>
   <script defer src="/static/agent-cards.js"></script>
@@ -126,7 +128,14 @@
         <button id="channels-refresh" type="button">↻ دریافت دوباره</button><div id="channels-list" class="listitems" role="status"></div>
         <p class="info-strip">مقصدهای اعلان را در همین صفحه مدیریت کنید؛ با ارسال پیام آزمایشی، دسترسی ربات را بررسی کنید.</p></section>
       </section>
-      <section id="listing" class="view"><div class="panel"><div class="listbar"><div><h2 id="list-title">سرورها</h2><p id="list-subtitle">فهرست مرتب و ساده</p></div><label class="search">⌕ <input id="search" type="search" placeholder="جست‌وجوی نام یا IP" autocomplete="off" aria-label="جست‌وجو"></label></div><div class="filter-tools"><label id="favorites-filter"><input type="checkbox" id="only-favorites"> فقط علاقه‌مندی‌ها</label><small id="list-filter-hint" class="muted">برای جست‌وجوی برچسب، # را قبل از نام آن وارد کنید</small><label id="incident-filter" hidden>وضعیت رخداد<select id="incident-status-filter"><option value="unresolved">فعال (باز + تأییدشده)</option><option value="open">فقط باز</option><option value="acknowledged">تأییدشده</option><option value="resolved">رفع‌شده</option><option value="all">همه</option></select></label></div><section id="subscription-summary" class="subscription-summary" hidden aria-label="وضعیت اشتراک‌ها"><h3>📦 وضعیت اشتراک‌های ثبت‌شده</h3><p class="muted">ذخیره لینک، دریافت کانفیگ و سلامت Agent مستقل از هم گزارش می‌شوند.</p><div id="subscription-items" class="listitems" role="status"></div></section><div id="list-content" class="listitems"><p class="muted">در حال بارگیری...</p></div><div class="pager"><button id="prev" type="button">← قبلی</button><span id="page-number">۱</span><button id="next" type="button">بعدی →</button></div></div></section>
+      <section id="listing" class="view"><div class="panel"><div class="listbar"><div><h2 id="list-title">سرورها</h2><p id="list-subtitle">فهرست مرتب و ساده</p></div><label class="search">⌕ <input id="search" type="search" placeholder="جست‌وجوی نام یا IP" autocomplete="off" aria-label="جست‌وجو"></label></div><div class="filter-tools"><label id="favorites-filter"><input type="checkbox" id="only-favorites"> فقط علاقه‌مندی‌ها</label><small id="list-filter-hint" class="muted">برای جست‌وجوی برچسب، # را قبل از نام آن وارد کنید</small><form id="incident-filter" class="incident-filters" hidden><label>وضعیت رخداد<select id="incident-status-filter"><option value="unresolved">فعال (رفع‌نشده)</option><option value="open">فقط باز</option><option value="acknowledged">تأییدشده</option><option value="investigating">در حال بررسی</option><option value="resolved">رفع‌شده</option><option value="all">همه</option></select></label>
+<label>شدت<select id="incident-severity"><option value="">همه شدت‌ها</option><option value="critical">بحرانی</option><option value="warning">هشدار</option><option value="info">اطلاع</option></select></label>
+<label>نوع منبع<select id="incident-resource-type"><option value="">همه منابع</option><option value="server">سرور</option><option value="config">کانفیگ</option><option value="service">سرویس</option></select></label>
+<label>شناسه منبع<input id="incident-resource-id" type="number" min="1" placeholder="اختیاری"></label>
+<label>شروع رخداد از (زمان محلی)<input id="incident-after" type="datetime-local"></label>
+<label>شروع رخداد تا (زمان محلی)<input id="incident-before" type="datetime-local"></label>
+<label>مرتب‌سازی<select id="incident-sort"><option value="updated">آخرین تغییر</option><option value="newest">جدیدترین شروع</option><option value="oldest">قدیمی‌ترین شروع</option><option value="severity">شدت</option></select></label>
+</form></div><section id="subscription-summary" class="subscription-summary" hidden aria-label="وضعیت اشتراک‌ها"><h3>📦 وضعیت اشتراک‌های ثبت‌شده</h3><p class="muted">ذخیره لینک، دریافت کانفیگ و سلامت Agent مستقل از هم گزارش می‌شوند.</p><div id="subscription-items" class="listitems" role="status"></div></section><div id="list-content" class="listitems"><p class="muted">در حال بارگیری...</p></div><div class="pager"><button id="prev" type="button">← قبلی</button><span id="page-number">۱</span><button id="next" type="button">بعدی →</button></div></div></section>
       <section id="web-create" class="view" aria-label="ثبت سرور و کانفیگ">
         <section class="panel"><h2>➕ ثبت منبع جدید</h2><p>سرور یا کانفیگ را اضافه کنید. پیش از نصب Agent، اتصال و هویت سرور بررسی می‌شود.</p>
         <div class="fleet-actions"><button id="web-show-server">🖥 افزودن سرور</button><button id="web-show-config">🔗 افزودن کانفیگ</button></div>

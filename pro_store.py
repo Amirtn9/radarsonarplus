@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import json
 import re
 from database import Database
+from operational_history import ssh_select
 
 SCHEMA = (
  """CREATE TABLE IF NOT EXISTS pro_favorites (
@@ -152,7 +153,7 @@ class ProStore:
         owner=self.workspace(actor,owner)
         table=_resource_table(kind)
         page=max(1,min(int(page),10000));per_page=max(1,min(int(per_page),50))
-        sql=f"SELECT r.id,r.name,r.last_status,{'r.ip,r.port,r.is_active,r.location_type,r.last_checked_at,r.agent_last_seen,r.last_agent_status,CASE WHEN r.last_cpu BETWEEN 0 AND 100 THEN r.last_cpu END AS last_cpu,CASE WHEN r.last_ram BETWEEN 0 AND 100 THEN r.last_ram END AS last_ram,CASE WHEN r.last_disk BETWEEN 0 AND 100 THEN r.last_disk END AS last_disk' if kind=='server' else 'r.type,r.last_ping,r.last_jitter,r.quality_score'}, EXISTS(SELECT 1 FROM pro_favorites f WHERE f.owner_id=r.owner_id AND f.resource_type=%s AND f.resource_id=r.id) favorite FROM {table} r WHERE r.owner_id=%s"
+        sql=f"SELECT r.id,r.name,r.last_status,{'r.ip,r.port,r.is_active,r.location_type,r.last_checked_at,r.agent_last_seen,r.last_agent_status,CASE WHEN r.last_cpu BETWEEN 0 AND 100 THEN r.last_cpu END AS last_cpu,CASE WHEN r.last_ram BETWEEN 0 AND 100 THEN r.last_ram END AS last_ram,CASE WHEN r.last_disk BETWEEN 0 AND 100 THEN r.last_disk END AS last_disk' if kind=='server' else 'r.type,r.last_ping,r.last_jitter,r.quality_score'}, EXISTS(SELECT 1 FROM pro_favorites f WHERE f.owner_id=r.owner_id AND f.resource_type=%s AND f.resource_id=r.id) favorite {', '+ssh_select('r') if kind=='server' else ''} FROM {table} r WHERE r.owner_id=%s"
         params=[kind,owner]
         if kind=='config':sql+=" AND r.type IN ('single','sub_item','json','sub_source')"
         if term:

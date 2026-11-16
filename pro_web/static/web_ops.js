@@ -137,11 +137,12 @@
    const sid=currentServer();if(!sid)return;resetExistingKey();serverStatus.textContent='در حال بررسی SSH از سرور مرکزی یا Agent…';
    const btn=e.currentTarget;btn.disabled=true;
    try{const r=await jsonPost(`/api/operations/server/${sid}/check-ssh`,{});
+     if(currentServer()!==sid)return;
      serverStatus.textContent=r.status==='Online'?'اتصال مدیریتی SSH برقرار است.':`SSH: ${r.error||'ناموفق'}`;
      if(r.status!=='Online'&&String(r.error||'').startsWith('HOST_KEY_UNKNOWN')){
        serverStatus.textContent+=' برای تأیید کلید این سرور، دکمه «بررسی کلید SSH این سرور» را بزنید.';
      }
-   }catch(err){serverStatus.textContent=err.message;}finally{btn.disabled=false;}
+   }catch(err){serverStatus.textContent=err.message;}finally{btn.disabled=false;if(currentServer()===sid)window.SonarConsole?.loadServer?.();}
  });
  id('web-agent-install')?.addEventListener('click',async e=>{
    const sid=currentServer();if(!sid||!await window.SonarUI.confirm('تعمیر Agent و ثبت مجدد گواهی TLS اجرا شود؟ سرویس بررسی می‌شود و پس از تأیید WSS، گواهی دوباره در دیتابیس ثبت خواهد شد.'))return;

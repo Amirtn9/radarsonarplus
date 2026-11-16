@@ -118,6 +118,12 @@ def main(port):
         (state/'cert.pem').write_bytes(cert.public_bytes(serialization.Encoding.PEM))
         (state/'key.pem').write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
         (state/'key.pem').chmod(0o600)
+        from core import ServerMonitor
+        ssh_outcomes=iter(({'status':'Online'},{'status':'Offline','error':'AUTH_FAILED: synthetic'},
+                           {'status':'Offline','error':'HOST_KEY_UNKNOWN: synthetic'}))
+        def synthetic_ssh(*args,**kwargs):
+            return next(ssh_outcomes,{'status':'Offline','error':'SSH_TIMEOUT: synthetic'})
+        ServerMonitor.check_ssh_connection=staticmethod(synthetic_ssh)
         import pro_portal,uvicorn
         from fastapi import Depends,HTTPException
         @pro_portal.app.post('/__fixture/fleet')
@@ -125,6 +131,18 @@ def main(port):
             if uid!=901:raise HTTPException(status_code=403,detail='Synthetic administrator required')
             seed_fleet()
             return {'ok':True}
+        incident_seeded=[]
+        @pro_portal.app.post('/__fixture/incidents')
+        def seed_incidents(uid:int=Depends(pro_portal.actor)):
+            if uid!=901:raise HTTPException(status_code=403,detail='Synthetic administrator required')
+            if not incident_seeded:
+                from pro_store import ProStore
+                pro=ProStore(db)
+                for index in range(26):
+                    row=pro.incident(901,'server',server,'fixture_'+str(index),f'Synthetic incident {index:02}',
+                                     'critical' if index%2==0 else 'warning')
+                    incident_seeded.append(row['id'])
+            return {'server_id':server,'incident_ids':incident_seeded}
         uvicorn.run(pro_portal.app,host='127.0.0.1',port=port,ssl_keyfile=str(state/'key.pem'),
                     ssl_certfile=str(state/'cert.pem'),log_level='warning')
     finally:

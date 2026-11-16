@@ -247,9 +247,17 @@ def make_router(store,actor,guarded,admin_id):
             from ssh_relay import eligible_relay_nodes
             server=store.db.get_server_for_user(server_id,uid,admin_id)
             if not server:raise PermissionError('Server is not in your workspace')
-            relays=eligible_relay_nodes(store.db,admin_id,user_id=int(uid),exclude_ip=server['ip'])
-            return ServerMonitor.check_ssh_connection(server['ip'],server['port'],
-                      server['username'],sec.decrypt(server['password']),relays)
+            if int(uid)!=int(admin_id):
+                owner=int(server['owner_id'])
+                store.require(uid,owner,write=True)
+                if store.role(uid,owner) not in ('owner','manager','technical'):
+                    raise PermissionError('Technical access required for SSH checks')
+            from operational_history import check_ssh
+            def probe():
+                relays=eligible_relay_nodes(store.db,admin_id,user_id=int(uid),exclude_ip=server['ip'])
+                return ServerMonitor.check_ssh_connection(server['ip'],server['port'],
+                          server['username'],sec.decrypt(server['password']),relays)
+            return check_ssh(store.db,server,uid,probe)
         return await guarded(check)
 
     @r.post('/server/{server_id}/enabled')

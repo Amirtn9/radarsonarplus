@@ -7,6 +7,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Literal
+from operational_history import ssh_select
 
 
 def safe_status(value):
@@ -62,22 +63,36 @@ def make_router(store, actor, guarded):
         if server_id < 1: raise HTTPException(status_code=400, detail='Invalid server id')
         def read():
             owner = store.workspace(uid)
-            row = store.db.execute('''SELECT id,name,ip,port,ws_port,location_type,is_active,
+            row = store.db.execute(f'''SELECT id,name,ip,port,ws_port,location_type,is_active,
                 last_status,last_agent_status,last_cpu,last_ram,last_disk,
-                last_checked_at,agent_last_seen,group_id,telemetry,telemetry_at,
+                last_checked_at,agent_last_seen,group_id,telemetry,telemetry_at,{ssh_select('servers')},
                 EXISTS(SELECT 1 FROM agent_nodes a
                        WHERE a.id=servers.agent_id AND a.agent_cert_pem<>'') AS tls_enrolled
                 FROM servers WHERE id=%s AND owner_id=%s''',(server_id,owner),fetch='one')
             if not row: raise HTTPException(status_code=404, detail='Server not found')
             allowed=('id','name','ip','port','ws_port','location_type','is_active',
                      'last_status','last_agent_status','last_cpu','last_ram','last_disk',
-                     'last_checked_at','agent_last_seen','group_id','telemetry','telemetry_at','tls_enrolled')
+                     'last_checked_at','agent_last_seen','group_id','telemetry','telemetry_at','tls_enrolled','ssh','ssh_last_success_at')
             data={key:row.get(key) for key in allowed}
             for field in ('last_status','last_agent_status'):
                 data[field] = safe_status(data.get(field))
             data['last_checked_at'] = when(data.get('last_checked_at'))
             # Never return password, agent_token, agent_cert_pem or log text.
             return data
+        return await guarded(read)
+
+    @router.get('/servers/{server_id}/history')
+    async def server_history(server_id:int,uid:int=Depends(actor)):
+        def read():
+            owner=store.workspace(uid)
+            if not store.db.execute('SELECT id FROM servers WHERE id=%s AND owner_id=%s',(server_id,owner),fetch='one'):
+                raise HTTPException(status_code=404,detail='Server not found')
+            checks=store.db.execute("""SELECT state,error_code,attempted_at,completed_at FROM server_ssh_checks
+                WHERE server_id=%s AND owner_id=%s ORDER BY id DESC LIMIT 20""",(server_id,owner),fetch='all')
+            observations=store.db.execute('SELECT created_at,CASE WHEN cpu BETWEEN 0 AND 100 THEN cpu END AS cpu,CASE WHEN ram BETWEEN 0 AND 100 THEN ram END AS ram,CASE WHEN disk BETWEEN 0 AND 100 THEN disk END AS disk FROM server_stats WHERE server_id=%s ORDER BY created_at DESC LIMIT 20',(server_id,),fetch='all')
+            incidents=store.db.execute("""SELECT id,title,status,opened_at,updated_at FROM pro_incidents
+                WHERE owner_id=%s AND resource_type='server' AND resource_id=%s ORDER BY updated_at DESC,id DESC LIMIT 20""",(owner,server_id),fetch='all')
+            return {'checks':checks,'observations':observations,'incidents':incidents,'limit':20}
         return await guarded(read)
 
     @router.get('/configs/{config_id}')

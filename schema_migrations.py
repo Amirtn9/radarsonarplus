@@ -37,6 +37,8 @@ def _registry():
     from quota_policy import install_schema as quota_schema
     from product_admin import install_schema as product_schema
 
+    from operational_history import install_schema as operational_history_schema
+
     return (
         (2, "pro_store", pro_store_schema),
         (3, "enterprise_services", enterprise_services_schema),
@@ -57,6 +59,7 @@ def _registry():
         (18, "account_controls", control_schema),
         (19, "product_workflows", product_schema),
         (20, "web_session_columns", install_session_schema),
+        (21, "operational_history", operational_history_schema),
     )
 
 

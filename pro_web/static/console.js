@@ -37,11 +37,12 @@
     try{
       const info=await request(`/api/console/servers/${id}`);
       if(!isCurrent('server',id,serial))return;
+      window.SonarServerTabs?.setInfo(info);
       host.replaceChildren();setHeading(host,'🖥',info.name,`شناسه سرور: ${id} · ${info.is_active?'فعال':'غیرفعال'}`);
       host.append(pairs([
         ['آدرس سرور',info.ip],['پورت SSH',metric(info.port)],['پورت Agent',metric(info.ws_port)],
         ['وضعیت سرور',info.last_status],['وضعیت Agent',info.last_agent_status],
-         ['ثبت TLS',info.tls_enrolled?'گواهی ثبت و تأیید شده':'ثبت نشده / نیازمند تعمیر'],
+         ['ثبت TLS',info.tls_enrolled?'گواهی ثبت شده؛ اتصال زنده تأیید نمی‌شود':'ثبت نشده / نیازمند تعمیر'],
         ['سیستم‌عامل',info.telemetry?.os_name?info.telemetry.os_name+' '+(info.telemetry.os_release||''):'نامشخص'],['نسخه Agent',info.telemetry?.agent_version||'نامشخص'],['دیسک آزاد',info.telemetry?.disk_free_bytes==null?'نامشخص':(info.telemetry.disk_free_bytes/1073741824).toFixed(2)+' GiB'],['CPU',metric(info.last_cpu,'٪')],['RAM',metric(info.last_ram,'٪')],['Disk',metric(info.last_disk,'٪')],
         ['آخرین نمونه',localTime(info.last_checked_at)],['آخرین اتصال Agent',localTime(info.agent_last_seen)],
         ['محل سرور',info.location_type||'—'],['گروه',info.group_id??'بدون گروه']
