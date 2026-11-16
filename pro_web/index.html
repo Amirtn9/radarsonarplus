@@ -172,18 +172,18 @@
           <div class="service-grid" id="service-grid"><p class="muted">در حال بارگیری...</p></div>
           <h3>افزودن مانیتور جدید</h3>
           <form id="service-form" class="formline service-form">
-            <label>نام سرویس<input id="service-name" required maxlength="120" placeholder="وب‌سایت اصلی"></label>
-            <label>نوع تست<select id="service-kind"><option value="http">HTTP / HTTPS</option><option value="tcp">TCP</option></select></label>
-            <label>آدرس سرویس<input id="service-target" required maxlength="1024" placeholder="https://example.com/health" dir="ltr"></label>
-            <label>فاصله تست (ثانیه)<input id="service-interval" type="number" min="60" max="3600" value="60" required></label>
-            <label>مهلت (ثانیه)<input id="service-timeout" type="number" min="1" max="15" value="5" required></label>
-            <label>تعداد خطا تا قطعی<input id="service-failures" type="number" min="1" max="5" value="2" required></label>
-            <label>تعداد موفقیت تا بازیابی<input id="service-recoveries" type="number" min="1" max="5" value="1" required></label>
-            <label>کد HTTP مورد انتظار (اختیاری)<input id="service-expected" type="number" min="200" max="599" placeholder="مثلاً 200"></label>
+            <label for="service-name"><span>نام سرویس</span><input id="service-name" required maxlength="120" placeholder="وب‌سایت اصلی"></label>
+            <label for="service-kind"><span>نوع تست</span><select id="service-kind"><option value="http">HTTP / HTTPS</option><option value="tcp">TCP</option></select></label>
+            <label for="service-target" class="service-address"><span>آدرس سرویس</span><input id="service-target" aria-describedby="service-notice" required maxlength="1024" placeholder="https://example.com/health" dir="ltr"></label>
+            <label for="service-interval"><span>فاصله تست (ثانیه)</span><input id="service-interval" type="number" min="60" max="3600" value="60" required></label>
+            <label for="service-timeout"><span>مهلت (ثانیه)</span><input id="service-timeout" type="number" min="1" max="15" value="5" required></label>
+            <label for="service-failures"><span>تعداد خطا تا قطعی</span><input id="service-failures" type="number" min="1" max="5" value="2" required></label>
+            <label for="service-recoveries"><span>تعداد موفقیت تا بازیابی</span><input id="service-recoveries" type="number" min="1" max="5" value="1" required></label>
+            <label for="service-expected"><span>کد HTTP مورد انتظار (اختیاری)</span><input id="service-expected" type="number" min="200" max="599" placeholder="مثلاً 200"></label>
             <button class="primary" id="service-save" type="submit">+ ایجاد مانیتور</button>
             <button type="button" id="service-cancel" hidden>لغو ویرایش</button>
           </form>
-          <p class="muted service-notice">آدرس‌های داخلی به‌صورت پیش‌فرض مسدود هستند. مانیتورها فقط از سرور میزبان ربات تست می‌شوند و جایگزین تست چندمنطقه‌ای نیستند.</p>
+          <p id="service-notice" class="muted service-notice">آدرس‌های داخلی به‌صورت پیش‌فرض مسدود هستند. مانیتورها فقط از سرور میزبان ربات تست می‌شوند و جایگزین تست چندمنطقه‌ای نیستند.</p>
         </section>
         <section class="panel"><h3>تاریخچه مانیتور</h3><p id="service-history-title" class="muted">برای مشاهده آخرین تست‌ها، دکمه تاریخچه هر سرویس را انتخاب کنید.</p><div id="service-history" class="service-history"></div></section>
       </section>
