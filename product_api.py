@@ -49,17 +49,9 @@ def router(store,actor,guarded,admin_id):
         return {'ids':await guarded(service().bulk_message,uid,body.user_ids,body.text,body.request_key,body.reason),'state':'queued'}
     @api.get('/search')
     async def search(q:str=Query(min_length=2,max_length=100),uid:int=Depends(actor)):
-        def read():
-            owner=store.workspace(uid);term='%'+q+'%';out=[]
-            for kind,table,extra in [('server','servers','ip'),('config','tunnel_configs','id::text'),('service','pro_services','target')]:
-                rows=store.db.execute(f'SELECT id,name FROM {table} WHERE owner_id=%s AND (name ILIKE %s OR {extra} ILIKE %s) ORDER BY id LIMIT 10',(owner,term,term),'all')
-                out.extend(dict(kind=kind,id=r['id'],name=r['name']) for r in rows)
-            caps=service().billing.permissions(uid)
-            if 'users.read' in caps:
-                out.extend(dict(kind='user',id=r['user_id'],name=r['full_name']) for r in service().users(uid,q)[:10])
-            if 'payments' in caps:
-                rows=store.db.execute('SELECT id,user_id FROM sonar_orders WHERE id::text ILIKE %s ORDER BY created_at DESC LIMIT 10',(term,),'all')
-                out.extend(dict(kind='order',id=str(r['id']),name=str(r['user_id'])) for r in rows)
-            return out
-        return await guarded(read)
+        from global_search import search as find
+        if len(q.strip())<2:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422,detail='حداقل دو نویسه وارد کنید')
+        return await guarded(find,store,service(),uid,q)
     return api

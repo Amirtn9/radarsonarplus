@@ -46,7 +46,8 @@ let cookieAuth=false;
 let csrfToken='';
 const $=id=>document.getElementById(id);
 const incidentDefaults=()=>({severity:'',resource_type:'',resource_id:'',after:'',before:'',sort:'updated'});
-const state={incidentFilters:incidentDefaults(),tab:'overview',index:1,search:'',admin:false,listingRequest:0,resourceRequest:0,onlyFavorites:false,incidentStatus:'unresolved',selectedConfigs:new Set()};
+const configDefaults=()=>({health:'',config_type:'',protocol:'',sort:'default',tag:''});
+const state={configFilters:configDefaults(),targetService:null,targetAgent:null,incidentId:null,incidentFilters:incidentDefaults(),tab:'overview',index:1,search:'',admin:false,listingRequest:0,resourceRequest:0,onlyFavorites:false,incidentStatus:'unresolved',selectedConfigs:new Set()};
 window.SonarWebAuth={getCsrf:()=>csrfToken,setCsrf:value=>{csrfToken=String(value||'');}};
 const titles={billing:'اشتراک و کیف پول',users:'مدیریت مرکزی',overview:'داشبورد',servers:'مدیریت سرورها',configs:'کانفیگ‌ها و اشتراک‌ها',rankings:'رتبه‌بندی کیفیت',incidents:'مرکز رخدادها',enterprise:'مرکز سازمانی',team:'اعضای تیم',audit:'فعالیت‌ها',settings:'تنظیمات',reports:'گزارش‌ها',support:'مرکز عیب‌یابی',fleet:'استخر Agentهای چندمنطقه‌ای',balancer:'بالانسر مسیرها',services:'مانیتورینگ سرویس‌ها',channels:'اطلاع‌رسانی', 'server-detail':'جزئیات سرور','config-detail':'جزئیات کانفیگ','web-create':'افزودن منبع جدید'};
 const elem=(tag,text,cl)=>{const el=document.createElement(tag);if(text!=null)el.textContent=String(text);if(cl)el.className=cl;return el;};
@@ -142,6 +143,10 @@ function updateRoute(replace=false){
  if(state.search)url.searchParams.set('q',state.search);
  if(state.index>1)url.searchParams.set('page',String(state.index));
  if(state.onlyFavorites)url.searchParams.set('favorites','1');
+ if(state.tab==='configs')for(const [key,value]of Object.entries(state.configFilters))if(value&&!(key==='sort'&&value==='default'))url.searchParams.set(key,value);
+ if(state.tab==='services'&&state.targetService)url.searchParams.set('service',state.targetService);
+ if(state.tab==='fleet'&&state.targetAgent)url.searchParams.set('agent',state.targetAgent);
+ if(state.tab==='incidents'&&state.incidentId)url.searchParams.set('incident',state.incidentId);
  if(state.tab==='server-detail')url.searchParams.set('section',window.SonarServerTabs?.current()||'overview');
  if(state.tab==='incidents'){url.searchParams.set('status',state.incidentStatus);for(const [key,value]of Object.entries(state.incidentFilters))if(value)url.searchParams.set(key,value);}
  const target=url.pathname+url.search;
@@ -157,19 +162,25 @@ function routeFromLocation(){
 }
 function restoreRoute(){
  const params=new URLSearchParams(location.search),name=routeFromLocation();
+ const target=key=>/^[1-9][0-9]{0,12}$/.test(params.get(key)||'')?Number(params.get(key)):null;
+ state.targetService=target('service');state.targetAgent=target('agent');state.incidentId=target('incident');
  const detail=location.pathname.match(/^\/(servers|configs)\/([1-9][0-9]*)$/);if(detail)window.SonarConsole?.setActive(detail[1]==='servers'?'server':'config',Number(detail[2]));
  restoringRoute=true;tabClick(name);restoringRoute=false;
  state.search=params.get('q')||'';state.index=Math.max(1,Math.min(10000,Math.trunc(Number(params.get('page'))||1)));
  state.onlyFavorites=params.get('favorites')==='1';state.incidentStatus=params.get('status')||'unresolved';state.incidentFilters=incidentDefaults();for(const key of Object.keys(state.incidentFilters))state.incidentFilters[key]=params.get(key)||state.incidentFilters[key];
+ state.configFilters=configDefaults();for(const key of Object.keys(state.configFilters))state.configFilters[key]=params.get(key)||state.configFilters[key];
  $('search').value=state.search;if($('only-favorites'))$('only-favorites').checked=state.onlyFavorites;
+ state.incidentId=target('incident');
+ if(name==='incidents'&&state.incidentId)window.SonarIncidents?.open(state.incidentId,false);
  if(listingViews.includes(name))loadList();updateRoute(true);
 }
 window.addEventListener('popstate',()=>{if(panelAuthenticated)restoreRoute();});
 function tabClick(name){if(!Object.prototype.hasOwnProperty.call(titles,name)||(['support','balancer'].includes(name)&&!state.admin))return;
  if(navigationWorkspace!==activeWorkspace){viewPositions.clear();navigationWorkspace=activeWorkspace;}
- else if(!restoringRoute&&listingViews.includes(state.tab))viewPositions.set(state.tab,{index:state.index,search:state.search,onlyFavorites:state.onlyFavorites,incidentStatus:state.incidentStatus,incidentFilters:{...state.incidentFilters}});
+ else if(!restoringRoute&&listingViews.includes(state.tab))viewPositions.set(state.tab,{index:state.index,search:state.search,onlyFavorites:state.onlyFavorites,incidentStatus:state.incidentStatus,incidentFilters:{...state.incidentFilters},configFilters:{...state.configFilters}});
  const saved=!restoringRoute?viewPositions.get(name):null;
- state.listingRequest++;state.tab=name;state.index=saved?.index||1;state.search=saved?.search||'';state.onlyFavorites=saved?.onlyFavorites||false;state.incidentStatus=saved?.incidentStatus||'unresolved';state.incidentFilters={...incidentDefaults(),...saved?.incidentFilters};$('search').value=state.search;if($('only-favorites'))$('only-favorites').checked=state.onlyFavorites;
+ if(name!=='services')state.targetService=null;if(name!=='fleet')state.targetAgent=null;
+ state.listingRequest++;state.tab=name;state.index=saved?.index||1;state.search=saved?.search||'';state.onlyFavorites=saved?.onlyFavorites||false;state.incidentStatus=saved?.incidentStatus||'unresolved';state.incidentFilters={...incidentDefaults(),...saved?.incidentFilters};state.configFilters={...configDefaults(),...saved?.configFilters};$('search').value=state.search;if($('only-favorites'))$('only-favorites').checked=state.onlyFavorites;
 
   $('page-title').textContent=titles[name]||name;
   document.title=(titles[name]||name)+' | SONAR RADAR PRO';
@@ -197,7 +208,7 @@ function tabClick(name){if(!Object.prototype.hasOwnProperty.call(titles,name)||(
   if(name==='server-detail')window.SonarConsole?.loadServer().then(()=>window.SonarControl?.serverActions()).catch(e=>toast(e.message));
   if(name==='config-detail')window.SonarConsole?.loadConfig().then(()=>window.SonarControl?.configActions()).catch(e=>toast(e.message));
 }
-function statusText(item){const raw=String(item.last_status||'Unknown');return ({Online:'آنلاین',Offline:'آفلاین',Unknown:'نامشخص',OK:'سالم',Fail:'سنجش ناموفق',Error:'خطای سنجش',Pending:'در انتظار سنجش'})[raw]||(raw.length<70?raw:raw.slice(0,67)+'…');}
+function statusText(item){if(item.health)return ({healthy:'سالم',failed:'کانفیگ ناموفق',untested:'تست‌نشده',environment_error:'خطای محیط سنجش',pending:'تست در صف یا در حال اجرا',source:'منبع اشتراک',unknown:'نامشخص'})[item.health]||'نامشخص';const raw=String(item.last_status||'Unknown');return ({Online:'آنلاین',Offline:'آفلاین',Unknown:'نامشخص',OK:'سالم',Fail:'سنجش ناموفق',Error:'خطای سنجش',Pending:'در انتظار سنجش'})[raw]||(raw.length<70?raw:raw.slice(0,67)+'…');}
 function serverCardDetails(root,item){
  root.classList.add('server-card');
  const stamp=window.SonarTelemetry.time(item.last_checked_at),age=Date.now()-stamp;
@@ -229,7 +240,8 @@ function serverCardDetails(root,item){
 function rowItem(item){const root=elem('article',null,'item'),detail=elem('div'),name=elem('strong',item.name||item.title||item.kind||'بدون نام');if(['servers','configs'].includes(state.tab)){const link=elem('a');link.href=(state.tab==='servers'?'/servers/':'/configs/')+item.id;link.append(name);const kind=state.tab==='servers'?'server':'config';link.onclick=event=>{if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;event.preventDefault();window.SonarConsole?.openDetails(kind,item.id);};detail.append(link);}else detail.append(name);
  let subtitle='';
  if(state.tab==='servers')subtitle=`سرور #${item.id} | ${statusText(item)} | ${({ir:'ایران',ext:'خارج'})[item.location_type]||'موقعیت نامشخص'}`;
- if(state.tab==='configs')subtitle=`کانفیگ #${item.id} | ${statusText(item)} | ${item.last_ping??'?'} ms`;
+ if(state.tab==='configs')subtitle=`کانفیگ #${item.id} | ${statusText(item)} | ${item.last_ping??'—'} ms`;
+ if(state.tab==='configs'){detail.append(elem('small',`پروتکل: ${item.protocol||'نامشخص'} · امتیاز: ${item.quality_score==null?'—':item.quality_score+'/10'} · بررسی: ${item.checked_at?new Date(window.SonarTelemetry.time(item.checked_at)).toLocaleString('fa-IR'):'زمانی ثبت نشده'}`));}
  if(state.tab==='rankings')subtitle=`پینگ: ${item.ping??'—'} ms | جیتر: ${item.jitter??'—'} ms`;
  if(state.tab==='incidents')subtitle=`${({warning:'هشدار',critical:'بحرانی',info:'اطلاع'})[item.severity]||'هشدار'} • ${({open:'باز',acknowledged:'دیده‌شده',investigating:'در حال بررسی',resolved:'رفع‌شده'})[item.status]||'نامشخص'} • ${item.occurrences||0} مرتبه`;
  detail.append(elem('small',subtitle));root.append(detail);
@@ -243,7 +255,7 @@ function rowItem(item){const root=elem('article',null,'item'),detail=elem('div')
  if(state.tab==='incidents'&&item.status==='open'){const b=elem('button','تأیید مشاهده');b.dataset.requires='monitor';b.onclick=async()=>{try{await jsonPost('/api/incidents/ack',{incident_id:item.id});await loadList();}catch(e){toast(e.message);}};controls.append(b);}
  root.append(controls);return root;
 }
-async function loadList(){const requestId=++state.listingRequest,tab=state.tab,page=state.index,search=state.search;const host=$('list-content');host.replaceChildren(elem('p','در حال دریافت اطلاعات…','route-loading'));host.setAttribute('aria-busy','true');
+async function loadList(){const requestId=++state.listingRequest,tab=state.tab,page=state.index,search=state.search;const host=$('list-content');if(tab==='configs')window.SonarConfigFilters?.summary(null);host.replaceChildren(elem('p','در حال دریافت اطلاعات…','route-loading'));host.setAttribute('aria-busy','true');
  const title=titles[tab];$('list-title').textContent=title;$('list-subtitle').textContent=tab==='incidents'?'رخدادهای فضای کاری؛ فیلتر بر اساس چرخه رسیدگی':'اطلاعات ثبت‌شده در فضای کاری';
  const resourceTab=['servers','configs'].includes(tab),incidentTab=tab==='incidents';
  $('search').hidden=!(resourceTab||incidentTab);
@@ -252,21 +264,23 @@ async function loadList(){const requestId=++state.listingRequest,tab=state.tab,p
  const favoritesFilter=$('favorites-filter');if(favoritesFilter)favoritesFilter.hidden=!resourceTab;
  const hint=$('list-filter-hint');if(hint)hint.hidden=!resourceTab;
  const incidentFilter=$('incident-filter');if(incidentFilter)incidentFilter.hidden=!incidentTab;
- const incidentSelect=$('incident-status-filter');if(incidentSelect)incidentSelect.value=state.incidentStatus;window.SonarIncidents?.sync();
+ const incidentSelect=$('incident-status-filter');if(incidentSelect)incidentSelect.value=state.incidentStatus;window.SonarIncidents?.sync();window.SonarConfigFilters?.sync();
  $('prev').disabled=state.index===1;
  try{
  let url='';if(resourceTab){url=`/api/resources/${tab==='servers'?'server':'config'}?page=${page}&q=${encodeURIComponent(search)}&favorites=${state.onlyFavorites?'true':'false'}`;}
  else{url=tab==='rankings'?'/api/rankings':`/api/incidents?status=${encodeURIComponent(state.incidentStatus)}&page=${page}&q=${encodeURIComponent(search)}`;if(incidentTab)for(const [key,value]of Object.entries(state.incidentFilters))if(value)url+='&'+key+'='+encodeURIComponent(value);}
+ if(tab==='configs')for(const [key,value]of Object.entries(state.configFilters))if(value)url+='&'+key+'='+encodeURIComponent(value);
  if(!restoringRoute)updateRoute();
  const response=await request(url,{raw:true});const list=await response.json();const total=Number(response.headers.get('X-Total-Count'));if(requestId!==state.listingRequest||tab!==state.tab)return;if(!Array.isArray(list))throw Error('پاسخ نامعتبر از سرور');
  if((resourceTab||incidentTab)&&!list.length&&response.headers.has('X-Total-Count')&&Number.isSafeInteger(total)&&total>=0){
   const lastPage=Math.max(1,Math.ceil(total/12));
   if(page>lastPage){state.index=lastPage;updateRoute(true);return await loadList();}
  }
+ window.SonarConfigFilters?.summary(tab==='configs'?response.headers.get('X-Config-Summary'):null);
  host.replaceChildren();if(!list.length){
-  const filtered=resourceTab&&(search||state.onlyFavorites);
+  const filtered=resourceTab&&(search||state.onlyFavorites||(tab==='configs'&&Object.entries(state.configFilters).some(([key,value])=>key!=='sort'&&value)));
   host.append(elem('p',filtered?'نتیجه‌ای برای این جست‌وجو و فیلتر پیدا نشد.':resourceTab?(tab==='servers'?'هنوز سروری در این فضای کاری اضافه نشده است.':'هنوز کانفیگی در این فضای کاری اضافه نشده است.'):'موردی برای نمایش وجود ندارد.','empty-state'));
-  if(filtered){const clear=elem('button','پاک‌کردن فیلترها');clear.type='button';clear.onclick=()=>{state.search='';state.onlyFavorites=false;state.index=1;$('search').value='';$('only-favorites').checked=false;loadList();};host.append(clear);}
+  if(filtered){const clear=elem('button','پاک‌کردن فیلترها');clear.type='button';clear.onclick=()=>{state.search='';state.onlyFavorites=false;state.configFilters=configDefaults();state.index=1;$('search').value='';$('only-favorites').checked=false;loadList();};host.append(clear);}
   else if(resourceTab){const add=elem('button',tab==='servers'?'افزودن نخستین سرور':'افزودن نخستین کانفیگ','primary');add.type='button';add.dataset.requires=tab==='servers'?'server':'config';add.onclick=()=>{tabClick('web-create');$(tab==='servers'?'web-show-server':'web-show-config').click();};host.append(add);}
  }
  list.forEach(item=>host.append(rowItem(item)));
@@ -428,7 +442,8 @@ $('resource-server')?.addEventListener('change',loadResourceChart);
 // v6.3: tenant-bound uptime console, strictly textContent (never unsafe HTML).
 function serviceDate(v){if(!v)return 'هنوز بررسی نشده';const d=new Date(v);return Number.isNaN(d.getTime())?'—':d.toLocaleString('fa-IR');}
 const statusName={up:'آنلاین',down:'آفلاین',pending:'منتظر اولین تست',paused:'متوقف'};
-let editingServiceId=null;
+let editingServiceId=null,serviceTargetFocused=null;
+window.addEventListener('sonar:view-change',()=>{serviceTargetFocused=null;});
 async function loadServices(){
  const host=$('service-grid');if(!host)return;
  host.replaceChildren(elem('p','در حال دریافت مانیتورها...','muted'));
@@ -440,11 +455,12 @@ async function loadServices(){
    const head=elem('div',null,'service-card-head');
    head.append(elem('strong',x.name));
    head.append(elem('span',statusName[x.status]||'نامشخص','service-chip '+x.status));
+   card.dataset.serviceId=String(x.id);
    card.append(head,elem('div',x.kind.toUpperCase()+' · '+x.target,'service-target'));
    const stat=elem('p',(x.last_latency_ms==null?'—':Math.round(x.last_latency_ms)+' ms')+' | '+(x.last_detail||'بدون نتیجه')+' | '+serviceDate(x.last_checked_at),'muted');
    card.append(stat);
    const buttons=elem('div',null,'service-actions');
-   const history=elem('button','تاریخچه');history.onclick=()=>loadServiceHistory(x);buttons.append(history);
+   const history=elem('button','تاریخچه');history.onclick=()=>{state.targetService=Number(x.id);serviceTargetFocused=Number(x.id);updateRoute();loadServiceHistory(x);};buttons.append(history);
    const edit=elem('button','ویرایش');edit.dataset.requires='monitor';edit.onclick=()=>{
      editingServiceId=x.id;$('service-name').value=x.name;$('service-kind').value=x.kind;
      $('service-target').value=x.target;$('service-interval').value=x.interval_seconds;
@@ -461,6 +477,7 @@ async function loadServices(){
     try{await request('/api/services/'+x.id,{method:'DELETE'});await loadServices();toast('مانیتور حذف شد');}
     catch(err){toast(err.message);}
    };buttons.append(del);card.append(buttons);host.append(card);
+   if(state.targetService===Number(x.id)&&state.tab==='services'){card.classList.add('search-target');if(serviceTargetFocused!==Number(x.id)){serviceTargetFocused=Number(x.id);card.tabIndex=-1;card.focus({preventScroll:true});card.scrollIntoView({block:'center'});loadServiceHistory(x);}}
   }
  }catch(err){host.replaceChildren(elem('p',err.message,'bad'));}
 }

@@ -129,6 +129,7 @@
       window.SonarAgentCards.attach(card,node);
       if(fleetAdmin){const disable=safeNode('button','⛔ غیرفعال‌سازی','fleet-disable');disable.onclick=async()=>{if(!await window.SonarUI.confirm('این Agent از استخر خارج شود؟'))return;try{await jsonPost('/api/fleet/approve',{server_ids:[node.id],enabled:false});await loadFleet();}catch(e){toast(e.message);}};card.append(disable);}
       fleetList.append(card);
+      if(state.targetAgent===Number(node.id)){card.classList.add('search-target');card.tabIndex=-1;card.focus({preventScroll:true});card.scrollIntoView({block:'center'});}
     });
     const target=el('fleet-target'),selected=target.value;target.replaceChildren();
     const known=new Map();for(const s of Array.isArray(serverList)?serverList:[])known.set(s.id,{id:s.id,name:s.name});

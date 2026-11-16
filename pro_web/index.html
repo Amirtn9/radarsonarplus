@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/static/ssh-terminal.css">
   <link rel="stylesheet" href="/static/premium.css">
   <script defer src="/static/ui.js"></script>
+  <script defer src="/static/global-search.js"></script>
   <script defer src="/static/modules.js"></script>
 
   <script defer src="/static/web_ops.js"></script>
@@ -19,6 +20,7 @@
   <script defer src="/static/app.js"></script>
 
   <script defer src="/static/console.js"></script>
+  <script defer src="/static/config-filters.js"></script>
   <script defer src="/static/incident-center.js"></script>
   <script defer src="/static/server-tabs.js"></script>
   <script defer src="/static/ssh-terminal.js"></script>
@@ -128,7 +130,15 @@
         <button id="channels-refresh" type="button">↻ دریافت دوباره</button><div id="channels-list" class="listitems" role="status"></div>
         <p class="info-strip">مقصدهای اعلان را در همین صفحه مدیریت کنید؛ با ارسال پیام آزمایشی، دسترسی ربات را بررسی کنید.</p></section>
       </section>
-      <section id="listing" class="view"><div class="panel"><div class="listbar"><div><h2 id="list-title">سرورها</h2><p id="list-subtitle">فهرست مرتب و ساده</p></div><label class="search">⌕ <input id="search" type="search" placeholder="جست‌وجوی نام یا IP" autocomplete="off" aria-label="جست‌وجو"></label></div><div class="filter-tools"><label id="favorites-filter"><input type="checkbox" id="only-favorites"> فقط علاقه‌مندی‌ها</label><small id="list-filter-hint" class="muted">برای جست‌وجوی برچسب، # را قبل از نام آن وارد کنید</small><form id="incident-filter" class="incident-filters" hidden><label>وضعیت رخداد<select id="incident-status-filter"><option value="unresolved">فعال (رفع‌نشده)</option><option value="open">فقط باز</option><option value="acknowledged">تأییدشده</option><option value="investigating">در حال بررسی</option><option value="resolved">رفع‌شده</option><option value="all">همه</option></select></label>
+      <section id="listing" class="view"><div class="panel"><div class="listbar"><div><h2 id="list-title">سرورها</h2><p id="list-subtitle">فهرست مرتب و ساده</p></div><label class="search">⌕ <input id="search" type="search" placeholder="جست‌وجوی نام یا IP" autocomplete="off" aria-label="جست‌وجو"></label></div><div class="filter-tools"><label id="favorites-filter"><input type="checkbox" id="only-favorites"> فقط علاقه‌مندی‌ها</label><small id="list-filter-hint" class="muted">برای جست‌وجوی برچسب، # را قبل از نام آن وارد کنید</small><form id="config-filters" class="config-filters" hidden>
+<label>سلامت<select id="config-health"><option value="">همه وضعیت‌ها</option><option value="healthy">سالم</option><option value="failed">کانفیگ ناموفق</option><option value="untested">تست‌نشده</option><option value="environment_error">خطای محیط سنجش</option><option value="pending">در صف / در حال اجرا</option><option value="unknown">نامشخص</option><option value="source">منبع اشتراک</option></select></label>
+<label>نوع<select id="config-type"><option value="">همه انواع</option><option value="single">تکی</option><option value="sub_item">زیرمجموعه اشتراک</option><option value="json">پروفایل JSON</option><option value="sub_source">منبع اشتراک</option></select></label>
+<label>پروتکل<select id="config-protocol"><option value="">همه پروتکل‌ها</option><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option><option value="ss">Shadowsocks</option><option value="hysteria2">Hysteria2</option><option value="tuic">TUIC</option><option value="profile">پروفایل کامل</option><option value="subscription">اشتراک</option><option value="unknown">نامشخص</option></select></label>
+<label>برچسب<input id="config-tag" maxlength="40" placeholder="اختیاری"></label>
+<label>مرتب‌سازی<select id="config-sort"><option value="default">علاقه‌مندی و جدیدترین</option><option value="latency">کمترین تأخیر معتبر</option><option value="score">بیشترین امتیاز از ۱۰</option><option value="checked">آخرین بررسی ثبت‌شده</option><option value="name">نام</option></select></label>
+<p class="muted">پروتکل استخراج‌شده از داده ثبت‌شده است؛ نمایش Hysteria2 یا TUIC تأیید پشتیبانی عملیاتی آن نیست. مقادیر ناموجود در انتهای مرتب‌سازی قرار می‌گیرند.</p>
+<p id="config-summary" role="status"></p>
+</form><form id="incident-filter" class="incident-filters" hidden><label>وضعیت رخداد<select id="incident-status-filter"><option value="unresolved">فعال (رفع‌نشده)</option><option value="open">فقط باز</option><option value="acknowledged">تأییدشده</option><option value="investigating">در حال بررسی</option><option value="resolved">رفع‌شده</option><option value="all">همه</option></select></label>
 <label>شدت<select id="incident-severity"><option value="">همه شدت‌ها</option><option value="critical">بحرانی</option><option value="warning">هشدار</option><option value="info">اطلاع</option></select></label>
 <label>نوع منبع<select id="incident-resource-type"><option value="">همه منابع</option><option value="server">سرور</option><option value="config">کانفیگ</option><option value="service">سرویس</option></select></label>
 <label>شناسه منبع<input id="incident-resource-id" type="number" min="1" placeholder="اختیاری"></label>

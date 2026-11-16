@@ -37,6 +37,7 @@ def _registry():
     from quota_policy import install_schema as quota_schema
     from product_admin import install_schema as product_schema
 
+    from config_catalog import install_schema as config_catalog_schema
     from operational_history import install_schema as operational_history_schema
 
     return (
@@ -60,6 +61,7 @@ def _registry():
         (19, "product_workflows", product_schema),
         (20, "web_session_columns", install_session_schema),
         (21, "operational_history", operational_history_schema),
+        (22, "config_catalog", config_catalog_schema),
     )
 
 

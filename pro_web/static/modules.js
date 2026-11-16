@@ -21,6 +21,7 @@
  for(const [name,[group,methods]]of Object.entries(definitions)){
   const bridge={};
   for(const method of methods)bridge[method]=async(...args)=>{
+   if(name==='SonarProduct'&&method==='search')return window.SonarGlobalSearch.open();
    const root=screen(name,args);let status=root?.querySelector('.module-loader-status');
    if(root){
     if(!status){status=document.createElement('div');status.className='module-loader-status route-loading';status.setAttribute('role','status');root.prepend(status);}
@@ -50,7 +51,7 @@
    const trigger=document.createElement('button');trigger.type='button';trigger.textContent='جست‌وجوی سراسری';trigger.id='global-search-trigger';trigger.className='navbtn';trigger.setAttribute('aria-keyshortcuts','Control+k Meta+k');trigger.onclick=search;header.append(trigger);
   }
  }
- function search(){Promise.resolve(window.SonarProduct.search()).catch(error=>{if(typeof toast==='function')toast(error.message);});}
+ function search(){Promise.resolve(window.SonarGlobalSearch.open()).catch(error=>{if(typeof toast==='function')toast(error.message);});}
  document.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'&&document.body.dataset.authenticated==='true'){event.preventDefault();search();}});
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
  window.SonarModules={ensure};

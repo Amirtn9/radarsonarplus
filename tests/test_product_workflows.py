@@ -134,6 +134,10 @@ def test_product_api_checks_role_and_rejects_naive_dates(service):
     service.staff(901,903,'Support',['users.read'],True,'scoped customer support')
     current[0]=903
     assert client.get('/api/product/users/902').status_code==200
+    found=client.get('/api/product/search?q=Admin').json()
+    assert any(row['kind']=='user' and row['id']==901 for row in found)
+    assert all(row['kind']!='order' for row in found)
+    assert client.get('/api/product/search?q=%20%20').status_code==422
     assert client.get('/api/product/finances').status_code==403
     assert client.get('/api/product/orders').status_code==403
     assert client.post('/api/product/messages/batch',json={'text':'Do not send','user_ids':[902],'request_key':'forbidden-01','reason':'must deny access'}).status_code==403

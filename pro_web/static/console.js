@@ -65,8 +65,8 @@
     try{
       const info=await request(`/api/console/configs/${id}`);if(!isCurrent('config',id,serial))return;
       host.replaceChildren();setHeading(host,'🔗',info.name,`شناسه کانفیگ: ${id} · ${info.type}`);
-      host.append(pairs([['وضعیت تست',info.last_status],['پینگ',metric(info.last_status==='OK'?info.last_ping:null,' ms')],['جیتر',metric(info.last_status==='OK'?info.last_jitter:null,' ms')],['امتیاز',metric(info.last_status==='OK'?info.quality_score:null,'/10')],['آپلود',info.last_speed_up],['دانلود',info.last_speed_down],['تاریخ اضافه‌شدن',info.added_at||'نامشخص']]));
-      host.append(node('p','لینک و مشخصات محرمانه کانفیگ در وب نمایش داده نمی‌شود. آزمون عملیاتی و توقف پایش از همین صفحه یا ربات تلگرام قابل انجام است.','info-strip'));
+      host.append(pairs([['نتیجه آخرین اندازه‌گیری ذخیره‌شده',statusText(info)],['پینگ',metric(info.last_status==='OK'?info.last_ping:null,' ms')],['جیتر',metric(info.last_status==='OK'?info.last_jitter:null,' ms')],['امتیاز',metric(info.last_status==='OK'&&Number.isFinite(Number(info.quality_score))&&info.quality_score!=null&&Number(info.quality_score)>=0&&Number(info.quality_score)<=10?info.quality_score:null,'/10')],['آپلود',info.last_speed_up],['دانلود',info.last_speed_down],['تاریخ اضافه‌شدن',info.added_at||'نامشخص']]));
+      host.append(node('p','خطای محیط در تلاش جدید، نتیجه تاریخی را به شکست کانفیگ تبدیل نمی‌کند؛ وضعیت تلاش اخیر در فهرست کانفیگ‌ها مشخص است. لینک و مشخصات محرمانه نمایش داده نمی‌شود. آزمون عملیاتی و توقف پایش از همین صفحه یا ربات تلگرام قابل انجام است.','info-strip'));
     }catch(err){if(isCurrent('config',id,serial))empty(host,err.message);}
   }
   async function loadChannels(){

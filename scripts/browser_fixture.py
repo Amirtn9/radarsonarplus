@@ -83,7 +83,7 @@ def main(port):
         async def idle(*args):await args[-1].wait()
         def idle_sync(*args):
             while not args[-1].is_set():time.sleep(.05)
-        import enterprise_runtime,web_reporting,web_agent_jobs,log_purge,billing_delivery,service_jobs
+        import enterprise_runtime,web_reporting,web_agent_jobs,log_purge,billing_delivery,service_jobs,config_probe_jobs
         async def idle_billing(db,stop,get_token):await stop.wait()
         billing_delivery.worker=idle_billing
         service_jobs.web_worker=idle_billing
@@ -95,7 +95,7 @@ def main(port):
                 await asyncio.to_thread(db.execute,'INSERT INTO server_stats(server_id,cpu,ram,disk,traffic_gb) VALUES(%s,25,50,20,1)',(server,))
                 try:await asyncio.wait_for(stop.wait(),timeout=5)
                 except asyncio.TimeoutError:pass
-        web_reporting.observation_worker=synthetic_observations;web_agent_jobs.worker=idle
+        web_reporting.observation_worker=synthetic_observations;web_agent_jobs.worker=idle;config_probe_jobs.worker=idle
         for field in ('operations_worker','webhook_worker','recovery_worker','rollout_worker'):
             setattr(enterprise_runtime,field,idle)
         enterprise_runtime.scheduled_backup_worker=idle_sync
@@ -143,6 +143,36 @@ def main(port):
                                      'critical' if index%2==0 else 'warning')
                     incident_seeded.append(row['id'])
             return {'server_id':server,'incident_ids':incident_seeded}
+        catalog_seed={}
+        @pro_portal.app.post('/__fixture/catalog')
+        def seed_catalog(uid:int=Depends(pro_portal.actor)):
+            if uid!=901:raise HTTPException(status_code=403,detail='Synthetic administrator required')
+            if catalog_seed:return catalog_seed
+            configs={}
+            cases=[(f'healthy {n:02}','single',f'vless://synthetic-private-{n}@192.0.2.2:443','OK',20+n,9) for n in range(14)]
+            cases += [('failed','sub_item','vmess://synthetic-private','Fail',0,0),
+                      ('untested','single','trojan://synthetic-private','Unknown',0,10),
+                      ('environment','single','ss://synthetic-private','OK',10,8),
+                      ('profile','json','{"outbounds":[]}','Unknown',0,10),
+                      ('source','sub_source','https://example.com/synthetic-private','OK',0,10),
+                      ('unsupported','single','tuic://synthetic-private','Unknown',0,10)]
+            for label,kind,link,status,ping,score in cases:
+                ident=db.execute("""INSERT INTO tunnel_configs(owner_id,name,type,link,last_status,last_ping,quality_score)
+                    VALUES(901,%s,%s,%s,%s,%s,%s) RETURNING id""",('Catalog Needle '+label,kind,link,status,ping,score),fetch='one')['id']
+                configs[label]=ident
+                if status in ('OK','Fail') and kind!='sub_source':db.execute("INSERT INTO pro_metrics(owner_id,config_id,region,ok,ping,measured_at) VALUES(901,%s,'fixture',%s,%s,NOW()-INTERVAL '5 minutes')",(ident,status=='OK',ping))
+            db.execute("INSERT INTO sonar_config_probes(owner_id,actor_id,config_id,request_key,state,error_code,completed_at) VALUES(901,901,%s,'catalog-fixture','failed','MONITOR_NODE_UNAVAILABLE',NOW())",(configs['environment'],))
+            for ident in (configs['healthy 00'],configs['failed']):db.execute("INSERT INTO pro_tags(owner_id,resource_type,resource_id,tag) VALUES(901,'config',%s,'blue')",(ident,))
+            db.execute("INSERT INTO pro_favorites(owner_id,resource_type,resource_id) VALUES(901,'config',%s)",(configs['healthy 00'],))
+            agent=db.execute("INSERT INTO agent_nodes(ip,ssh_port,ws_port,agent_token) VALUES('192.0.2.55',22,8443,'synthetic-private-token') RETURNING id",fetch='one')['id']
+            sid=db.execute("INSERT INTO servers(owner_id,name,ip,port,agent_id) VALUES(901,'Catalog Needle server','192.0.2.55',22,%s) RETURNING id",(agent,),fetch='one')['id']
+            service=db.execute("INSERT INTO pro_services(owner_id,name,kind,target) VALUES(901,'Catalog Needle service','http','https://example.com/synthetic-private') RETURNING id",fetch='one')['id']
+            from pro_store import ProStore
+            incident=ProStore(db).incident(901,'server',sid,'catalog_fixture','Catalog Needle incident')['id']
+            db.execute("INSERT INTO users(user_id,full_name) VALUES(1905,'Tenant external')")
+            db.execute("INSERT INTO tunnel_configs(owner_id,name,type,link) VALUES(1905,'Catalog Needle foreign','single','synthetic-private-other')")
+            catalog_seed.update(configs=configs,server_id=sid,service_id=service,incident_id=incident)
+            return catalog_seed
         uvicorn.run(pro_portal.app,host='127.0.0.1',port=port,ssl_keyfile=str(state/'key.pem'),
                     ssl_certfile=str(state/'cert.pem'),log_level='warning')
     finally:

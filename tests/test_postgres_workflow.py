@@ -110,7 +110,7 @@ def test_parallel_startup_and_upgrade_preserve_existing_rows(isolated_database):
     from schema_migrations import run_startup_migrations
     assert run_startup_migrations(db) == []
     assert db.execute('SELECT full_name FROM users WHERE user_id=901', fetch='one')['full_name'] == 'preserve me'
-    assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 21
+    assert db.execute('SELECT COUNT(*) AS n FROM sonar_schema_migrations', fetch='one')['n'] == 22
 
 
 def test_upgrade_from_695_schema_and_failed_migration_preserve_credentials(isolated_database,monkeypatch,tmp_path):
@@ -149,7 +149,7 @@ def test_upgrade_from_695_schema_and_failed_migration_preserve_credentials(isola
         with pytest.raises(psycopg2.errors.DivisionByZero):schema_migrations.run_startup_migrations(db)
     assert db.execute("SELECT COUNT(*) n FROM information_schema.columns WHERE table_name='pro_application_logs' AND column_name='event_id'",fetch='one')['n']==0
     assert db.execute('SELECT COUNT(*) n FROM sonar_schema_migrations WHERE version=14',fetch='one')['n']==0
-    assert schema_migrations.run_startup_migrations(db)==['log_reliability','web_login_security','billing','independent_quotas','account_controls','product_workflows','web_session_columns','operational_history']
+    assert schema_migrations.run_startup_migrations(db)==['log_reliability','web_login_security','billing','independent_quotas','account_controls','product_workflows','web_session_columns','operational_history','config_catalog']
     assert db.execute('SELECT full_name FROM users WHERE user_id=901',fetch='one')['full_name']=='upgrade owner'
     saved=db.execute('SELECT password FROM servers WHERE id=%s',(server,),fetch='one')['password']
     assert saved==credential and security.decrypt(saved)=='synthetic-preserved-password'
@@ -814,7 +814,7 @@ def test_operational_history_upgrade_and_recorded_incident_lifecycle(isolated_da
     sid=db.execute("INSERT INTO servers(owner_id,name,ip) VALUES(901,'History server','192.0.2.8') RETURNING id",fetch='one')['id']
     legacy=db.execute("INSERT INTO pro_incidents(owner_id,resource_type,resource_id,kind,title) VALUES(901,'server',%s,'legacy','Legacy') RETURNING id",(sid,),fetch='one')['id']
     monkeypatch.setattr(schema_migrations,'_registry',registry)
-    assert schema_migrations.run_startup_migrations(db)==['operational_history']
+    assert schema_migrations.run_startup_migrations(db)==['operational_history','config_catalog']
     assert schema_migrations.run_startup_migrations(db)==[]
     store=ProStore(db)
     assert incident_detail(store,901,None,legacy)['events']==[]
@@ -899,3 +899,89 @@ def test_ssh_check_requires_technical_role_before_probe(isolated_database,monkey
     uid=901
     assert client.post(f'/api/operations/server/{server["id"]}/check-ssh').status_code==200
     assert len(calls)==1
+
+
+def test_config_catalog_filters_evidence_counts_and_safe_sorting(isolated_database):
+    from schema_migrations import run_startup_migrations
+    from pro_store import ProStore
+    from config_catalog import list_configs
+    db,_=isolated_database;run_startup_migrations(db)
+    db.execute("INSERT INTO users(user_id,full_name) VALUES(901,'Owner'),(902,'Other')")
+    ids={}
+    for name,kind,link,status,ping,score in [
+        ('healthy','single','vless://private-credential@192.0.2.1:443','OK',50,0),
+        ('failed','sub_item','vmess://private-credential','Fail',0,0),
+        ('untested','single','trojan://private-credential@192.0.2.2:443','Unknown',0,10),
+        ('environment','single','ss://private-credential','OK',20,8),
+        ('profile','json','{"outbounds":[]}','Unknown',0,10),
+        ('source','sub_source','https://example.com/private-token','OK',0,10),
+        ('unsupported','single','tuic://private-credential','Unknown',0,10)]:
+        row=db.execute('''INSERT INTO tunnel_configs(owner_id,name,type,link,last_status,last_ping,quality_score)
+            VALUES(901,%s,%s,%s,%s,%s,%s) RETURNING id''',('Catalog '+name,kind,link,status,ping,score),fetch='one');ids[name]=row['id']
+        if status in ('OK','Fail') and kind!='sub_source':
+            db.execute("INSERT INTO pro_metrics(owner_id,config_id,region,ok,ping,measured_at) VALUES(901,%s,'fixture',%s,%s,NOW()-INTERVAL '1 hour')",(row['id'],status=='OK',ping))
+    db.execute("INSERT INTO tunnel_configs(owner_id,name,type,link) VALUES(902,'Catalog foreign','single','private-other')")
+    db.execute("INSERT INTO sonar_config_probes(owner_id,actor_id,config_id,request_key,state,error_code,completed_at) VALUES(901,901,%s,'catalog-env','failed','MONITOR_NODE_UNAVAILABLE',NOW())",(ids['environment'],))
+    pro=ProStore(db)
+    rows,total,summary=list_configs(pro,901,term='Catalog')
+    assert total==7 and summary['healthy']==1 and summary['failed']==1 and summary['unknown']==5
+    assert summary['environment_error']==1 and summary['untested']==3
+    by_id={row['id']:row for row in rows}
+    assert by_id[ids['environment']]['health']=='environment_error' and by_id[ids['environment']]['last_ping'] is None
+    assert by_id[ids['untested']]['quality_score'] is None
+    assert all('link' not in row and 'private-credential' not in str(row) for row in rows)
+    assert list_configs(pro,901,protocol='vless')[0][0]['id']==ids['healthy']
+    assert list_configs(pro,901,config_type='json')[1]==1
+    assert list_configs(pro,901,health='environment_error')[1]==1
+    assert list_configs(pro,901,sort='latency')[0][0]['id']==ids['healthy']
+    scored=list_configs(pro,901,sort='score')[0]
+    assert {row['id'] for row in scored[:2]}=={ids['healthy'],ids['failed']}
+    assert all(row['quality_score'] is None for row in scored[2:])
+    for ident in (ids['healthy'],ids['failed']):db.execute("INSERT INTO pro_tags(owner_id,resource_type,resource_id,tag) VALUES(901,'config',%s,'blue')",(ident,))
+    db.execute("INSERT INTO pro_favorites(owner_id,resource_type,resource_id) VALUES(901,'config',%s)",(ids['healthy'],))
+    assert list_configs(pro,901,tag='blue',favorites=True)[1]==1
+    empty,count,stats=list_configs(pro,901,health='healthy',page=999)
+    assert empty==[] and count==stats['total']==stats['healthy']==1
+    assert list_configs(pro,902,term='Catalog')[1]==1
+    # A failed old job and successful old sample cannot describe an edited link.
+    db.execute("UPDATE tunnel_configs SET link='ss://replacement-private' WHERE id=%s",(ids['environment'],))
+    assert list_configs(pro,901,term='Catalog environment')[0][0]['health']=='untested'
+    db.execute("INSERT INTO sonar_config_probes(owner_id,actor_id,config_id,request_key,state,error_code,completed_at) VALUES(901,901,%s,'catalog-new-env','failed','PROBE_UNAVAILABLE',clock_timestamp())",(ids['environment'],))
+    assert list_configs(pro,901,term='Catalog environment')[0][0]['health']=='environment_error'
+    db.execute("INSERT INTO pro_metrics(owner_id,config_id,region,ok,ping,measured_at) VALUES(901,%s,'fixture',TRUE,20,clock_timestamp())",(ids['environment'],))
+    assert list_configs(pro,901,term='Catalog environment')[0][0]['health']=='healthy'
+    db.execute("INSERT INTO sonar_config_probes(owner_id,actor_id,config_id,request_key,state) VALUES(901,901,%s,'catalog-pending','pending')",(ids['healthy'],))
+    pending=list_configs(pro,901,term='Catalog healthy')[0][0]
+    assert pending['health']=='pending' and pending['quality_score'] is None
+    db.execute("UPDATE tunnel_configs SET link='hy2://synthetic-private' WHERE id=%s",(ids['unsupported'],))
+    assert list_configs(pro,901,protocol='hysteria2')[1]==1
+
+
+def test_global_search_categories_scopes_sharing_and_no_secrets(isolated_database):
+    from schema_migrations import run_startup_migrations
+    from pro_store import ProStore
+    from global_search import search
+    from types import SimpleNamespace
+    db,_=isolated_database;run_startup_migrations(db)
+    db.execute("INSERT INTO users(user_id,full_name) VALUES(901,'Owner'),(902,'Other')")
+    server=db.execute("INSERT INTO servers(owner_id,name,ip,password) VALUES(901,'Needle server','192.0.2.1','never-return-password') RETURNING id",fetch='one')['id']
+    db.execute("INSERT INTO monitor_fleet_nodes(server_id,offered_by) VALUES(%s,901)",(server,))
+    db.execute("INSERT INTO tunnel_configs(owner_id,name,type,link) VALUES(901,'Needle config','single','vless://never-return-link')")
+    db.execute("INSERT INTO pro_services(owner_id,name,kind,target) VALUES(901,'Needle service','http','https://example.com/never-return-token')")
+    db.execute("INSERT INTO pro_incidents(owner_id,resource_type,resource_id,kind,title) VALUES(901,'server',%s,'fixture','Needle incident')",(server,))
+    foreign=db.execute("INSERT INTO servers(owner_id,name,ip) VALUES(902,'Needle hidden','192.0.2.99') RETURNING id",fetch='one')['id']
+    db.execute("INSERT INTO monitor_fleet_nodes(server_id,offered_by,approved_by,enabled) VALUES(%s,901,901,TRUE)",(foreign,))
+    pro=ProStore(db);service=SimpleNamespace(billing=SimpleNamespace(permissions=lambda actor:[]))
+    found=search(pro,service,901,'Needle')
+    assert {r['kind'] for r in found}=={'server','config','service','incident','agent'}
+    assert 'Needle hidden' not in str(found) and 'never-return' not in str(found)
+    assert all(r['href'].startswith('/') for r in found)
+    assert search(pro,service,902,'Needle incident')==[]
+    assert search(pro,service,901,'%')==[]
+    assert search(pro,service,901,'نود عمومی')==[]  # Administrator offering someone else's server is not consent.
+    db.execute('UPDATE monitor_fleet_nodes SET offered_by=902 WHERE server_id=%s',(foreign,))
+    shared=search(pro,service,901,'نود عمومی')
+    assert len(shared)==1 and shared[0]['name']=='نود عمومی تأییدشده'
+    assert search(pro,service,901,'192.0.2.99')==[]
+    for n in range(12):db.execute('INSERT INTO servers(owner_id,name,ip) VALUES(901,%s,%s)',(f'Needle bounded {n}',f'192.0.3.{n+1}'))
+    assert sum(row['kind']=='server' for row in search(pro,service,901,'Needle'))==10

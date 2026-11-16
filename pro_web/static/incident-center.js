@@ -9,13 +9,17 @@
  function apply(){for(const [key,id]of Object.entries(fields)){const value=document.getElementById(id).value;state.incidentFilters[key]=value&&['after','before'].includes(key)?new Date(value).toISOString():value;}state.index=1;if(state.tab==='incidents')loadList();}
  for(const id of Object.values(fields))document.getElementById(id)?.addEventListener('change',apply);
  document.getElementById('incident-filter')?.addEventListener('submit',event=>{event.preventDefault();apply();});
- function open(id){
+ let activeClose=null;
+ function open(id,push=true){
+  if(activeClose)activeClose(false);
+  state.incidentId=id;if(push&&state.tab==='incidents')updateRoute();
   const previous=document.activeElement,dialog=node('dialog');dialog.className='sonar-dialog incident-dialog';
   const title=node('h2','تاریخچه رخداد');title.id='incident-dialog-title';dialog.setAttribute('aria-labelledby',title.id);
   const content=node('div'),close=node('button','بستن');close.type='button';
   dialog.append(title,content,close);document.body.append(dialog);let sequence=0;
-  function finish(){sequence++;window.removeEventListener('sonar:view-change',finish);dialog.close();dialog.remove();if(previous?.isConnected)previous.focus();}
-  close.onclick=finish;dialog.addEventListener('cancel',event=>{event.preventDefault();finish();});window.addEventListener('sonar:view-change',finish);
+  const navigationClose=()=>finish(false);
+  function finish(update=true){sequence++;window.removeEventListener('sonar:view-change',navigationClose);dialog.close();dialog.remove();activeClose=null;state.incidentId=null;if(update&&state.tab==='incidents')updateRoute(true);if(previous?.isConnected)previous.focus();}
+  activeClose=finish;close.onclick=()=>finish();dialog.addEventListener('cancel',event=>{event.preventDefault();finish();});window.addEventListener('sonar:view-change',navigationClose);
   async function load(page=1){const serial=++sequence;content.replaceChildren(node('p','در حال دریافت تاریخچه…'));
    try{
     const result=await request(`/api/incidents/${id}?page=${page}`);if(serial!==sequence||!dialog.isConnected)return;

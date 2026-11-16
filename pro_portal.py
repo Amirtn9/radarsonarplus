@@ -455,9 +455,20 @@ async def readiness():
 async def summary(uid:int=Depends(actor),owner:int|None=None):return await guarded(store.summary,uid,owner)
 
 @app.get('/api/resources/{kind}')
-async def resources(kind:str,response:Response,uid:int=Depends(actor),owner:int|None=None,q:str='',tag:str|None=None,favorites:bool=False,page:int=Query(default=1,ge=1,le=10000),per_page:int=Query(default=12,ge=1,le=50)):
+async def resources(kind:str,response:Response,uid:int=Depends(actor),owner:int|None=None,q:str='',tag:str|None=None,favorites:bool=False,page:int=Query(default=1,ge=1,le=10000),per_page:int=Query(default=12,ge=1,le=50),
+        health:Literal['','healthy','failed','untested','environment_error','pending','unknown','source']='',
+        config_type:Literal['','single','sub_item','json','sub_source']='',
+        protocol:Literal['','vless','vmess','trojan','ss','hysteria2','tuic','profile','subscription','unknown']='',
+        sort:Literal['default','latency','score','checked','name']='default'):
     if kind not in ('server','config'):raise HTTPException(status_code=404)
-    rows,total=await guarded(store.list_resources,uid,kind,owner, '' if q.startswith('#') else q, q[1:] if q.startswith('#') else tag, favorites,page,per_page,True)
+    term='' if q.startswith('#') else q
+    selected_tag=q[1:] if q.startswith('#') else tag
+    if kind=='config':
+        from config_catalog import list_configs,summary_header
+        rows,total,summary=await guarded(list_configs,store,uid,owner,term,selected_tag,favorites,page,per_page,health,config_type,protocol,sort)
+        response.headers['X-Config-Summary']=summary_header(summary)
+    else:
+        rows,total=await guarded(store.list_resources,uid,kind,owner,term,selected_tag,favorites,page,per_page,True)
     response.headers['X-Total-Count']=str(total)
     return rows
 
