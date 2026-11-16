@@ -248,7 +248,7 @@ function rowItem(item){const root=elem('article',null,'item'),detail=elem('div')
  if(state.tab==='servers'){serverCardDetails(root,item);const live=elem('span','','live-label');window.SonarTelemetry?.live(live,item);detail.append(live);}
  const controls=elem('div',null,'tools');
  if(state.tab==='configs'&&item.type!=='sub_source'){const select=elem('input');select.type='checkbox';select.setAttribute('aria-label','انتخاب برای آزمون گروهی');select.checked=state.selectedConfigs.has(item.id);select.onchange=()=>{if(select.checked)state.selectedConfigs.add(item.id);else state.selectedConfigs.delete(item.id);};controls.append(select);}
- if(['servers','configs'].includes(state.tab)){const b=elem('button',item.favorite?'★':'☆');b.setAttribute('aria-label','تغییر علاقه‌مندی');b.onclick=async()=>{try{const v=await jsonPost('/api/favorites',{kind:state.tab==='servers'?'server':'config',rid:item.id});item.favorite=v.favorite;b.textContent=v.favorite?'★':'☆';toast('علاقه‌مندی ذخیره شد');}catch(e){toast(e.message);}};controls.append(b);}
+ if(['servers','configs'].includes(state.tab)){const b=elem('button',item.favorite?'★':'☆');b.setAttribute('aria-label','تغییر علاقه‌مندی');b.setAttribute('aria-pressed',String(!!item.favorite));b.onclick=async()=>{try{const v=await jsonPost('/api/favorites',{kind:state.tab==='servers'?'server':'config',rid:item.id});item.favorite=v.favorite;b.setAttribute('aria-pressed',String(!!v.favorite));b.textContent=v.favorite?'★':'☆';toast('علاقه‌مندی ذخیره شد');}catch(e){toast(e.message);}};controls.append(b);}
  if(['servers','configs'].includes(state.tab)){const tag=elem('button','🏷 برچسب');tag.setAttribute('aria-label','افزودن برچسب');tag.onclick=async()=>{const value=await window.SonarUI.ask('برچسب کوتاه بنویسید (حداکثر ۳۲ کاراکتر):');if(!value)return;try{await jsonPost('/api/console/tags',{kind:state.tab==='servers'?'server':'config',rid:item.id,tag:value.trim()});toast('برچسب ذخیره شد');}catch(e){toast(e.message);}};controls.append(tag);const details=elem('button','جزئیات');details.className='primary';details.onclick=()=>window.SonarConsole?.openDetails(state.tab==='servers'?'server':'config',item.id);controls.append(details);}
  if(state.tab==='rankings'){controls.append(elem('strong',`${item.score??0}/100`,'score'));const b=elem('button','📈 نمودار');b.onclick=()=>drawTrend(item);controls.append(b);}
  if(state.tab==='incidents'){controls.append(Object.assign(elem('button','تاریخچه و جزئیات'),{type:'button',onclick:()=>window.SonarIncidents.open(item.id)}));detail.append(elem('small',`${({server:'سرور',config:'کانفیگ',service:'سرویس'})[item.resource_type]||'منبع'} #${item.resource_id} · شروع: ${new Date(window.SonarTelemetry.time(item.opened_at)).toLocaleString('fa-IR')}`));}
@@ -472,11 +472,10 @@ async function loadServices(){
    const pause=elem('button',x.enabled?'توقف':'فعال‌سازی');pause.dataset.requires='monitor';pause.onclick=async()=>{
      try{await jsonPost('/api/services/'+x.id+'/enabled',{enabled:!x.enabled});await loadServices();toast('وضعیت ذخیره شد');}catch(err){toast(err.message);}
    };buttons.append(pause);
-   const del=elem('button','حذف');del.classList.add('destructive');del.dataset.requires='monitor';del.onclick=async()=>{
-    if(!await window.SonarUI.confirm('مانیتور «'+x.name+'» و تاریخچه آن حذف شود؟'))return;
-    try{await request('/api/services/'+x.id,{method:'DELETE'});await loadServices();toast('مانیتور حذف شد');}
-    catch(err){toast(err.message);}
-   };buttons.append(del);card.append(buttons);host.append(card);
+   const del=elem('button','حذف');del.classList.add('destructive');del.dataset.requires='monitor';del.onclick=()=>window.SonarUI.run(del,async()=>{
+    if(!await window.SonarUI.confirm('مانیتور «'+x.name+'» و تاریخچه آن حذف شود؟'))return false;
+    const result=await request('/api/services/'+x.id,{method:'DELETE'});await loadServices();toast('مانیتور حذف شد');return result;
+   }).catch(err=>toast(err.message));buttons.append(del);card.append(buttons);host.append(card);
    if(state.targetService===Number(x.id)&&state.tab==='services'){card.classList.add('search-target');if(serviceTargetFocused!==Number(x.id)){serviceTargetFocused=Number(x.id);card.tabIndex=-1;card.focus({preventScroll:true});card.scrollIntoView({block:'center'});loadServiceHistory(x);}}
   }
  }catch(err){host.replaceChildren(elem('p',err.message,'bad'));}
@@ -504,11 +503,11 @@ async function loadServiceHistory(item){
  }catch(err){if(requestId===serviceHistoryRequest)host.replaceChildren(elem('p',err.message,'bad'));}
 }
 $('services-refresh')?.addEventListener?.('click',loadServices);
-function resetServiceForm(){editingServiceId=null;$('service-form').reset();$('service-save').textContent='+ ایجاد مانیتور';$('service-cancel').hidden=true;}
+function resetServiceForm(){window.SonarUI?.state($('service-save'),'idle');editingServiceId=null;$('service-form').reset();$('service-save').textContent='+ ایجاد مانیتور';$('service-cancel').hidden=true;}
 $('service-cancel')?.addEventListener?.('click',resetServiceForm);
 $('service-kind')?.addEventListener?.('change',()=>{$('service-target').placeholder=$('service-kind').value==='tcp'?'example.com:443':'https://example.com/health';});
 $('service-form')?.addEventListener?.('submit',async ev=>{
- ev.preventDefault();const btn=ev.submitter;if(btn)btn.disabled=true;
+ ev.preventDefault();if($('service-save').dataset.actionState==='busy')return;const btn=ev.submitter||$('service-save');btn.disabled=true;window.SonarUI.state(btn,'busy');$('service-form').inert=true;
  try{
    const body={name:$('service-name').value,kind:$('service-kind').value,target:$('service-target').value,
       interval:Number($('service-interval').value),timeout:Number($('service-timeout').value),
@@ -516,8 +515,8 @@ $('service-form')?.addEventListener?.('submit',async ev=>{
    const value=$('service-expected').value.trim();if(value)body.expected_status=Number(value);
    if(editingServiceId){await request('/api/services/'+editingServiceId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});toast('مانیتور ویرایش شد');}
    else{await jsonPost('/api/services',body);toast('مانیتور ایجاد شد');}
-   resetServiceForm();await loadServices();
- }catch(err){toast(err.message);}finally{if(btn)btn.disabled=false;}
+   resetServiceForm();window.SonarUI.state(btn,'success');await loadServices();
+ }catch(err){window.SonarUI.state(btn,'error');toast(err.message);}finally{$('service-form').inert=false;if(btn)btn.disabled=false;}
 });
 
 $('resource-hours')?.addEventListener('change',loadResourceChart);

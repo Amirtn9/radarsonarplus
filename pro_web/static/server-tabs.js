@@ -24,8 +24,10 @@
   if(push&&state.tab==='server-detail')updateRoute();
   if(selected==='history'&&state.tab==='server-detail')loadHistory();
   if(selected==='resources')window.dispatchEvent(new Event('resize'));
+  window.dispatchEvent(new Event('sonar:server-section'));
  }
  function setInfo(info){
+  connection.dataset.sshState=info.ssh?.state||'';const age=Date.now()-window.SonarTelemetry.time(info.last_checked_at);connection.dataset.sampleFresh=String(navigator.onLine!==false&&Number.isFinite(age)&&age>=-30000&&age<=180000&&info.last_status==='Online');
   connection.replaceChildren(node('h3','اتصال و اعتماد'));
   const facts=[['SSH',label(info.ssh)],['آخرین تلاش SSH',time(info.ssh?.attempted_at)],['پایان آخرین تلاش',time(info.ssh?.completed_at)],['آخرین SSH موفق',time(info.ssh_last_success_at)],
    ['آخرین وضعیت ثبت‌شده WSS',({Online:'آنلاین',Offline:'آفلاین'})[info.last_agent_status]||'نامشخص'],['گواهی TLS',info.tls_enrolled?'ثبت شده؛ تأیید ارتباط زنده نیست':'ثبت نشده']];

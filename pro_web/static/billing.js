@@ -9,7 +9,7 @@
  const api=(path,options)=>window.SonarWebRequest('/api/billing'+path,options);
  const post=(path,value,method='POST')=>api(path,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});
  const el=(tag,text,cls)=>{const node=document.createElement(tag);if(text!=null)node.textContent=text;if(cls)node.className=cls;return node;};
- const button=(text,handler,cls='')=>{const node=el('button',text,cls);node.type='button';node.onclick=async()=>{node.disabled=true;try{await handler();}catch(error){toast(error.message);}finally{node.disabled=false;}};return node;};
+ const button=(text,handler,cls='')=>{const node=el('button',text,cls);node.type='button';node.onclick=()=>window.SonarUI.run(node,handler).catch(error=>toast(error.message));return node;};
  const row=(title,detail)=>{const n=el('article',null,'item');const d=el('div');d.append(el('strong',title),el('p',detail,'muted'));n.append(d);return n;};
  const section=(root,title)=>{const p=el('section',null,'panel');p.append(el('h2',title));root.append(p);return p;};
  function field(form,label,name,value='',type='text',options=null){
@@ -56,7 +56,7 @@
   const plans=['all','plans'].includes(area)?await api('/plans?all=true'):[],destinations=['all','payments'].includes(area)?await api('/destinations?all=true'):[];
   if(can('plans')&&['all','plans'].includes(area)){
   const catalog=section(host,'پلن‌ها و سهمیه‌های مستقل');catalog.append(button('ایجاد پلن',()=>planEditor(host,null)));
-  for(const p of plans){const item=row(p.name,`${money(p.price)} · ${p.days} روز · ${p.archived_at?'بایگانی':!p.enabled?'پیش‌نویس':p.publish_at&&new Date(p.publish_at)>new Date()?'زمان‌بندی‌شده':'منتشرشده'}`);item.append(button('ویرایش',()=>planEditor(host,p)),button('ساخت نسخه',()=>planEditor(host,{...p,id:null,name:p.name+' (کپی)',enabled:false,publish_at:null,archived_at:null})),button('پیش‌نمایش',()=>window.SonarProduct.preview(host,p)),button('میزان استفاده',()=>window.SonarProduct.usage(host,p)),button('بایگانی',async()=>{await window.SonarProduct.archive(p);}),button('حذف بدون سابقه',async()=>{await post('/plans/'+p.id,{reason:await reason()},'DELETE');await window.SonarProduct.load();}));catalog.append(item);}
+  for(const p of plans){const item=row(p.name,`${money(p.price)} · ${p.days} روز · ${p.archived_at?'بایگانی':!p.enabled?'پیش‌نویس':p.publish_at&&new Date(p.publish_at)>new Date()?'زمان‌بندی‌شده':'منتشرشده'}`);item.append(button('ویرایش',()=>planEditor(host,p)),button('ساخت نسخه',()=>planEditor(host,{...p,id:null,name:p.name+' (کپی)',enabled:false,publish_at:null,archived_at:null})),button('پیش‌نمایش',()=>window.SonarProduct.preview(host,p)),button('میزان استفاده',()=>window.SonarProduct.usage(host,p)),button('بایگانی',async()=>{await window.SonarProduct.archive(p);}),button('حذف بدون سابقه',async()=>{if(!await window.SonarUI.confirm('پلن بدون سابقه برای همیشه حذف شود؟ پلن دارای سفارش قابل حذف نیست.'))return;await post('/plans/'+p.id,{reason:await reason()},'DELETE');await window.SonarProduct.load();}));catalog.append(item);}
   }
   if(can('destinations')&&['all','payments'].includes(area)){
   const dest=section(host,'مقصدهای پرداخت کارت و ارز دیجیتال');dest.append(button('افزودن مقصد',()=>destinationEditor(host,null)));for(const d of destinations){const item=row(d.name,`${d.kind==='crypto'?'ارز دیجیتال':'کارت بانکی'} · ${d.network} · ${d.address} · ${d.enabled?'فعال':'غیرفعال'}`);item.append(button('ویرایش / غیرفعال‌سازی',()=>destinationEditor(host,d)));dest.append(item);}

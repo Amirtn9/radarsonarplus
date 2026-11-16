@@ -5,7 +5,7 @@
  const post=(path,data)=>window.SonarWebPost(path,data);
  const call=(path,method='POST',data={})=>window.SonarWebRequest(path,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
  const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=String(text);if(cls)n.className=cls;return n;};
- const btn=(label,fn,cls='')=>{const b=el('button',label,cls);b.type='button';b.addEventListener('click',async event=>{if(b.disabled)return;b.disabled=true;try{await fn(event);}catch(error){toast(error.message);}finally{b.disabled=false;}});return b;};
+ const btn=(label,fn,cls='')=>{const b=el('button',label,cls);b.type='button';b.addEventListener('click',event=>window.SonarUI.run(b,()=>fn(event)).catch(error=>toast(error.message)));return b;};
  const line=(host,text)=>host.append(el('p',text));
  async function health(){
   const host=$('enterprise-health');if(!host)return;host.textContent='در حال دریافت...';

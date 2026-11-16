@@ -158,11 +158,11 @@
     }catch(error){output.append(node('p',error.message,'bad'));}
     finally{button.disabled=false;}
   });
-  byId('relay-policy-save')?.addEventListener('click', async () => {
-    try {
-      await jsonPost('/api/fleet/policy', {strategy: byId('relay-strategy').value});
-      toast('سیاست بالانسر ذخیره شد.'); await load();
-    } catch (error) { toast(error.message); }
+  byId('relay-policy-save')?.addEventListener('click', async event => {
+    try {await window.SonarUI.run(event.currentTarget,async()=>{
+      const result=await jsonPost('/api/fleet/policy',{strategy:byId('relay-strategy').value});
+      toast('سیاست بالانسر ذخیره شد.');await load();return result;
+    });}catch(error){toast(error.message);}
   });
   byId('relay-approve-selected')?.addEventListener('click', async () => {
     const ids = Array.from(document.querySelectorAll('#relay-candidates .relay-check:checked')).map(input => Number(input.value));

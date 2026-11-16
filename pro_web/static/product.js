@@ -18,7 +18,7 @@
  const key=()=>crypto.randomUUID?crypto.randomUUID():Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-');let me=null,host=null,content=null,generation=0;
  const can=cap=>cap==='root'?me?.admin:!cap||(me?.billing_permissions||[]).includes(cap);
  const empty=(root,text='اطلاعاتی برای این فیلتر ثبت نشده است.')=>root.append(el('p',text,'empty-state'));
- function button(title,action,cls=''){const b=el('button',title,cls);b.type='button';b.onclick=async()=>{b.disabled=true;try{await action();}catch(error){toast(error.message);}finally{b.disabled=false;}};return b;}
+ function button(title,action,cls=''){const b=el('button',title,cls);b.type='button';b.onclick=()=>window.SonarUI.run(b,action).catch(error=>toast(error.message));return b;}
  function panel(root,title){const box=el('section',null,'panel');box.append(el('h2',title));root.append(box);return box;}
  function card(root,title,value,description=''){const box=el('article',null,'metric-card');box.append(el('span',title),el('strong',value),el('small',description));root.append(box);return box;}
  function item(root,title,description){const box=el('article',null,'item');const copy=el('div');copy.append(el('strong',title),el('p',description,'muted'));box.append(copy);root.append(box);return box;}

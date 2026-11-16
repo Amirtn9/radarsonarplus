@@ -2,7 +2,7 @@
 (()=>{
  const el=(tag,text)=>{const node=document.createElement(tag);if(text!=null)node.textContent=text;return node;};
  const roles={manager:'مدیر',technical:'مدیر فنی',monitor:'اپراتور پایش',server:'اپراتور سرور',viewer:'ناظر',auditor:'ممیز'};
- const button=(text,fn)=>{const b=el('button',text);b.type='button';b.onclick=async()=>{b.disabled=true;try{await fn();}catch(e){toast(e.message);}finally{b.disabled=false;}};return b;};
+ const button=(text,fn)=>{const b=el('button',text);b.type='button';b.onclick=()=>window.SonarUI.run(b,fn).catch(e=>toast(e.message));return b;};
  const panel=(parent,id,title)=>{document.getElementById(id)?.remove();const p=el('section');p.className='panel';p.id=id;p.append(el('h2',title));parent.append(p);return p;};
  const input=(parent,label,type='text')=>{const l=el('label',label),i=el('input');i.type=type;i.required=true;l.append(i);parent.append(l);return i;};
  const select=(parent,label,options)=>{const l=el('label',label),s=el('select');for(const [value,text] of options){const o=el('option',text);o.value=value;s.append(o);}l.append(s);parent.append(l);return s;};

@@ -19,8 +19,10 @@
     catch(e){/* anonymous sessions see the login form after boot */}
  }
  initSession();
- function closeMenu(){document.body.classList.remove('menu-open');el('nav-scrim').hidden=true;el('quick-menu').hidden=true;el('menu-trigger')?.setAttribute('aria-expanded','false');}
+ let menuReturnFocus=null;
+ function closeMenu(){const wasOpen=document.body.classList.contains('menu-open');document.body.classList.remove('menu-open');el('nav-scrim').hidden=true;el('quick-menu').hidden=true;el('menu-trigger')?.setAttribute('aria-expanded','false');el('app-shell').inert=false;el('bottom-nav').inert=false;if(wasOpen&&menuReturnFocus?.isConnected)menuReturnFocus.focus();}
  function openMenu(){
+  menuReturnFocus=document.activeElement;
   const host=el('quick-menu');host.replaceChildren();
   const groups=[['منابع و دسترسی',['overview','servers','configs','web-create','fleet']],['پایش و گزارش',['rankings','services','incidents','reports']],['حساب و مدیریت',['billing','users']],['مدیریت و همکاری',['enterprise','team','channels','audit','settings','balancer','support']]];
   for(const [title,tabs] of groups){
@@ -29,23 +31,24 @@
     const source=document.querySelector(`#side-navigation [data-tab="${tab}"]`);
     if(!source||source.hidden||source.dataset.uxDenied==='true')continue;
     const button=safeNode('button',source.textContent.trim());button.type='button';button.dataset.quickTab=tab;
-    button.onclick=()=>{tabClick(tab);closeMenu();el('menu-trigger').focus();};section.append(button);
+    button.onclick=()=>{tabClick(tab);closeMenu();};section.append(button);
    }
    host.append(section);
   }
   const search=safeNode('button','جست‌وجوی سراسری');search.type='button';search.onclick=()=>{closeMenu();window.SonarProduct.search().catch(error=>toast(error.message));};host.append(search);
-  const close=safeNode('button','بستن منو');close.type='button';close.onclick=()=>{closeMenu();el('menu-trigger').focus();};host.append(close);
+  const close=safeNode('button','بستن منو');close.type='button';close.onclick=()=>{closeMenu();};host.append(close);
   const guide=safeNode('a','راهنمای گام‌به‌گام ←');guide.href='/guide';host.append(guide);
-  document.body.classList.add('menu-open');el('nav-scrim').hidden=false;host.hidden=false;el('menu-trigger')?.setAttribute('aria-expanded','true');
+  el('app-shell').inert=true;el('bottom-nav').inert=true;document.body.classList.add('menu-open');el('nav-scrim').hidden=false;host.hidden=false;el('menu-trigger')?.setAttribute('aria-expanded','true');
   host.querySelector('button')?.focus();
  }
+ window.SonarNavigation={closeMenu,openMenu};
  el('menu-trigger')?.addEventListener('click',()=>document.body.classList.contains('menu-open')?closeMenu():openMenu());
  el('nav-scrim')?.addEventListener('click',closeMenu);
  window.addEventListener('popstate',closeMenu);
  window.addEventListener('sonar:view-change',closeMenu);
  document.addEventListener('keydown',event=>{
   if(!document.body.classList.contains('menu-open'))return;
-  if(event.key==='Escape'){closeMenu();el('menu-trigger').focus();}
+  if(event.key==='Escape'){closeMenu();}
   if(event.key==='Tab'){
    const targets=[...el('quick-menu').querySelectorAll('button,a')],first=targets[0],last=targets[targets.length-1];
    if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}
