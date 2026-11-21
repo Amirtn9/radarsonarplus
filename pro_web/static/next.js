@@ -19,46 +19,136 @@
     catch(e){/* anonymous sessions see the login form after boot */}
  }
  initSession();
+ const drawer=el('quick-menu');
+ const drawerLinks=el('drawer-links');
+ const scrim=el('nav-scrim');
+ const drawerTriggers=[el('menu-trigger'),document.querySelector('[data-mobile-tab="more"]')];
+ const drawerBackground=[el('app-shell'),el('bottom-nav'),document.querySelector('.skip-link')];
+ const englishGroups={account:'Home and account',resources:'Resources',monitoring:'Monitoring and reports',
+  agents:'Agents and routes',team:'Team and administration',settings:'Settings and help'};
+ const englishTabs={overview:'Home',billing:'Subscription and wallet',users:'Account administration',
+  servers:'Servers',configs:'Configurations','web-create':'Add a resource',services:'Monitoring',
+  incidents:'Alerts',rankings:'Quality',reports:'Reports and exports',fleet:'Monitoring agents',
+  balancer:'Route balancer',enterprise:'Enterprise center',team:'Team members',audit:'Activity history',
+  channels:'Notifications',settings:'Settings',support:'Admin diagnostics'};
  let menuReturnFocus=null;
- function closeMenu(){const wasOpen=document.body.classList.contains('menu-open');document.body.classList.remove('menu-open');el('nav-scrim').hidden=true;el('quick-menu').hidden=true;el('menu-trigger')?.setAttribute('aria-expanded','false');el('app-shell').inert=false;el('bottom-nav').inert=false;if(wasOpen&&menuReturnFocus?.isConnected)menuReturnFocus.focus();}
- function openMenu(){
-  menuReturnFocus=document.activeElement;
-  const host=el('quick-menu');host.replaceChildren();
-  const groups=[['منابع و دسترسی',['overview','servers','configs','web-create','fleet']],['پایش و گزارش',['rankings','services','incidents','reports']],['حساب و مدیریت',['billing','users']],['مدیریت و همکاری',['enterprise','team','channels','audit','settings','balancer','support']]];
-  for(const [title,tabs] of groups){
-   const section=safeNode('section');section.append(safeNode('h3',title));
-   for(const tab of tabs){
-    const source=document.querySelector(`#side-navigation [data-tab="${tab}"]`);
-    if(!source||source.hidden||source.dataset.uxDenied==='true')continue;
-    const button=safeNode('button',source.textContent.trim());button.type='button';button.dataset.quickTab=tab;
-    button.onclick=()=>{tabClick(tab);closeMenu();};section.append(button);
-   }
-   host.append(section);
+ function drawerLanguage(){
+  let profileLanguage;
+  // The profile only chooses presentation. Authentication is handled by boot().
+  try{profileLanguage=JSON.parse(new URLSearchParams(auth).get('user'))?.language_code;}catch{}
+  const locale=profileLanguage||(isMiniApp()?document.documentElement.lang:navigator.language);
+  return /^en(?:-|$)/i.test(locale)?'en':'fa';
+ }
+ function closeMenu(restoreFocus=true){
+  if(drawer.hidden)return;
+  document.body.classList.remove('menu-open');
+  drawer.inert=true;
+  drawer.hidden=true;
+  scrim.hidden=true;
+  drawerTriggers.forEach(control=>control.setAttribute('aria-expanded','false'));
+  drawerBackground.forEach(node=>{node.inert=false;});
+  if(restoreFocus){
+   const target=menuReturnFocus?.getClientRects().length?menuReturnFocus:el('menu-trigger');
+   target.focus({preventScroll:true});
   }
-  const search=safeNode('button','جست‌وجوی سراسری');search.type='button';search.onclick=()=>{closeMenu();window.SonarProduct.search().catch(error=>toast(error.message));};host.append(search);
-  const close=safeNode('button','بستن منو');close.type='button';close.onclick=()=>{closeMenu();};host.append(close);
-  const guide=safeNode('a','راهنمای گام‌به‌گام ←');guide.href='/guide';host.append(guide);
-  el('app-shell').inert=true;el('bottom-nav').inert=true;document.body.classList.add('menu-open');el('nav-scrim').hidden=false;host.hidden=false;el('menu-trigger')?.setAttribute('aria-expanded','true');
-  host.querySelector('button')?.focus();
+  menuReturnFocus=null;
+ }
+ function renderDrawer(){
+  const english=drawerLanguage()==='en';
+  drawer.lang=english?'en':'fa';
+  drawer.dir=english?'ltr':'rtl';
+  el('quick-menu-title').textContent=english?'Panel menu':'منوی پنل';
+  el('drawer-close').setAttribute('aria-label',english?'Close menu':'بستن منو');
+  drawerLinks.replaceChildren();
+
+  const visible=source=>!source.hidden&&source.dataset.uxDenied!=='true';
+  function item(source,label,action){
+   const control=safeNode(source?.tagName==='A'?'a':'button',null,'drawer-item');
+   if(control.tagName==='A')control.href=source.getAttribute('href');
+   else control.type='button';
+   const icon=source?.querySelector('.nav-icon');
+   if(icon)control.append(icon.cloneNode(true));
+   control.append(safeNode('span',label));
+   if(action)control.addEventListener('click',action);
+   return control;
+  }
+  const searchSource=el('global-search-trigger');
+  drawerLinks.append(item(searchSource,english?'Search panel':'جست‌وجوی سراسری',()=>searchSource.click()));
+
+  for(const group of document.querySelectorAll('#navigation .nav-section')){
+   const sources=[...group.querySelector('.nav-section-body').children].filter(visible);
+   if(!sources.length)continue;
+   const section=safeNode('section',null,'drawer-group');
+   section.append(safeNode('h3',english?englishGroups[group.dataset.group]:group.querySelector('summary').textContent));
+   const grid=safeNode('div',null,'drawer-grid');
+   for(const source of sources){
+    const tab=source.dataset.tab;
+    const label=english?(englishTabs[tab]||'User guide'):source.textContent.trim();
+    const control=item(source,label,tab?()=>{
+     if(!visible(source))return;
+     closeMenu(false);
+     source.click();
+     el('main').focus({preventScroll:true});
+    }:null);
+    if(tab)control.dataset.quickTab=tab;
+    if(source.hasAttribute('aria-current'))control.setAttribute('aria-current','page');
+    grid.append(control);
+   }
+   section.append(grid);
+   drawerLinks.append(section);
+  }
+  const logout=el('web-logout');
+  if(!isMiniApp()&&visible(logout)){
+   const button=item(logout,english?'Sign out':'خروج از وب‌سایت',()=>{
+    closeMenu();
+    logout.click();
+   });
+   drawerLinks.insertBefore(button,drawerLinks.lastElementChild);
+  }
+ }
+ function openMenu(trigger=document.activeElement){
+  if(!drawer.hidden||!panelAuthenticated||!authOverlay.hidden)return;
+  menuReturnFocus=trigger;
+  renderDrawer();
+  drawerBackground.forEach(node=>{node.inert=true;});
+  document.body.classList.add('menu-open');
+  scrim.hidden=false;
+  drawer.hidden=false;
+  drawer.inert=false;
+  drawerTriggers.forEach(control=>control.setAttribute('aria-expanded','true'));
+  drawerLinks.scrollTop=0;
+  el('drawer-close').focus({preventScroll:true});
  }
  window.SonarNavigation={closeMenu,openMenu};
- el('menu-trigger')?.addEventListener('click',()=>document.body.classList.contains('menu-open')?closeMenu():openMenu());
- el('nav-scrim')?.addEventListener('click',closeMenu);
- window.addEventListener('popstate',closeMenu);
- window.addEventListener('sonar:view-change',closeMenu);
+ el('menu-trigger').addEventListener('click',event=>openMenu(event.currentTarget));
+ el('drawer-close').addEventListener('click',()=>closeMenu());
+ scrim.addEventListener('click',()=>closeMenu());
+ window.addEventListener('popstate',()=>closeMenu());
+ window.addEventListener('sonar:view-change',()=>closeMenu());
+ window.addEventListener('sonar:capabilities',()=>{
+  if(drawer.hidden)return;
+  const focusedTab=document.activeElement?.dataset.quickTab;
+  const scrollTop=drawerLinks.scrollTop;
+  renderDrawer();
+  drawerLinks.scrollTop=scrollTop;
+  (drawerLinks.querySelector(`[data-quick-tab="${focusedTab}"]`)||el('drawer-close')).focus({preventScroll:true});
+ });
  document.addEventListener('keydown',event=>{
-  if(!document.body.classList.contains('menu-open'))return;
-  if(event.key==='Escape'){closeMenu();}
+  if(drawer.hidden)return;
+  if(event.key==='Escape'){
+   event.preventDefault();
+   closeMenu();
+  }
   if(event.key==='Tab'){
-   const targets=[...el('quick-menu').querySelectorAll('button,a')],first=targets[0],last=targets[targets.length-1];
-   if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}
-   else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}
+   const targets=drawer.querySelectorAll('button:not(:disabled),a[href]');
+   const first=targets[0],last=targets[targets.length-1];
+   if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+   else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
   }
  });
- document.querySelectorAll('#side-navigation .navbtn').forEach(b=>b.addEventListener('click',closeMenu));
  document.querySelectorAll('[data-mobile-tab]').forEach(button=>button.addEventListener('click',()=>{
    const tab=button.dataset.mobileTab;
-   if(tab==='more'){openMenu();return;}
+   if(tab==='more'){openMenu(button);return;}
    tabClick(tab);closeMenu();
  }));
  const existingTabClick=tabClick;

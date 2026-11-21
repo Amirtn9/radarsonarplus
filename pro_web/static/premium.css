@@ -413,11 +413,6 @@ html[data-client="telegram"] .shell { min-height: var(--tg-viewport-height, 100d
   body { background: radial-gradient(ellipse at 90% -10%, rgba(42,117,206,.18), transparent 40%), #080d17; }
   body::before { opacity: .08; background-size: 34px 34px; }
   .shell { display: block; padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
-  .sidebar { position: fixed; top: 0; right: -320px; bottom: 0; z-index: 60; width: min(310px, 86vw); height: 100vh; height: 100dvh; padding: max(22px, env(safe-area-inset-top)) 20px 20px; border-left: 1px solid var(--outline-strong); background: rgba(12, 20, 34, .97); transition: right .25s cubic-bezier(.2,.8,.2,1); }
-  body.menu-open .sidebar { right: 0; }
-  .sidebar .brand { display: flex; }
-  .sidebar .brand > div:last-child, .sidebar .navtitle, .sidebar .nav-label, .sidebar .sidefoot { display: block; }
-  .sidebar nav { display: grid; height: auto; overflow: visible; gap: 5px; }
   .sidebar .navbtn { display: flex; flex-direction: row; justify-content: flex-start; min-height: 45px; padding: 9px 12px; text-align: right; }
   .sidebar .navbtn .nav-label { font-size: 13px; }
   .sidebar .navbtn .nav-icon { width: 19px; height: 19px; }

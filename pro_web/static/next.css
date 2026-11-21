@@ -28,9 +28,6 @@ body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Tahom
  .bottom-nav{position:fixed;bottom:8px;bottom:max(8px,env(safe-area-inset-bottom));left:2%;right:2%;height:76px;z-index:28;display:grid;grid-template-columns:repeat(5,1fr);padding:8px 6px;border-radius:28px;background:var(--surface);background:color-mix(in srgb,var(--surface) 92%,transparent);box-shadow:0 7px 45px #0002;backdrop-filter:blur(22px);border:1px solid var(--outline);direction:rtl}
  .bottom-nav button{border:0;background:none;color:var(--text);font-size:11px;font-weight:650;display:flex;flex-direction:column;gap:4px;align-items:center;justify-content:center;padding:0}
  .bottom-nav button span{font-size:25px;line-height:1.2}.bottom-nav button.active{color:var(--accent)}
- .sidebar{top:0;right:-310px;left:auto;bottom:auto;width:min(300px,82vw);height:100vh;height:100dvh;position:fixed;display:flex;flex-direction:column;padding:24px;transition:right .23s ease;overflow:auto;border-left:1px solid var(--outline);background:var(--surface)}
- body.menu-open .sidebar{right:0}.sidebar .brand{display:flex}.sidebar .brand>div:last-child,.sidebar .navtitle,.sidebar .navbtn span,.sidebar .sidefoot{display:block}
- .sidebar nav{display:grid;height:auto;overflow:visible;gap:5px}.sidebar .navbtn{font-size:15px;padding:12px;text-align:right;display:flex;flex-direction:row;justify-content:flex-start}.sidebar .navbtn span{font-size:13px}
  .shell{padding-bottom:95px}.topbar{padding:18px 16px}.topbar .eyebrow{display:none}.topbar h1{font-size:20px}.version{display:none}.metricgrid{grid-template-columns:repeat(2,minmax(0,1fr))}
  .welcome{padding:22px}.welcome h2{font-size:25px}.sensor-panel p{font-size:12px}
 }

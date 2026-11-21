@@ -2,14 +2,14 @@
 const {chromium}=require('playwright'),crypto=require('node:crypto'),assert=require('node:assert/strict');
 const base=process.env.SONAR_BROWSER_TEST_URL,token=process.env.SONAR_BROWSER_TEST_TOKEN;
 if(!token||!['127.0.0.1','localhost'].includes(new URL(base).hostname))throw Error('Local fixture required');
-function launch(uid=901){const data={auth_date:String(Math.floor(Date.now()/1000)),user:JSON.stringify({id:uid})};const secret=crypto.createHmac('sha256','WebAppData').update(token).digest();data.hash=crypto.createHmac('sha256',secret).update(Object.keys(data).sort().map(k=>k+'='+data[k]).join('\n')).digest('hex');return 'tgWebAppData='+encodeURIComponent(new URLSearchParams(data).toString());}
+function launch(uid=901,language_code){const data={auth_date:String(Math.floor(Date.now()/1000)),user:JSON.stringify({id:uid,language_code})};const secret=crypto.createHmac('sha256','WebAppData').update(token).digest();data.hash=crypto.createHmac('sha256',secret).update(Object.keys(data).sort().map(k=>k+'='+data[k]).join('\n')).digest('hex');return 'tgWebAppData='+encodeURIComponent(new URLSearchParams(data).toString());}
 (async()=>{
  const monitorName='Final mobile monitor '+Date.now();
  const browser=await chromium.launch({executablePath:process.env.SONAR_CHROMIUM_PATH||undefined,headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
  try{
   const context=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:390,height:844},timezoneId:'Asia/Tehran'});await context.route('https://telegram.org/**',r=>r.abort());
   const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.goto(base+'/#'+launch());await page.waitForFunction(()=>document.getElementById('topbar-status').textContent==='متصل');
+  await page.goto(base+'/#'+launch(901,'fa'));await page.waitForFunction(()=>document.getElementById('topbar-status').textContent==='متصل');
   await page.waitForFunction(()=>!!SonarExperience.capabilities());
   await page.evaluate(()=>{
    window.__tgEvents={};window.__tgBackVisible=false;window.Telegram={WebApp:{safeAreaInset:{top:24,bottom:24},contentSafeAreaInset:{top:36,bottom:16},onEvent:(name,fn)=>window.__tgEvents[name]=fn,BackButton:{onClick:fn=>window.__tgBack=fn,show:()=>window.__tgBackVisible=true,hide:()=>window.__tgBackVisible=false}}};tabClick('services');
@@ -17,8 +17,23 @@ function launch(uid=901){const data={auth_date:String(Math.floor(Date.now()/1000
   await page.waitForFunction(()=>typeof window.__tgBack==='function');
   assert.equal(await page.evaluate(()=>document.documentElement.style.getPropertyValue('--app-safe-top')),'36px');
   await page.locator('[data-mobile-tab=more]').click();assert.equal(await page.locator('#app-shell').evaluate(el=>el.inert),true);
+  const drawer=page.locator('#quick-menu');
+  assert.equal(await drawer.getAttribute('dir'),'rtl');
+  assert.equal(await drawer.locator('[data-quick-tab=services]').getAttribute('aria-current'),'page');
+  assert.equal(await page.locator('[data-mobile-tab=more]').getAttribute('aria-expanded'),'true');
   const last=page.locator('#quick-menu a').last();await last.focus();await page.keyboard.press('Tab');assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('#quick-menu button')),true);
-  await page.evaluate(()=>window.__tgBack());assert.equal(await page.locator('#quick-menu').isVisible(),false);assert.equal(await page.locator('#app-shell').evaluate(el=>el.inert),false);assert.equal(await page.evaluate(()=>document.activeElement.dataset.mobileTab),'more');
+  const closingTransition=await drawer.evaluate(async el=>{
+   await Promise.all(el.getAnimations().map(animation=>animation.finished));
+   window.__tgBack();
+   return {
+    inert:el.inert,
+    moving:el.getAnimations().some(animation=>animation.transitionProperty==='translate')
+   };
+  });
+  assert.deepEqual(closingTransition,{inert:true,moving:true});
+  await drawer.waitFor({state:'hidden'});
+  assert.equal(await page.locator('#app-shell').evaluate(el=>el.inert),false);
+  assert.equal(await page.evaluate(()=>document.activeElement.dataset.mobileTab),'more');
   await page.locator('#context-help summary').click();await page.locator('#context-help').getByRole('button',{name:'خواندن آموزش مرتبط بدون خروج',exact:true}).click();
   let modal=page.getByRole('dialog');await modal.getByRole('heading',{name:/مانیتورینگ سرویس/}).waitFor();assert.equal(await page.evaluate(()=>state.tab),'services');await page.evaluate(()=>window.__tgBack());await modal.waitFor({state:'detached'});
   // Static disabled controls must never be labelled as pending work.
@@ -67,6 +82,19 @@ function launch(uid=901){const data={auth_date:String(Math.floor(Date.now()/1000
   const viewerContext=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:390,height:844}});await viewerContext.route('https://telegram.org/**',r=>r.abort());const viewer=await viewerContext.newPage();viewer.on('pageerror',e=>errors.push(e.message));await viewer.goto(base+'/#'+launch(903));await viewer.waitForFunction(()=>document.getElementById('topbar-status').textContent==='متصل');
   // The full suite creates a consent-based Viewer membership in workspace 902.
   const option=viewer.locator('#workspace-selector option[value="902"]');assert.equal(await option.count(),1,'Viewer workspace fixture must exist');await viewer.locator('#workspace-selector').selectOption('902');await viewer.waitForFunction(()=>SonarExperience.capabilities()?.role==='viewer');await viewer.evaluate(()=>tabClick('services'));await viewer.locator('#context-help summary').click();await viewer.locator('#context-help-content').getByText(/این نقش فقط اجازه مشاهده دارد/).waitFor();assert.equal(await viewer.locator('#context-help').getByRole('button',{name:'رفتن به فرم مانیتور',exact:true}).count(),0);
+  const english=await context.newPage();english.on('pageerror',error=>errors.push(error.message));
+  await english.emulateMedia({reducedMotion:'reduce'});
+  await english.goto(base+'/#'+launch(901,'en'));
+  await english.waitForFunction(()=>document.getElementById('topbar-status').textContent==='متصل');
+  await english.locator('[data-mobile-tab=more]').click();
+  const englishDrawer=english.getByRole('dialog',{name:'Panel menu'});
+  assert.equal(await englishDrawer.getAttribute('dir'),'ltr');
+  assert.equal(await englishDrawer.evaluate(el=>getComputedStyle(el).transitionDuration),'0s');
+  assert.ok(Math.abs((await englishDrawer.boundingBox()).x)<2);
+  await englishDrawer.getByRole('button',{name:'Servers',exact:true}).click();
+  await englishDrawer.waitFor({state:'hidden'});
+  assert.equal(await english.evaluate(()=>document.activeElement.id),'main');
+  await english.close();
   assert.deepEqual(errors,[]);console.log(`PASS: shared action states and cancellation, protected pending form, ${checks} responsive view/theme checks, large text, keyboard focus, inline role/state help, Telegram safe areas/back and simulated visual keyboard.`);
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

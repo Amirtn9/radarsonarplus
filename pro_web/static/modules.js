@@ -51,7 +51,7 @@
    const trigger=document.createElement('button');trigger.type='button';trigger.textContent='جست‌وجوی سراسری';trigger.id='global-search-trigger';trigger.className='navbtn';trigger.setAttribute('aria-keyshortcuts','Control+k Meta+k');trigger.onclick=search;header.append(trigger);
   }
  }
- function search(){Promise.resolve(window.SonarGlobalSearch.open()).catch(error=>{if(typeof toast==='function')toast(error.message);});}
+ function search(){window.SonarNavigation?.closeMenu();Promise.resolve(window.SonarGlobalSearch.open()).catch(error=>{if(typeof toast==='function')toast(error.message);});}
  document.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'&&document.body.dataset.authenticated==='true'){event.preventDefault();search();}});
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
  window.SonarModules={ensure};
